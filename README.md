@@ -1,163 +1,173 @@
-TurtleTicketHelper Setup Guide
-TurtleTicketHelper renames Ticket Tool channels, handles join clan applications, and posts Clash of Clans player information inside Discord tickets.
+# TurtleTicketHelper
 
-Requirements
-Before starting, make sure these are ready:
+TurtleTicketHelper is a Discord bot that works together with Ticket Tool.  
+It automatically renames ticket channels, handles join clan applications, and fetches Clash of Clans player data for staff review.
 
-A Discord bot application and bot token.
+## Features
 
-A Clash of Clans API key.
+- Renames newly created tickets based on ticket type and user name
+- Renames closed tickets and deletes them automatically after a delay
+- Sends a join clan application prompt inside join clan tickets
+- Opens a modal for player application data
+- Fetches Clash of Clans player information through the Clash of Clans API
+- Lets staff recommend clans directly inside the ticket
 
-Ticket Tool installed in your Discord server.
+## Requirements
 
-Two Discord categories for tickets:
+Before setting up the bot, make sure you have:
 
-One category for open tickets.
+- A Discord bot application
+- A Discord bot token
+- Ticket Tool installed on your Discord server
+- A Clash of Clans API key
+- Two Discord categories:
+  - One for open tickets
+  - One for closed tickets
 
-One category for closed tickets.
+## Environment Variables
 
-Environment Variables
-Create a .env file in the project root.
+Create a `.env` file in the project root:
 
-text
+```env
 DISCORD_BOT_TOKEN=your_discord_bot_token_here
 OPEN_TICKET_CATEGORY_ID=your_open_ticket_category_id_here
 CLOSED_TICKET_CATEGORY_ID=your_closed_ticket_category_id_here
 TICKET_TOOL_BOT_ID=your_ticket_tool_bot_id_here
 CLASH_OF_CLANS_API_KEY=your_clash_of_clans_api_key_here
-Discord Server Setup
-1. Create ticket categories
+```
+
+## Discord Setup
+
+### 1. Create ticket categories
+
 Create these two categories in your Discord server:
 
-Open Tickets
+- `Open Tickets`
+- `Closed Tickets`
 
-Closed Tickets
+Copy both category IDs and add them to your `.env` file:
 
-Copy both category IDs and put them into the .env file:
+- `OPEN_TICKET_CATEGORY_ID`
+- `CLOSED_TICKET_CATEGORY_ID`
 
-OPEN_TICKET_CATEGORY_ID
+To copy IDs, enable **Developer Mode** in Discord, then right-click the category and choose **Copy ID**.
 
-CLOSED_TICKET_CATEGORY_ID
+### 2. Get the Ticket Tool bot ID
 
-To copy an ID, enable Developer Mode in Discord, right-click the category, then click Copy Server ID or Copy ID depending on your client.
+Copy the Ticket Tool bot ID and add it to:
 
-2. Get the Ticket Tool Bot ID
-Use the Ticket Tool bot ID in:
+- `TICKET_TOOL_BOT_ID`
 
-TICKET_TOOL_BOT_ID
+This ensures TurtleTicketHelper only reacts to Ticket Tool ticket messages.
 
-This is required so the bot only reacts to Ticket Tool ticket messages.
+### 3. Configure Ticket Tool
 
-3. Configure Ticket Tool dashboard
-Open the Ticket Tool dashboard and select the ticket system used by your server.
+Open the Ticket Tool dashboard and configure your ticket system.
 
-In the dashboard:
+#### Select categories
 
-Open the ticket settings.
+In the Ticket Tool dashboard:
 
-Select both categories:
+1. Open your ticket settings
+2. Select both categories:
+   - Open ticket category
+   - Closed ticket category
 
-Open ticket category
+#### Create panels
 
-Closed ticket category
+Go back to **Panel Config** and create 2 panels:
 
-Go back to the panel configuration.
+- `Join Clan`
+- `Other Reasons`
 
-Open Panels.
+Attach both panels to your ticket setup.
 
-Create 2 panels:
+## Discord Bot Setup
 
-Join Clan
+### 1. Bot token
 
-Other Reasons
+Open the [Discord Developer Portal](https://discord.com/developers/applications), select your application, go to **Bot**, and copy your bot token.
 
-Attach both panels.
+Add it to:
 
-This is needed so TurtleTicketHelper can detect the created tickets and rename them correctly.
+- `DISCORD_BOT_TOKEN`
 
-Discord Bot Setup
-1. Create bot token
-In the Discord Developer Portal, open your application, go to Bot, and copy the bot token.
+### 2. Enable intents
 
-Put it into:
+In the **Bot** section of the Discord Developer Portal, enable these privileged intents:
 
-DISCORD_BOT_TOKEN
+- **Server Members Intent**
+- **Message Content Intent**
 
-2. Enable privileged intents
-In the Discord Developer Portal under Bot, enable these intents:
+These intents are required so the bot can detect ticket users and ticket message content correctly. [file:1044]
 
-Server Members Intent
+### 3. Required bot permissions
 
-Message Content Intent
+Invite the bot with these permissions:
 
-Without these, the bot may not detect ticket information correctly.
+- View Channels
+- Manage Channels
+- Send Messages
+- Read Message History
 
-3. Bot permissions
-Invite the bot with the required permissions.
+Recommended additional permissions:
 
-Recommended permissions:
+- Embed Links
+- Attach Files
+- Use External Emojis
 
-View Channels
+The important part is that the bot can read ticket channels, rename channels, and send messages inside them. [file:1044]
 
-Manage Channels
+## Clash of Clans API Setup
 
-Send Messages
+Create a Clash of Clans API key and add it to:
 
-Read Message History
-
-Depending on your setup, the bot may also need:
-
-Embed Links
-
-Use External Emojis
-
-Attach Files
-
-The most important permissions for this bot are channel access, channel rename support, and message sending inside ticket channels.
-
-Clash of Clans API Setup
-Create a Clash of Clans API key and put it into:
-
-CLASH_OF_CLANS_API_KEY
+- `CLASH_OF_CLANS_API_KEY`
 
 This key is used to fetch player data for the join clan application flow.
 
-Install and Start
-Install dependencies:
+## Installation
 
-bash
+Clone the repository and install dependencies:
+
+```bash
+git clone <your-repository-url>
+cd TurtleTicketHelper
 npm install
-Start the bot:
+```
 
-bash
+## Run the Bot
+
+Start the bot with:
+
+```bash
 npm start
-If everything is correct, the bot should log in and react to Ticket Tool ticket creation and closing events.
+```
 
-Setup Checklist
-Discord bot token added to .env
+If everything is configured correctly, the bot should log in and begin reacting to Ticket Tool ticket events.
 
-Open ticket category ID added to .env
+## Setup Checklist
 
-Closed ticket category ID added to .env
+- Discord bot token added to `.env`
+- Open ticket category ID added to `.env`
+- Closed ticket category ID added to `.env`
+- Ticket Tool bot ID added to `.env`
+- Clash of Clans API key added to `.env`
+- Server Members Intent enabled
+- Message Content Intent enabled
+- Ticket Tool configured with both categories
+- Two panels created:
+  - `Join Clan`
+  - `Other Reasons`
+- Bot invited with the required permissions
 
-Ticket Tool bot ID added to .env
+## `.gitignore`
 
-Clash of Clans API key added to .env
+Make sure your `.env` file is ignored:
 
-Server Members Intent enabled
-
-Message Content Intent enabled
-
-Ticket Tool configured with both categories
-
-Two panels created: Join Clan and Other Reasons
-
-Bot invited with the required permissions
-
-Example .env
-text
-DISCORD_BOT_TOKEN=Nz...your_token
-OPEN_TICKET_CATEGORY_ID=123456789012345678
-CLOSED_TICKET_CATEGORY_ID=234567890123456789
-TICKET_TOOL_BOT_ID=557628352828014614
-CLASH_OF_CLANS_API_KEY=your_api_key_here
+```gitignore
+# Environment variables
+.env
+.env.local
+.env.*.local
+```
