@@ -161,6 +161,17 @@ If everything is configured correctly, the bot should log in and begin reacting 
   - `Other Reasons`
 - Bot invited with the required permissions
 
+## Configuration
+
+After setting up the `.env` file, you can change additional bot settings in `src/config/appConfig.js`.
+
+This includes:
+
+- staff role IDs
+- join clan texts and embed settings
+- clan recommendation names, links, and explanations
+- ticket rename and ticket create settings
+
 ## `.gitignore`
 
 Make sure your `.env` file is ignored:
