@@ -1,0 +1,7 @@
+module.exports = {
+    DISCORD_TOKEN: process.env.DISCORD_TOKEN,
+    TICKET_TOOL_BOT_ID: process.env.TICKET_TOOL_BOT_ID,
+    OPEN_TICKET_CATEGORY_ID: process.env.OPEN_TICKET_CATEGORY_ID,
+    CLOSED_TICKET_CATEGORY_ID: process.env.CLOSED_TICKET_CATEGORY_ID,
+    COC_API_TOKEN: process.env.COC_API_TOKEN
+};
