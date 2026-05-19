@@ -5,10 +5,22 @@ const {
 
 const SYNC_TIMEOUT_MS = 60_000;
 
-function warnSync(message, playerTag, discordUsername) {
+function warnSync(message, playerTag, discordUsername, extra = {}) {
     console.warn(message, {
         tag: playerTag,
-        discordUsername
+        discordUsername,
+        ...extra
+    });
+}
+
+function logSyncSuccess(result, playerTag, discordUsername) {
+    console.log('Discord username sync success:', {
+        tag: playerTag,
+        discordUsername,
+        found: result?.found ?? null,
+        updated: result?.updated ?? null,
+        updatedCount: result?.updatedCount ?? null,
+        skippedExistingCount: result?.skippedExistingCount ?? null
     });
 }
 
@@ -44,6 +56,16 @@ async function syncDiscordUsernameForPlayerTag(playerTag, discordUsername) {
         });
 
         if (!response.ok) {
+            const errorText = await response.text().catch(() => 'Unable to read response body');
+
+            console.error('Discord username sync failed: non-2xx response details', {
+                status: response.status,
+                statusText: response.statusText,
+                body: errorText,
+                tag: playerTag,
+                discordUsername
+            });
+
             warnSync(
                 'Discord username sync failed: roster backend returned a non-2xx response.',
                 playerTag,
@@ -69,7 +91,8 @@ async function syncDiscordUsernameForPlayerTag(playerTag, discordUsername) {
             warnSync(
                 'Discord username sync failed: roster backend returned ok:false.',
                 playerTag,
-                discordUsername
+                discordUsername,
+                { payloadOk: payload?.ok ?? null }
             );
             return { ok: false };
         }
@@ -78,7 +101,8 @@ async function syncDiscordUsernameForPlayerTag(playerTag, discordUsername) {
             warnSync(
                 'Discord username sync failed: roster backend result returned ok:false.',
                 playerTag,
-                discordUsername
+                discordUsername,
+                { resultOk: payload?.result?.ok ?? null }
             );
             return { ok: false };
         }
@@ -91,14 +115,31 @@ async function syncDiscordUsernameForPlayerTag(playerTag, discordUsername) {
             );
         }
 
+        logSyncSuccess(payload.result, playerTag, discordUsername);
         return payload.result;
     } catch (error) {
-        const message =
-            error?.name === 'AbortError'
-                ? 'Discord username sync failed: request timed out.'
-                : 'Discord username sync failed: request error.';
+        const isTimeout = error?.name === 'AbortError';
 
-        warnSync(message, playerTag, discordUsername);
+        console.error(
+            isTimeout
+                ? 'Discord username sync failed: request timed out.'
+                : 'Discord username sync failed: request error.',
+            {
+                tag: playerTag,
+                discordUsername,
+                errorName: error?.name ?? null,
+                errorMessage: error?.message ?? null
+            }
+        );
+
+        warnSync(
+            isTimeout
+                ? 'Discord username sync failed: request timed out.'
+                : 'Discord username sync failed: request error.',
+            playerTag,
+            discordUsername
+        );
+
         return { ok: false };
     } finally {
         if (timeoutId) {

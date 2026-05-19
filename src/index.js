@@ -3,6 +3,16 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { Client, Collection, GatewayIntentBits, Partials } = require('discord.js');
 
+process.on('unhandledRejection', (error) => {
+  console.error('UNHANDLED REJECTION:', error);
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('UNCAUGHT EXCEPTION:', error);
+});
+
+console.log('INDEX STARTED');
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,

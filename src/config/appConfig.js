@@ -128,17 +128,17 @@ const appConfig = {
             '1': {
                 label: '1',
                 description: 'One account',
-                roleId: '1504242925763039242'
+                roleId: '1445712029393617089'
             },
             '2': {
                 label: '2',
                 description: 'Two accounts',
-                roleId: '1504242954091368458'
+                roleId: '1445712054877950013'
             },
             '3plus': {
                 label: '3+',
                 description: 'Three or more accounts',
-                roleId: '1504242978687029388'
+                roleId: '1445712087123890176'
             }
         },
 
@@ -146,43 +146,43 @@ const appConfig = {
             europe: {
                 label: 'Europe',
                 description: 'Europe',
-                roleId: '1504243015521402880'
+                roleId: '1445711595866161304'
             },
             north_america: {
                 label: 'North America',
                 description: 'North America',
-                roleId: '1504243063285874849'
+                roleId: '1445711630997655736'
             },
             south_america: {
                 label: 'South America',
                 description: 'South America',
-                roleId: '1504243117799247962'
+                roleId: '1445711668213710920'
             },
             asia: {
                 label: 'Asia',
                 description: 'Asia',
-                roleId: '1504243042474004632'
+                roleId: '1445711704146313236'
             },
             oceania: {
                 label: 'Oceania',
                 description: 'Oceania',
-                roleId: '1504243092042289244'
+                roleId: '1445711757879541852'
             },
             africa: {
                 label: 'Africa',
                 description: 'Africa',
-                roleId: '1504243160795185182'
+                roleId: '1445711726816268299'
             }
         },
 
         townHallRoles: {
-            12: '1504242621843767346',
-            13: '1504242714676297898',
-            14: '1504242776286429224',
-            15: '1504242802865995807',
-            16: '1504242825620099072',
-            17: '1504242846016995348',
-            18: '1504242895048413378'
+            12: '1445711841916354650',
+            13: '1445711872551550976',
+            14: '1445711890037735504',
+            15: '1445711915572662292',
+            16: '1445711936711819336',
+            17: '1445711967309402145',
+            18: '1445711989329625171'
         },
 
         roleUpdateReason: 'Join clan application role update'
