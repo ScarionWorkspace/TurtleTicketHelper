@@ -2,6 +2,7 @@ const handleJoinClanButton = require('../features/joinClanApplication/handleJoin
 const handleJoinClanModal = require('../features/joinClanApplication/handleJoinClanModal');
 const handleRecommendClanButton = require('../features/joinClanApplication/handleRecommendClanButton');
 const handleRecommendClanSelect = require('../features/joinClanApplication/handleRecommendClanSelect');
+const handleSeasonEventInteraction = require('../features/seasonEvents/handleSeasonEventInteraction');
 
 module.exports = {
     name: 'interactionCreate',
@@ -39,6 +40,10 @@ module.exports = {
         }
 
         if (interaction.isButton()) {
+            if (await handleSeasonEventInteraction(interaction)) {
+                return;
+            }
+
             if (interaction.customId === 'join_clan_apply') {
                 await handleJoinClanButton(interaction);
                 return;
@@ -53,11 +58,19 @@ module.exports = {
         }
 
         if (interaction.isStringSelectMenu()) {
+            if (await handleSeasonEventInteraction(interaction)) {
+                return;
+            }
+
             await handleRecommendClanSelect(interaction);
             return;
         }
 
         if (interaction.isModalSubmit()) {
+            if (await handleSeasonEventInteraction(interaction)) {
+                return;
+            }
+
             await handleJoinClanModal(interaction);
         }
     }

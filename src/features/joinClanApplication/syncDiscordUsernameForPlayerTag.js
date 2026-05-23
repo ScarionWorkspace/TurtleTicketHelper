@@ -1,9 +1,4 @@
-const {
-    ROSTER_BACKEND_URL,
-    ROSTER_BOT_SECRET
-} = require('../../config/env');
-
-const SYNC_TIMEOUT_MS = 60_000;
+const rosterBackend = require('../rosterBackend/rosterBackendClient');
 
 function warnSync(message, playerTag, discordUsername, extra = {}) {
     console.warn(message, {
@@ -14,7 +9,7 @@ function warnSync(message, playerTag, discordUsername, extra = {}) {
 }
 
 function logSyncSuccess(result, playerTag, discordUsername) {
-    console.log('Discord username sync success:', {
+    console.log('Discord identity sync success:', {
         tag: playerTag,
         discordUsername,
         found: result?.found ?? null,
@@ -24,10 +19,10 @@ function logSyncSuccess(result, playerTag, discordUsername) {
     });
 }
 
-async function syncDiscordUsernameForPlayerTag(playerTag, discordUsername) {
-    if (!ROSTER_BACKEND_URL || !ROSTER_BOT_SECRET) {
+async function syncDiscordIdentityForPlayerTag(playerTag, discordId, discordUsername) {
+    if (!rosterBackend.isRosterBackendConfigured()) {
         warnSync(
-            'Skipping Discord username sync: roster backend config is missing.',
+            'Skipping Discord identity sync: roster backend config is missing.',
             playerTag,
             discordUsername
         );
@@ -37,115 +32,57 @@ async function syncDiscordUsernameForPlayerTag(playerTag, discordUsername) {
         };
     }
 
-    let timeoutId;
-
     try {
-        const controller = new AbortController();
-        timeoutId = setTimeout(() => controller.abort(), SYNC_TIMEOUT_MS);
-
-        const response = await fetch(ROSTER_BACKEND_URL, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                method: 'syncDiscordUsernameForPlayerTag',
-                args: [playerTag, discordUsername, ROSTER_BOT_SECRET]
-            }),
-            signal: controller.signal
+        const result = await rosterBackend.syncDiscordIdentityForPlayerTag({
+            playerTag,
+            discordId,
+            discordUsername
         });
 
-        if (!response.ok) {
-            const errorText = await response.text().catch(() => 'Unable to read response body');
-
-            console.error('Discord username sync failed: non-2xx response details', {
-                status: response.status,
-                statusText: response.statusText,
-                body: errorText,
-                tag: playerTag,
-                discordUsername
-            });
-
+        if (result?.ok === false) {
             warnSync(
-                'Discord username sync failed: roster backend returned a non-2xx response.',
-                playerTag,
-                discordUsername
-            );
-            return { ok: false };
-        }
-
-        let payload;
-
-        try {
-            payload = await response.json();
-        } catch {
-            warnSync(
-                'Discord username sync failed: roster backend returned invalid JSON.',
-                playerTag,
-                discordUsername
-            );
-            return { ok: false };
-        }
-
-        if (payload?.ok !== true) {
-            warnSync(
-                'Discord username sync failed: roster backend returned ok:false.',
+                'Discord identity sync failed: roster backend result returned ok:false.',
                 playerTag,
                 discordUsername,
-                { payloadOk: payload?.ok ?? null }
+                { resultOk: result?.ok ?? null }
             );
             return { ok: false };
         }
 
-        if (payload.result?.ok !== true) {
+        if (result?.found === false) {
             warnSync(
-                'Discord username sync failed: roster backend result returned ok:false.',
-                playerTag,
-                discordUsername,
-                { resultOk: payload?.result?.ok ?? null }
-            );
-            return { ok: false };
-        }
-
-        if (payload.result.found === false) {
-            warnSync(
-                'Discord username sync completed but no player was found.',
+                'Discord identity sync completed but no player was found.',
                 playerTag,
                 discordUsername
             );
         }
 
-        logSyncSuccess(payload.result, playerTag, discordUsername);
-        return payload.result;
+        logSyncSuccess(result, playerTag, discordUsername);
+        return result;
     } catch (error) {
-        const isTimeout = error?.name === 'AbortError';
-
-        console.error(
-            isTimeout
-                ? 'Discord username sync failed: request timed out.'
-                : 'Discord username sync failed: request error.',
-            {
-                tag: playerTag,
-                discordUsername,
-                errorName: error?.name ?? null,
-                errorMessage: error?.message ?? null
-            }
-        );
+        console.error('Discord identity sync failed:', {
+            tag: playerTag,
+            discordUsername,
+            errorName: error?.name ?? null,
+            errorMessage: error?.message ?? null,
+            errorCode: error?.code ?? null,
+            status: error?.status ?? null
+        });
 
         warnSync(
-            isTimeout
-                ? 'Discord username sync failed: request timed out.'
-                : 'Discord username sync failed: request error.',
+            'Discord identity sync failed.',
             playerTag,
             discordUsername
         );
 
         return { ok: false };
-    } finally {
-        if (timeoutId) {
-            clearTimeout(timeoutId);
-        }
     }
 }
 
+async function syncDiscordUsernameForPlayerTag(playerTag, discordUsername, discordId = null) {
+    return syncDiscordIdentityForPlayerTag(playerTag, discordId, discordUsername);
+}
+
 module.exports = syncDiscordUsernameForPlayerTag;
+module.exports.syncDiscordIdentityForPlayerTag = syncDiscordIdentityForPlayerTag;
+module.exports.syncDiscordUsernameForPlayerTag = syncDiscordUsernameForPlayerTag;

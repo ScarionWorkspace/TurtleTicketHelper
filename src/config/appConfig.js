@@ -188,6 +188,28 @@ const appConfig = {
         roleUpdateReason: 'Join clan application role update'
     },
 
+    seasonEvents: {
+        maxLeaderboardRows: 10,
+        websiteLeaderboardUrl: process.env.ROSTER_WEBSITE_LEADERBOARD_URL || '',
+        // Optional override. When empty or omitted, staffRoleIds are used.
+        adminRoleIds: [],
+        colors: {
+            push: 0x2ECC71,
+            donation: 0x3498DB,
+            neutral: 0x95A5A6,
+            warning: 0xF59E0B,
+            error: 0xED4245
+        },
+        labels: {
+            pushTitle: 'Push Event',
+            donationTitle: 'Donation Event',
+            refresh: 'Refresh',
+            signup: 'Signup',
+            optOut: 'Opt-out',
+            options: 'Options'
+        }
+    },
+
     // Clan options shown in the recommendation menu
     clanRecommendations: {
         hyper_gizards: {
