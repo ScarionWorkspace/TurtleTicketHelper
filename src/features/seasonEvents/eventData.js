@@ -234,10 +234,16 @@ function getLeaderboardRowsByTag(leaderboard) {
 
             if (tag) {
                 rowsByTag.set(tag, {
+                    ...row,
                     ...account,
                     scoreLabel: account.scoreLabel || row.scoreLabel,
                     score: account.score ?? row.score,
-                    metric: row.metric
+                    metric: account.metric || row.metric,
+                    rank: row.rank,
+                    bestLeagueName: account.bestLeagueName || row.bestLeagueName,
+                    bestLeagueLabel: account.bestLeagueLabel || row.bestLeagueLabel,
+                    bestTrophies: account.bestTrophies ?? row.bestTrophies,
+                    hasPushRank: account.hasPushRank ?? row.hasPushRank
                 });
             }
         }

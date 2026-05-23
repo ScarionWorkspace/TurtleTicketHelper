@@ -51,6 +51,33 @@ function getScoreLabel(row, fallbackAccount, type) {
         return String(explicit);
     }
 
+    if (type === 'push') {
+        const leagueLabel =
+            row?.bestLeagueName ||
+            row?.bestLeagueLabel ||
+            row?.leagueName ||
+            row?.leagueLabel ||
+            fallbackAccount?.bestLeagueName ||
+            fallbackAccount?.bestLeagueLabel ||
+            fallbackAccount?.leagueName ||
+            fallbackAccount?.leagueLabel ||
+            '';
+        const trophies =
+            row?.bestTrophies ??
+            row?.score ??
+            row?.value ??
+            fallbackAccount?.bestTrophies ??
+            fallbackAccount?.score ??
+            fallbackAccount?.trophies ??
+            null;
+
+        if (trophies !== null && trophies !== undefined && trophies !== '') {
+            const trophyLabel = `${formatNumber(trophies)} trophies`;
+
+            return leagueLabel ? `${leagueLabel} - ${trophyLabel}` : trophyLabel;
+        }
+    }
+
     const rawValue =
         row?.score ??
         row?.metric ??
@@ -68,16 +95,29 @@ function getScoreLabel(row, fallbackAccount, type) {
     return 'pending';
 }
 
-function getLeaderboardFallbackRows(leaderboard) {
+function getLeaderboardFallbackRows(leaderboard, type) {
     return extractLeaderboardRows(leaderboard).map(row => ({
+        rank: row?.rank || null,
         tag: normalizePlayerTag(row?.playerTag || row?.tag || row?.accountTag || row?.account?.tag || ''),
         townHall: row?.townHallLevel || row?.townHall || row?.th || row?.account?.townHallLevel || null,
-        scoreLabel: getScoreLabel(row, null, null),
-        name: row?.playerName || row?.name || row?.accountName || row?.account?.name || 'Unknown'
+        scoreLabel: getScoreLabel(row, null, type),
+        name:
+            row?.displayName ||
+            row?.playerName ||
+            row?.name ||
+            row?.accountName ||
+            row?.account?.name ||
+            'Unknown'
     }));
 }
 
 function buildAllConfirmedRows(event, leaderboard, type) {
+    const leaderboardRows = getLeaderboardFallbackRows(leaderboard, type);
+
+    if (type === 'push' && leaderboardRows.length > 0) {
+        return leaderboardRows;
+    }
+
     const rowsByTag = getLeaderboardRowsByTag(leaderboard);
     const activeParticipants = getActiveParticipants(event);
     const rows = [];
@@ -86,6 +126,7 @@ function buildAllConfirmedRows(event, leaderboard, type) {
         for (const account of getAccountRowsForParticipant(participant)) {
             const leaderboardRow = account.tag ? rowsByTag.get(account.tag) : null;
             rows.push({
+                rank: leaderboardRow?.rank || null,
                 tag: account.tag,
                 townHall: account.townHall,
                 scoreLabel: getScoreLabel(leaderboardRow, account, type),
@@ -95,7 +136,7 @@ function buildAllConfirmedRows(event, leaderboard, type) {
     }
 
     if (rows.length === 0) {
-        rows.push(...getLeaderboardFallbackRows(leaderboard));
+        rows.push(...leaderboardRows);
     }
 
     return rows;
@@ -117,9 +158,9 @@ function formatConfirmedTable(rows, type) {
         const score = truncate(row.scoreLabel || 'pending', 10).padEnd(10, ' ');
         const name = truncate(row.name || row.tag || 'Unknown', 24);
 
-        lines.push(
-            `${String(index + 1).padEnd(2, ' ')} ${th.padEnd(5, ' ')} ${score} ${name}`
-        );
+        const rank = row.rank || index + 1;
+
+        lines.push(`${String(rank).padEnd(2, ' ')} ${th.padEnd(5, ' ')} ${score} ${name}`);
     });
 
     return `\`\`\`text\n${lines.join('\n')}\n\`\`\``;

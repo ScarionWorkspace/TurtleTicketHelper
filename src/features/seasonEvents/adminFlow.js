@@ -85,7 +85,39 @@ function formatEventStatus(event) {
     ].join('\n');
 }
 
-function formatLeaderboardRows(leaderboard) {
+function getLeaderboardScoreLabel(row, type) {
+    const explicit =
+        row?.scoreLabel ||
+        row?.metricLabel ||
+        row?.displayScore ||
+        row?.scoreText ||
+        null;
+
+    if (explicit) {
+        return String(explicit);
+    }
+
+    if (type === 'push') {
+        const leagueLabel =
+            row?.bestLeagueName ||
+            row?.bestLeagueLabel ||
+            row?.leagueName ||
+            row?.leagueLabel ||
+            '';
+        const trophies = row?.bestTrophies ?? row?.score ?? row?.value ?? null;
+
+        if (trophies !== null && trophies !== undefined && trophies !== '') {
+            return leagueLabel ? `${leagueLabel} - ${trophies} trophies` : `${trophies} trophies`;
+        }
+    }
+
+    return row?.score ??
+        row?.metric ??
+        row?.value ??
+        'pending';
+}
+
+function formatLeaderboardRows(leaderboard, type) {
     const rows = extractLeaderboardRows(leaderboard)
         .slice(0, appConfig.seasonEvents?.maxLeaderboardRows || 10);
 
@@ -94,15 +126,7 @@ function formatLeaderboardRows(leaderboard) {
     }
 
     return rows.map((row, index) => {
-        const score =
-            row?.scoreLabel ||
-            row?.metricLabel ||
-            row?.displayScore ||
-            row?.scoreText ||
-            row?.score ||
-            row?.metric ||
-            row?.value ||
-            'pending';
+        const score = getLeaderboardScoreLabel(row, type);
         const name =
             row?.displayName ||
             row?.playerName ||
@@ -117,8 +141,9 @@ function formatLeaderboardRows(leaderboard) {
             row?.account?.tag ||
             row?.accounts?.[0]?.tag ||
             '';
+        const rank = row?.rank || index + 1;
 
-        return `${index + 1}. ${score} - ${name}${tag ? ` (${tag})` : ''}`;
+        return `${rank}. ${score} - ${name}${tag ? ` (${tag})` : ''}`;
     }).join('\n');
 }
 
@@ -196,7 +221,7 @@ async function handleAdminShowLeaderboard(interaction, parsed) {
     const { leaderboard } = await loadEventForRendering(parsed.type, { source });
 
     await interaction.editReply({
-        content: `\`\`\`text\n${formatLeaderboardRows(leaderboard)}\n\`\`\``,
+        content: `\`\`\`text\n${formatLeaderboardRows(leaderboard, parsed.type)}\n\`\`\``,
         components: []
     });
 }

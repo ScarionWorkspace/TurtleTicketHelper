@@ -10,6 +10,7 @@ const COVERAGE_PRIORITY = {
 };
 const DONATION_CYCLE_KEY_PATTERN = /^[A-Za-z0-9_-]{1,120}$/;
 const DAY_KEY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const INVALID_RANK_TIER = 0;
 
 function normalizePlayerTag(tag) {
     let cleaned = String(tag || '').trim().toUpperCase().replace(/\s+/g, '');
@@ -119,12 +120,18 @@ function sanitizeParticipants(event) {
 
 function buildPlayerMetricsByTag(metricsByTag) {
     const normalized = {};
+    const source =
+        metricsByTag?.playerMetrics?.byTag && typeof metricsByTag.playerMetrics.byTag === 'object'
+            ? metricsByTag.playerMetrics.byTag
+            : metricsByTag?.byTag && typeof metricsByTag.byTag === 'object'
+                ? metricsByTag.byTag
+                : metricsByTag;
 
-    if (!metricsByTag || typeof metricsByTag !== 'object') {
+    if (!source || typeof source !== 'object') {
         return normalized;
     }
 
-    for (const [key, metric] of Object.entries(metricsByTag)) {
+    for (const [key, metric] of Object.entries(source)) {
         const tag = normalizePlayerTag(metric?.identity?.tag || key);
 
         if (tag) {
@@ -150,12 +157,11 @@ function getAccountDisplay(account, metricEntry) {
     };
 }
 
-function formatPushScore(score) {
-    if (score > 0) {
-        return `+${score} trophies`;
-    }
+function formatPushScoreLabel(leagueLabel, trophies) {
+    const trophyLabel = `${trophies} trophies`;
+    const league = String(leagueLabel || '').trim();
 
-    return `${score} trophies`;
+    return league ? `${league} - ${trophyLabel}` : trophyLabel;
 }
 
 function formatDonationScore(score) {
@@ -163,10 +169,22 @@ function formatDonationScore(score) {
 }
 
 function getPointCapturedMs(point) {
-    const capturedMs = parseIsoToMs(point?.capturedAt);
+    for (const fieldName of [
+        'capturedAt',
+        'captured_at',
+        'snapshotAt',
+        'updatedAt',
+        'createdAt',
+        'lastSeenAt',
+        'fetchedAt',
+        'collectedAt',
+        'date'
+    ]) {
+        const capturedMs = parseIsoToMs(point?.[fieldName]);
 
-    if (capturedMs > 0) {
-        return capturedMs;
+        if (capturedMs > 0) {
+            return capturedMs;
+        }
     }
 
     if (DAY_KEY_PATTERN.test(String(point?.dayKey || ''))) {
@@ -176,29 +194,156 @@ function getPointCapturedMs(point) {
     return 0;
 }
 
+function getPointTrophies(point) {
+    return toNonNegativeInt(
+        point?.trophies ??
+        point?.trophyCount ??
+        point?.bestTrophies ??
+        0
+    );
+}
+
+function getLeagueTierId(point) {
+    return point?.leagueTier?.id ??
+        point?.leagueTierId ??
+        point?.leagueTierID ??
+        point?.bestLeagueTierId ??
+        point?.bestLeagueTierID ??
+        null;
+}
+
+function getRankTierFromLeagueTierId(leagueTierId) {
+    const id = String(leagueTierId ?? '').trim();
+
+    if (!/^\d+$/.test(id)) {
+        return INVALID_RANK_TIER;
+    }
+
+    const rankTier = Number(id.slice(-2));
+
+    return Number.isFinite(rankTier) && rankTier > 0
+        ? rankTier
+        : INVALID_RANK_TIER;
+}
+
+function getLeagueDisplayFallback(point) {
+    return String(
+        point?.bestLeagueName ||
+        point?.bestLeagueLabel ||
+        point?.leagueName ||
+        point?.leagueLabel ||
+        point?.leagueTierName ||
+        point?.league?.name ||
+        point?.league?.label ||
+        point?.leagueTier?.name ||
+        point?.leagueTier?.label ||
+        ''
+    ).trim();
+}
+
+function getLeagueTierLabel(rankTier, fallback = '') {
+    switch (rankTier) {
+        case 36:
+            return 'Legends I';
+        case 35:
+            return 'Legends II';
+        case 34:
+            return 'Legends III';
+        case 27:
+        case 26:
+        case 25:
+            return `Titan ${rankTier}`;
+        default:
+            return rankTier > 0 ? `Tier ${rankTier}` : String(fallback || '').trim();
+    }
+}
+
+function hasValidLeagueBucket(value) {
+    return Number.isFinite(value) && value > INVALID_RANK_TIER;
+}
+
+function getSortableLeagueBucket(value) {
+    return hasValidLeagueBucket(value) ? value : INVALID_RANK_TIER;
+}
+
+function comparePushPoints(a, b) {
+    const aBucket = getSortableLeagueBucket(a.leagueBucket);
+    const bBucket = getSortableLeagueBucket(b.leagueBucket);
+
+    if (aBucket !== bBucket) {
+        return bBucket - aBucket;
+    }
+
+    const trophyDiff = b.trophies - a.trophies;
+
+    if (trophyDiff !== 0) {
+        return trophyDiff;
+    }
+
+    return b.capturedMs - a.capturedMs;
+}
+
+function buildHistoryPoints(metricEntry) {
+    const history = metricEntry?.trophyHistoryDaily;
+
+    if (!history) {
+        return [];
+    }
+
+    if (Array.isArray(history)) {
+        return history.filter(Boolean);
+    }
+
+    if (typeof history !== 'object') {
+        return [];
+    }
+
+    return Object.entries(history)
+        .filter(([, point]) => point && typeof point === 'object')
+        .map(([dayKey, point]) => ({
+            ...point,
+            dayKey: point.dayKey || dayKey
+        }));
+}
+
 function collectTrophyPoints(metricEntry) {
     const points = [];
+    const latest = metricEntry?.latestSnapshot || {};
+    const latestRankTier = getRankTierFromLeagueTierId(getLeagueTierId(latest));
+    const latestLeagueFallback = getLeagueDisplayFallback(latest);
 
-    for (const point of asArray(metricEntry?.trophyHistoryDaily)) {
+    for (const point of buildHistoryPoints(metricEntry)) {
         const capturedMs = getPointCapturedMs(point);
+        const rankTier =
+            getRankTierFromLeagueTierId(getLeagueTierId(point)) ||
+            latestRankTier;
+        const leagueLabel = getLeagueTierLabel(
+            rankTier,
+            getLeagueDisplayFallback(point) || latestLeagueFallback
+        );
 
         if (capturedMs > 0) {
             points.push({
-                trophies: toNonNegativeInt(point.trophies),
+                trophies: getPointTrophies(point),
+                leagueName: leagueLabel,
+                leagueLabel,
+                leagueBucket: rankTier,
                 capturedMs,
                 source: 'trophyHistoryDaily'
             });
         }
     }
 
-    const latest = metricEntry?.latestSnapshot || {};
-
     if (Object.prototype.hasOwnProperty.call(latest, 'trophies')) {
         const capturedMs = getPointCapturedMs(latest);
+        const leagueLabel = getLeagueTierLabel(latestRankTier, latestLeagueFallback);
 
         if (capturedMs > 0) {
             points.push({
-                trophies: toNonNegativeInt(latest.trophies),
+                trophies: getPointTrophies(latest),
+                leagueName: leagueLabel,
+                leagueLabel,
+                leagueBucket: latestRankTier,
                 capturedMs,
                 source: 'latestSnapshot'
             });
@@ -222,13 +367,17 @@ function noPushHistoryAccount(account, metricEntry, warnings = ['missing-trophy-
         leagueName: display.leagueName,
         startValue: 0,
         currentValue: 0,
-        delta: 0,
         score: 0,
         scoreLabel: '0 trophies',
         coverage: 'no-history',
         warnings,
         currentTrophies: 0,
-        bestTrophies: 0
+        bestTrophies: 0,
+        bestLeagueName: '',
+        bestLeagueLabel: '',
+        bestCapturedMs: 0,
+        hasPushRank: false,
+        leagueBucket: INVALID_RANK_TIER
     };
 }
 
@@ -251,72 +400,42 @@ function scorePushAccount(event, account, metricEntry, nowIso) {
         return noPushHistoryAccount(account, metricEntry);
     }
 
-    const bestTrophies = Math.max(...points.map(point => point.trophies));
-    let baseline = null;
-    let firstInWindow = null;
-    let current = null;
-
-    for (const point of points) {
-        if (point.capturedMs <= startsMs) {
-            baseline = point;
-        }
-
-        if (!firstInWindow && point.capturedMs > startsMs && point.capturedMs <= effectiveEndMs) {
-            firstInWindow = point;
-        }
-
-        if (point.capturedMs <= effectiveEndMs) {
-            current = point;
-        }
-    }
-
-    let coverage = 'full';
-    const warnings = [];
-
-    if (!baseline) {
-        baseline = firstInWindow;
-        coverage = 'missing-baseline';
-        warnings.push('missing-baseline');
-    }
-
-    if (!current || (baseline && current.capturedMs < baseline.capturedMs)) {
-        const display = getAccountDisplay(account, metricEntry);
-
-        warnings.push('missing-current');
-        return {
-            tag: account.tag,
-            name: display.name,
-            townHallLevel: display.townHallLevel,
-            leagueName: display.leagueName,
-            startValue: baseline?.trophies || 0,
-            currentValue: 0,
-            delta: 0,
-            score: 0,
-            scoreLabel: '0 trophies',
-            coverage: 'missing-current',
-            warnings: uniqueWarnings(warnings),
-            currentTrophies: 0,
-            bestTrophies
-        };
-    }
+    const pointsInWindow = points.filter(point =>
+        point.capturedMs >= startsMs &&
+        point.capturedMs <= effectiveEndMs
+    );
 
     const display = getAccountDisplay(account, metricEntry);
-    const delta = current.trophies - baseline.trophies;
+
+    if (pointsInWindow.length === 0) {
+        return noPushHistoryAccount(account, metricEntry, ['missing-trophy-history']);
+    }
+
+    const bestPoint = pointsInWindow.reduce((best, point) =>
+        comparePushPoints(point, best) < 0 ? point : best
+    );
+    const hasPushRank = hasValidLeagueBucket(bestPoint.leagueBucket);
+    const warnings = hasPushRank ? [] : ['missing-valid-push-rank'];
+    const coverage = hasPushRank ? 'full' : 'no-history';
 
     return {
         tag: account.tag,
         name: display.name,
         townHallLevel: display.townHallLevel,
-        leagueName: display.leagueName,
-        startValue: baseline.trophies,
-        currentValue: current.trophies,
-        delta,
-        score: delta,
-        scoreLabel: formatPushScore(delta),
+        leagueName: bestPoint.leagueName || display.leagueName,
+        startValue: 0,
+        currentValue: bestPoint.trophies,
+        score: bestPoint.trophies,
+        scoreLabel: formatPushScoreLabel(bestPoint.leagueLabel, bestPoint.trophies),
         coverage,
         warnings: uniqueWarnings(warnings),
-        currentTrophies: current.trophies,
-        bestTrophies
+        currentTrophies: bestPoint.trophies,
+        bestTrophies: bestPoint.trophies,
+        bestLeagueName: bestPoint.leagueName,
+        bestLeagueLabel: bestPoint.leagueLabel,
+        bestCapturedMs: bestPoint.capturedMs,
+        hasPushRank,
+        leagueBucket: bestPoint.leagueBucket
     };
 }
 
@@ -448,24 +567,57 @@ function buildParticipantRow(event, participant, metricsByTag, metric, nowIso) {
             warnings: ['no-registered-accounts'],
             accountCount: 0,
             currentTrophies: 0,
-            bestTrophies: 0
+            bestTrophies: 0,
+            bestLeagueName: '',
+            bestLeagueLabel: '',
+            bestCapturedMs: 0,
+            hasPushRank: metric === 'donations' ? undefined : false,
+            leagueBucket: metric === 'donations' ? undefined : INVALID_RANK_TIER
+        };
+    }
+
+    const warnings = uniqueWarnings(accounts.flatMap(account => account.warnings));
+    const displayName =
+        participant.discordDisplayName ||
+        participant.discordGlobalName ||
+        participant.discordUsername ||
+        participant.discordId;
+
+    if (metric === 'leagueTrophies') {
+        const bestAccount = accounts.reduce((best, account) =>
+            compareRows('push', account, best) < 0 ? account : best
+        );
+
+        return {
+            rank: 0,
+            discordUsername: participant.discordUsername,
+            displayName,
+            accounts,
+            score: bestAccount.score,
+            scoreLabel: bestAccount.scoreLabel,
+            metric,
+            coverage: combineCoverage(accounts),
+            warnings,
+            accountCount: accounts.length,
+            currentTrophies: bestAccount.currentTrophies || 0,
+            bestTrophies: bestAccount.bestTrophies || 0,
+            bestLeagueName: bestAccount.bestLeagueName || '',
+            bestLeagueLabel: bestAccount.bestLeagueLabel || '',
+            bestCapturedMs: bestAccount.bestCapturedMs || 0,
+            hasPushRank: bestAccount.hasPushRank === true,
+            leagueBucket: bestAccount.leagueBucket ?? INVALID_RANK_TIER
         };
     }
 
     const score = accounts.reduce((sum, account) => sum + account.score, 0);
-    const warnings = uniqueWarnings(accounts.flatMap(account => account.warnings));
 
     return {
         rank: 0,
         discordUsername: participant.discordUsername,
-        displayName:
-            participant.discordDisplayName ||
-            participant.discordGlobalName ||
-            participant.discordUsername ||
-            participant.discordId,
+        displayName,
         accounts,
         score,
-        scoreLabel: metric === 'donations' ? formatDonationScore(score) : formatPushScore(score),
+        scoreLabel: formatDonationScore(score),
         metric,
         coverage: combineCoverage(accounts),
         warnings,
@@ -476,6 +628,23 @@ function buildParticipantRow(event, participant, metricsByTag, metric, nowIso) {
 }
 
 function compareRows(type, a, b) {
+    if (type === 'push') {
+        const aHasPushRank = a.hasPushRank !== false && hasValidLeagueBucket(a.leagueBucket);
+        const bHasPushRank = b.hasPushRank !== false && hasValidLeagueBucket(b.leagueBucket);
+
+        if (aHasPushRank !== bHasPushRank) {
+            return aHasPushRank ? -1 : 1;
+        }
+
+        if (aHasPushRank && bHasPushRank) {
+            const bucketDiff = b.leagueBucket - a.leagueBucket;
+
+            if (bucketDiff !== 0) {
+                return bucketDiff;
+            }
+        }
+    }
+
     const scoreDiff = b.score - a.score;
 
     if (scoreDiff !== 0) {
@@ -483,16 +652,10 @@ function compareRows(type, a, b) {
     }
 
     if (type === 'push') {
-        const currentDiff = (b.currentTrophies || 0) - (a.currentTrophies || 0);
+        const capturedDiff = (b.bestCapturedMs || 0) - (a.bestCapturedMs || 0);
 
-        if (currentDiff !== 0) {
-            return currentDiff;
-        }
-
-        const bestDiff = (b.bestTrophies || 0) - (a.bestTrophies || 0);
-
-        if (bestDiff !== 0) {
-            return bestDiff;
+        if (capturedDiff !== 0) {
+            return capturedDiff;
         }
     }
 
@@ -512,8 +675,8 @@ function compareRows(type, a, b) {
         return nameDiff;
     }
 
-    const aTag = a.accounts[0]?.tag || '';
-    const bTag = b.accounts[0]?.tag || '';
+    const aTag = a.accounts?.[0]?.tag || a.tag || '';
+    const bTag = b.accounts?.[0]?.tag || b.tag || '';
 
     return aTag.localeCompare(bTag);
 }
@@ -529,8 +692,11 @@ function clampLimit(limit) {
 }
 
 function getLeaderboardMetric(event, type) {
-    return event?.settings?.leaderboardMetric ||
-        (type === 'donation' ? 'donations' : 'trophyDelta');
+    if (type === 'donation') {
+        return event?.settings?.leaderboardMetric || 'donations';
+    }
+
+    return 'leagueTrophies';
 }
 
 function buildLocalSeasonEventLeaderboard(event, rawPlayerMetricsByTag, options = {}) {
