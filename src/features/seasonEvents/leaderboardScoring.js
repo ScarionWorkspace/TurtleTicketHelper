@@ -11,6 +11,25 @@ const COVERAGE_PRIORITY = {
 const DONATION_CYCLE_KEY_PATTERN = /^[A-Za-z0-9_-]{1,120}$/;
 const DAY_KEY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const INVALID_RANK_TIER = 0;
+const LEAGUE_TIER_PREFIXES = [
+    null,
+    'S', 'S', 'S',
+    'B', 'B', 'B',
+    'A', 'A', 'A',
+    'W', 'W', 'W',
+    'V', 'V', 'V',
+    'W', 'W', 'W',
+    'G', 'G', 'G',
+    'P', 'P', 'P',
+    'T', 'T', 'T',
+    'D', 'D', 'D',
+    'E', 'E', 'E'
+];
+const LEGEND_TIER_LABELS = {
+    34: 'L3',
+    35: 'L2',
+    36: 'L1'
+};
 
 function normalizePlayerTag(tag) {
     let cleaned = String(tag || '').trim().toUpperCase().replace(/\s+/g, '');
@@ -158,14 +177,13 @@ function getAccountDisplay(account, metricEntry) {
 }
 
 function formatPushScoreLabel(leagueLabel, trophies) {
-    const trophyLabel = `${trophies} trophies`;
     const league = String(leagueLabel || '').trim();
 
-    return league ? `${league} - ${trophyLabel}` : trophyLabel;
+    return league ? `${league} ${trophies}` : String(trophies);
 }
 
 function formatDonationScore(score) {
-    return `${score} donations`;
+    return String(score);
 }
 
 function getPointCapturedMs(point) {
@@ -242,20 +260,17 @@ function getLeagueDisplayFallback(point) {
 }
 
 function getLeagueTierLabel(rankTier, fallback = '') {
-    switch (rankTier) {
-        case 36:
-            return 'Legends I';
-        case 35:
-            return 'Legends II';
-        case 34:
-            return 'Legends III';
-        case 27:
-        case 26:
-        case 25:
-            return `Titan ${rankTier}`;
-        default:
-            return rankTier > 0 ? `Tier ${rankTier}` : String(fallback || '').trim();
+    if (Object.prototype.hasOwnProperty.call(LEGEND_TIER_LABELS, rankTier)) {
+        return LEGEND_TIER_LABELS[rankTier];
     }
+
+    const prefix = LEAGUE_TIER_PREFIXES[rankTier];
+
+    if (prefix) {
+        return `${prefix}${rankTier}`;
+    }
+
+    return rankTier > 0 ? `T${rankTier}` : '';
 }
 
 function hasValidLeagueBucket(value) {
@@ -368,7 +383,7 @@ function noPushHistoryAccount(account, metricEntry, warnings = ['missing-trophy-
         startValue: 0,
         currentValue: 0,
         score: 0,
-        scoreLabel: '0 trophies',
+        scoreLabel: '0',
         coverage: 'no-history',
         warnings,
         currentTrophies: 0,
@@ -494,7 +509,7 @@ function scoreDonationAccount(event, account, metricEntry) {
             currentValue: 0,
             delta: 0,
             score: 0,
-            scoreLabel: '0 donations',
+            scoreLabel: '0',
             coverage: 'missing-cycle-ledger',
             warnings: ['missing-player-metrics', 'missing-donation-cycle-ledger']
         };
@@ -512,7 +527,7 @@ function scoreDonationAccount(event, account, metricEntry) {
             currentValue: 0,
             delta: 0,
             score: 0,
-            scoreLabel: '0 donations',
+            scoreLabel: '0',
             coverage: 'missing-cycle-ledger',
             warnings: ['missing-donation-cycle-ledger']
         };
@@ -561,7 +576,7 @@ function buildParticipantRow(event, participant, metricsByTag, metric, nowIso) {
                 participant.discordId,
             accounts: [],
             score: 0,
-            scoreLabel: metric === 'donations' ? '0 donations' : '0 trophies',
+            scoreLabel: '0',
             metric,
             coverage: 'no-history',
             warnings: ['no-registered-accounts'],
@@ -735,5 +750,6 @@ module.exports = {
     sanitizeParticipant,
     sanitizeParticipants,
     buildPlayerMetricsByTag,
+    getLeagueTierLabel,
     buildLocalSeasonEventLeaderboard
 };

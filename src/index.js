@@ -1,62 +1,116 @@
-require('dotenv').config();
-const fs = require('node:fs');
 const path = require('node:path');
+const fs = require('node:fs');
 const { Client, Collection, GatewayIntentBits, Partials } = require('discord.js');
+const {
+  DISCORD_TOKEN,
+  assertBotConfig,
+  getConfigWarnings,
+  redactKnownSecrets
+} = require('./config/env');
+const { loadCommands } = require('./utils/loadCommands');
+
+function formatError(error) {
+  if (!error) {
+    return 'Unknown error';
+  }
+
+  const details = {
+    name: error.name || null,
+    message: error.message || String(error),
+    code: error.code || null,
+    status: error.status || null
+  };
+
+  if (error.stack) {
+    details.stack = error.stack;
+  }
+
+  return JSON.stringify(details, null, 2);
+}
+
+function logError(label, error) {
+  console.error(`${label}: ${redactKnownSecrets(formatError(error))}`);
+}
+
+function buildEventHandler(event, client) {
+  return (...args) => {
+    Promise.resolve(event.execute(...args, client)).catch(error => {
+      logError(`Discord event "${event.name}" failed`, error);
+    });
+  };
+}
 
 process.on('unhandledRejection', (error) => {
-  console.error('UNHANDLED REJECTION:', error);
+  logError('UNHANDLED REJECTION', error);
 });
 
 process.on('uncaughtException', (error) => {
-  console.error('UNCAUGHT EXCEPTION:', error);
+  logError('UNCAUGHT EXCEPTION', error);
+  process.exitCode = 1;
 });
 
-console.log('INDEX STARTED');
+async function main() {
+  assertBotConfig();
 
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent
-  ],
-  partials: [Partials.Channel]
-});
+  for (const warning of getConfigWarnings()) {
+    console.warn(`Config warning: ${warning}`);
+  }
 
-client.commands = new Collection();
+  const client = new Client({
+    intents: [
+      GatewayIntentBits.Guilds,
+      GatewayIntentBits.GuildMessages,
+      GatewayIntentBits.MessageContent
+    ],
+    partials: [Partials.Channel]
+  });
 
-const commandsPath = path.join(__dirname, 'commands');
-if (fs.existsSync(commandsPath)) {
-  const commandFolders = fs.readdirSync(commandsPath);
+  client.commands = new Collection();
 
-  for (const folder of commandFolders) {
-    const folderPath = path.join(commandsPath, folder);
-    if (!fs.statSync(folderPath).isDirectory()) continue;
+  const commandsPath = path.join(__dirname, 'commands');
+  const loadedCommands = loadCommands(commandsPath);
 
-    const commandFiles = fs.readdirSync(folderPath).filter(file => file.endsWith('.js'));
+  for (const { command } of loadedCommands) {
+    client.commands.set(command.data.name, command);
+  }
 
-    for (const file of commandFiles) {
-      const filePath = path.join(folderPath, file);
-      const command = require(filePath);
+  console.log(`Loaded ${client.commands.size} slash command handlers.`);
 
-      if (command && command.data && command.execute) {
-        client.commands.set(command.data.name, command);
-      } else {
-        console.warn(`Command at ${filePath} is missing "data" or "execute".`);
-      }
+  const eventsPath = path.join(__dirname, 'events');
+  const eventFiles = fs
+    .readdirSync(eventsPath)
+    .filter(file => file.endsWith('.js'));
+
+  for (const file of eventFiles) {
+    const event = require(path.join(eventsPath, file));
+
+    if (!event?.name || typeof event.execute !== 'function') {
+      console.warn(`Event at ${path.join(eventsPath, file)} is missing "name" or "execute".`);
+      continue;
     }
+
+    const handler = buildEventHandler(event, client);
+
+    if (event.once) {
+      client.once(event.name, handler);
+      continue;
+    }
+
+    client.on(event.name, handler);
   }
+
+  client.on('error', error => {
+    logError('Discord client error', error);
+  });
+
+  client.on('shardError', error => {
+    logError('Discord websocket error', error);
+  });
+
+  await client.login(DISCORD_TOKEN);
 }
 
-const eventsPath = path.join(__dirname, 'events');
-const eventFiles = fs.readdirSync(eventsPath).filter(file => file.endsWith('.js'));
-
-for (const file of eventFiles) {
-  const event = require(path.join(eventsPath, file));
-  if (event.once) {
-    client.once(event.name, (...args) => event.execute(...args, client));
-  } else {
-    client.on(event.name, (...args) => event.execute(...args, client));
-  }
-}
-
-client.login(process.env.DISCORD_TOKEN);
+main().catch(error => {
+  logError('Fatal startup error', error);
+  process.exitCode = 1;
+});

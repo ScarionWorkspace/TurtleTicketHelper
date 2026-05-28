@@ -4,74 +4,101 @@ const handleRecommendClanButton = require('../features/joinClanApplication/handl
 const handleRecommendClanSelect = require('../features/joinClanApplication/handleRecommendClanSelect');
 const handleSeasonEventInteraction = require('../features/seasonEvents/handleSeasonEventInteraction');
 
+async function replyToFailedInteraction(interaction) {
+    try {
+        const payload = {
+            content: 'There was an error while handling this interaction.',
+            flags: 64
+        };
+
+        if (interaction.replied || interaction.deferred) {
+            await interaction.followUp(payload);
+            return;
+        }
+
+        await interaction.reply(payload);
+    } catch (error) {
+        console.error('Failed to send interaction error response:', {
+            interactionId: interaction?.id || null,
+            interactionType: interaction?.type || null,
+            errorName: error?.name || null,
+            errorMessage: error?.message || null,
+            errorCode: error?.code || null,
+            status: error?.status || null
+        });
+    }
+}
+
 module.exports = {
     name: 'interactionCreate',
     async execute(interaction, client) {
-        if (interaction.isChatInputCommand()) {
-            const command = client.commands.get(interaction.commandName);
+        try {
+            if (interaction.isChatInputCommand()) {
+                const command = client.commands.get(interaction.commandName);
 
-            if (!command) {
-                await interaction.reply({
-                    content: 'Unknown command.',
-                    flags: 64
-                });
-                return;
-            }
-
-            try {
-                await command.execute(interaction);
-            } catch (error) {
-                console.error(`Error executing /${interaction.commandName}:`, error);
-
-                if (interaction.replied || interaction.deferred) {
-                    await interaction.followUp({
-                        content: 'There was an error while executing this command.',
-                        flags: 64
-                    });
-                } else {
+                if (!command) {
                     await interaction.reply({
-                        content: 'There was an error while executing this command.',
+                        content: 'Unknown command.',
                         flags: 64
                     });
+                    return;
                 }
-            }
 
-            return;
-        }
+                try {
+                    await command.execute(interaction);
+                } catch (error) {
+                    console.error(`Error executing /${interaction.commandName}:`, error);
+                    await replyToFailedInteraction(interaction);
+                }
 
-        if (interaction.isButton()) {
-            if (await handleSeasonEventInteraction(interaction)) {
                 return;
             }
 
-            if (interaction.customId === 'join_clan_apply') {
-                await handleJoinClanButton(interaction);
+            if (interaction.isButton()) {
+                if (await handleSeasonEventInteraction(interaction)) {
+                    return;
+                }
+
+                if (interaction.customId === 'join_clan_apply') {
+                    await handleJoinClanButton(interaction);
+                    return;
+                }
+
+                if (interaction.customId === 'recommend_clan') {
+                    await handleRecommendClanButton(interaction);
+                    return;
+                }
+
                 return;
             }
 
-            if (interaction.customId === 'recommend_clan') {
-                await handleRecommendClanButton(interaction);
+            if (interaction.isStringSelectMenu()) {
+                if (await handleSeasonEventInteraction(interaction)) {
+                    return;
+                }
+
+                await handleRecommendClanSelect(interaction);
                 return;
             }
 
-            return;
-        }
+            if (interaction.isModalSubmit()) {
+                if (await handleSeasonEventInteraction(interaction)) {
+                    return;
+                }
 
-        if (interaction.isStringSelectMenu()) {
-            if (await handleSeasonEventInteraction(interaction)) {
-                return;
+                await handleJoinClanModal(interaction);
             }
-
-            await handleRecommendClanSelect(interaction);
-            return;
-        }
-
-        if (interaction.isModalSubmit()) {
-            if (await handleSeasonEventInteraction(interaction)) {
-                return;
-            }
-
-            await handleJoinClanModal(interaction);
+        } catch (error) {
+            console.error('Interaction handling failed:', {
+                interactionId: interaction?.id || null,
+                customId: interaction?.customId || null,
+                commandName: interaction?.commandName || null,
+                errorName: error?.name || null,
+                errorMessage: error?.message || null,
+                errorCode: error?.code || null,
+                status: error?.status || null
+            });
+            await replyToFailedInteraction(interaction);
         }
     }
 };

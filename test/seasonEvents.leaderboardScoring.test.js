@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
+    getLeagueTierLabel,
     buildLocalSeasonEventLeaderboard
 } = require('../src/features/seasonEvents/leaderboardScoring');
 
@@ -89,9 +90,9 @@ test('higher leagueTier id rank beats higher trophies across push tiers', () => 
     assert.deepEqual(
         rows.map(row => row.scoreLabel),
         [
-            'Legends I - 5200 trophies',
-            'Legends II - 6000 trophies',
-            'Titan 27 - 6100 trophies'
+            'L1 5200',
+            'L2 6000',
+            'T27 6100'
         ]
     );
     assert.deepEqual(
@@ -100,6 +101,58 @@ test('higher leagueTier id rank beats higher trophies across push tiers', () => 
     );
     assert.equal(rows[0].metric, 'leagueTrophies');
     assert.equal(rows[0].score, 5200);
+});
+
+test('league tier labels use compact in-game abbreviations', () => {
+    const rows = leaderboard(
+        {
+            legendThree: participant('legendThree', '#LEG3'),
+            electro: participant('electro', '#ELE33'),
+            dragon: participant('dragon', '#DRA30'),
+            pekka: participant('pekka', '#PEK24'),
+            skeleton: participant('skeleton', '#SKEL3')
+        },
+        {
+            '#LEG3': metric('#LEG3', 105000034, 5000),
+            '#ELE33': metric('#ELE33', 105000033, 4900),
+            '#DRA30': metric('#DRA30', 105000030, 4800),
+            '#PEK24': metric('#PEK24', 105000024, 4700),
+            '#SKEL3': metric('#SKEL3', 105000003, 4600)
+        }
+    );
+
+    assert.deepEqual(
+        rows.map(row => row.scoreLabel),
+        [
+            'L3 5000',
+            'E33 4900',
+            'D30 4800',
+            'P24 4700',
+            'S3 4600'
+        ]
+    );
+});
+
+test('all known league tiers have compact labels', () => {
+    const expectedLabels = [
+        'S1', 'S2', 'S3',
+        'B4', 'B5', 'B6',
+        'A7', 'A8', 'A9',
+        'W10', 'W11', 'W12',
+        'V13', 'V14', 'V15',
+        'W16', 'W17', 'W18',
+        'G19', 'G20', 'G21',
+        'P22', 'P23', 'P24',
+        'T25', 'T26', 'T27',
+        'D28', 'D29', 'D30',
+        'E31', 'E32', 'E33',
+        'L3', 'L2', 'L1'
+    ];
+
+    assert.deepEqual(
+        expectedLabels.map((_, index) => getLeagueTierLabel(index + 1)),
+        expectedLabels
+    );
 });
 
 test('players in the same rank tier are ordered by trophies descending', () => {
@@ -158,6 +211,7 @@ test('missing metrics or no valid push rank stays below valid ranked rows', () =
         rows.slice(1).map(row => row.hasPushRank),
         [false, false]
     );
+    assert(!rows.slice(1).some(row => String(row.scoreLabel).includes('Legend')));
     assert(rows.slice(1).some(row => row.accounts[0].tag === '#MISS1'));
     assert(rows.slice(1).some(row => row.accounts[0].tag === '#UNPRS'));
 });

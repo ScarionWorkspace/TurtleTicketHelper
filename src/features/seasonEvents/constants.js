@@ -14,7 +14,7 @@ const EVENT_TYPES = {
         titleKey: 'donationTitle',
         defaultTitle: 'Donation Event',
         maxAccounts: 2,
-        metricLabel: 'Donations'
+        metricLabel: 'Donos'
     }
 };
 

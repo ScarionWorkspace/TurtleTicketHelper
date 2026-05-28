@@ -1,17 +1,36 @@
-require('dotenv').config();
 const { REST, Routes } = require('discord.js');
+const {
+    DISCORD_TOKEN,
+    DISCORD_CLIENT_ID,
+    assertCommandConfig,
+    redactKnownSecrets
+} = require('./src/config/env');
 
-const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+function logFailure(error) {
+    const details = {
+        name: error?.name || null,
+        message: error?.message || String(error),
+        code: error?.code || null,
+        status: error?.status || null
+    };
 
-(async () => {
-    try {
-        await rest.put(
-            Routes.applicationCommands(process.env.DISCORD_CLIENT_ID),
-            { body: [] }
-        );
+    console.error(`Failed to clear global commands: ${redactKnownSecrets(JSON.stringify(details, null, 2))}`);
+}
 
-        console.log('Alle globalen Commands wurden gelöscht.');
-    } catch (error) {
-        console.error(error);
-    }
-})();
+async function main() {
+    assertCommandConfig({ requireGuildId: false });
+
+    const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
+
+    await rest.put(
+        Routes.applicationCommands(DISCORD_CLIENT_ID),
+        { body: [] }
+    );
+
+    console.log('All global commands were deleted.');
+}
+
+main().catch(error => {
+    logFailure(error);
+    process.exitCode = 1;
+});

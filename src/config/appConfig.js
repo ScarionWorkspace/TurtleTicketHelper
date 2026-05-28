@@ -1,3 +1,10 @@
+const {
+    OPEN_TICKET_CATEGORY_ID,
+    CLOSED_TICKET_CATEGORY_ID,
+    TICKET_TOOL_BOT_ID,
+    ROSTER_WEBSITE_LEADERBOARD_URL
+} = require('./env');
+
 const appConfig = {
     // Roles that are allowed to use staff-only features
     staffRoleIds: [
@@ -11,9 +18,9 @@ const appConfig = {
 
     // Base ticket settings and Discord IDs
     ticket: {
-        openCategoryId: process.env.OPEN_TICKET_CATEGORY_ID || '',
-        closedCategoryId: process.env.CLOSED_TICKET_CATEGORY_ID || '',
-        ticketToolBotId: process.env.TICKET_TOOL_BOT_ID || '',
+        openCategoryId: OPEN_TICKET_CATEGORY_ID,
+        closedCategoryId: CLOSED_TICKET_CATEGORY_ID,
+        ticketToolBotId: TICKET_TOOL_BOT_ID,
 
         // Delay before a closed ticket channel gets deleted
         autoDeleteClosedChannelMs: 10000
@@ -190,7 +197,7 @@ const appConfig = {
 
     seasonEvents: {
         maxLeaderboardRows: 10,
-        websiteLeaderboardUrl: process.env.ROSTER_WEBSITE_LEADERBOARD_URL || '',
+        websiteLeaderboardUrl: ROSTER_WEBSITE_LEADERBOARD_URL,
         // Optional override. When empty or omitted, staffRoleIds are used.
         adminRoleIds: [],
         colors: {
