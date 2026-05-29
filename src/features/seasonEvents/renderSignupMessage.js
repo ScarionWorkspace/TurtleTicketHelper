@@ -108,6 +108,17 @@ function getDonationValue(row, fallbackAccount = null) {
     return 'pending';
 }
 
+function parseNumberValue(value) {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        return value;
+    }
+
+    const normalized = String(value ?? '').replace(/,/g, '');
+    const match = normalized.match(/\d+(?:\.\d+)?/);
+
+    return match ? Number(match[0]) : 0;
+}
+
 function getPushLeagueValue(row, fallbackAccount = null) {
     const leagueLabel =
         row?.bestLeagueLabel ||
@@ -196,6 +207,32 @@ function getScoreLabel(row, fallbackAccount, type) {
     return 'pending';
 }
 
+function getPrimaryAccount(row) {
+    if (row?.account && typeof row.account === 'object') {
+        return row.account;
+    }
+
+    if (Array.isArray(row?.accounts)) {
+        return row.accounts.find(account => account && typeof account === 'object') || null;
+    }
+
+    return null;
+}
+
+function getLeaderboardRowName(row) {
+    const account = getPrimaryAccount(row);
+
+    return account?.playerName ||
+        account?.name ||
+        account?.accountName ||
+        account?.identity?.name ||
+        row?.playerName ||
+        row?.name ||
+        row?.accountName ||
+        row?.displayName ||
+        'Unknown';
+}
+
 function getLeaderboardFallbackRows(leaderboard, type) {
     return extractLeaderboardRows(leaderboard).map(row => ({
         rank: row?.rank || null,
@@ -205,14 +242,50 @@ function getLeaderboardFallbackRows(leaderboard, type) {
         leagueLabel: getPushLeagueValue(row),
         trophies: getPushTrophyValue(row),
         scoreLabel: getScoreLabel(row, null, type),
-        name:
-            row?.displayName ||
-            row?.playerName ||
-            row?.name ||
-            row?.accountName ||
-            row?.account?.name ||
-            'Unknown'
+        name: getLeaderboardRowName(row)
     }));
+}
+
+function getDonationSortValue(row) {
+    return parseNumberValue(
+        row?.donationValue ??
+        row?.score ??
+        row?.metric ??
+        row?.value ??
+        row?.total ??
+        row?.scoreLabel
+    );
+}
+
+function getSortRank(row) {
+    const rank = Number(row?.rank);
+
+    return Number.isFinite(rank) && rank > 0 ? rank : Number.POSITIVE_INFINITY;
+}
+
+function compareDonationRows(a, b) {
+    const aRank = getSortRank(a);
+    const bRank = getSortRank(b);
+
+    if (aRank !== bRank) {
+        return aRank - bRank;
+    }
+
+    const donationDiff = getDonationSortValue(b) - getDonationSortValue(a);
+
+    if (donationDiff !== 0) {
+        return donationDiff;
+    }
+
+    const nameDiff = String(a?.name || '')
+        .toLowerCase()
+        .localeCompare(String(b?.name || '').toLowerCase());
+
+    if (nameDiff !== 0) {
+        return nameDiff;
+    }
+
+    return String(a?.tag || '').localeCompare(String(b?.tag || ''));
 }
 
 function buildAllConfirmedRows(event, leaderboard, type) {
@@ -244,6 +317,10 @@ function buildAllConfirmedRows(event, leaderboard, type) {
 
     if (rows.length === 0) {
         rows.push(...leaderboardRows);
+    }
+
+    if (type === 'donation') {
+        return [...rows].sort(compareDonationRows);
     }
 
     return rows;
