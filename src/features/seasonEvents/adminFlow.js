@@ -33,7 +33,8 @@ const ADMIN_ACTIONS = [
     ['Refresh message', 'refresh_message', 'Re-render the signup message.'],
     ['Show event status', 'show_status', 'Show the current event state.'],
     ['Show leaderboard', 'show_leaderboard', 'Show compact leaderboard rows.'],
-    ['Edit title', 'edit_title', 'Update the public event title.']
+    ['Edit title', 'edit_title', 'Update the public event title.'],
+    ['Edit info', 'edit_info', 'Update the public signup info text.']
 ];
 
 function buildAdminOptionsRow(type, userId, messageId) {
@@ -83,6 +84,21 @@ function formatEventStatus(event) {
         `Signups open: ${event?.signupsOpen === false ? 'no' : 'yes'}`,
         `Confirmed: ${activeCount}`
     ].join('\n');
+}
+
+function truncatePlaceholder(value, maxLength = 100) {
+    const text = String(value || '').replace(/\s+/g, ' ').trim();
+
+    if (text.length <= maxLength) {
+        return text;
+    }
+
+    return `${text.slice(0, Math.max(0, maxLength - 3))}...`;
+}
+
+function getInfoPlaceholder(type) {
+    const configured = appConfig.seasonEvents?.infoMessages?.[type];
+    return truncatePlaceholder(configured || 'Public signup info message');
 }
 
 function getLeaderboardScoreLabel(row, type) {
@@ -246,6 +262,27 @@ async function showTitleModal(interaction, parsed) {
     await interaction.showModal(modal);
 }
 
+async function showInfoModal(interaction, parsed) {
+    const modal = new ModalBuilder()
+        .setCustomId(buildCustomId(
+            'info',
+            parsed.type,
+            interaction.user.id,
+            getSourceMessageId(interaction, parsed)
+        ))
+        .setTitle('Edit signup info');
+    const infoInput = new TextInputBuilder()
+        .setCustomId('info')
+        .setLabel('Signup info message')
+        .setStyle(TextInputStyle.Paragraph)
+        .setRequired(false)
+        .setMaxLength(900)
+        .setPlaceholder(getInfoPlaceholder(parsed.type));
+
+    modal.addComponents(new ActionRowBuilder().addComponents(infoInput));
+    await interaction.showModal(modal);
+}
+
 async function handleAdminSelect(interaction, parsed) {
     if (parsed.userId !== interaction.user.id) {
         await interaction.reply({
@@ -267,6 +304,11 @@ async function handleAdminSelect(interaction, parsed) {
 
     if (action === 'edit_title') {
         await showTitleModal(interaction, parsed);
+        return;
+    }
+
+    if (action === 'edit_info') {
+        await showInfoModal(interaction, parsed);
         return;
     }
 
@@ -346,8 +388,36 @@ async function handleTitleModal(interaction, parsed) {
     });
 }
 
+async function handleInfoModal(interaction, parsed) {
+    if (parsed.userId !== interaction.user.id) {
+        await interaction.reply({
+            content: 'This info form is not for you.',
+            flags: EPHEMERAL
+        });
+        return;
+    }
+
+    if (!isSeasonEventAdmin(interaction.member)) {
+        await interaction.reply({
+            content: 'This info form is staff only.',
+            flags: EPHEMERAL
+        });
+        return;
+    }
+
+    await interaction.deferReply({ flags: EPHEMERAL });
+
+    const description = interaction.fields.getTextInputValue('info').trim();
+    const status = await updateCurrentEvent(interaction, parsed, { description });
+
+    await interaction.editReply({
+        content: getStatusMessage(status, description ? 'Event info updated.' : 'Event info cleared.')
+    });
+}
+
 module.exports = {
     handleOptionsButton,
     handleAdminSelect,
-    handleTitleModal
+    handleTitleModal,
+    handleInfoModal
 };

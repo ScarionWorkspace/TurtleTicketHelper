@@ -214,6 +214,16 @@ const appConfig = {
             signup: 'Signup',
             optOut: 'Opt-out',
             options: 'Options'
+        },
+        infoMessages: {
+            push:
+                'Sign up to participate in the current push event. ' +
+                'The highest pusher at the end of the season wins. ' +
+                'You must be in one of our clans at the end of the event to be able to win.',
+            donation:
+                'Sign up to participate in the current donation event. ' +
+                'The highest donor at the end of the event wins. ' +
+                'Leaving a clan before the event ends does not disqualify your donation result.'
         }
     },
 

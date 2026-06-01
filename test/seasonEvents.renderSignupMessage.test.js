@@ -4,11 +4,19 @@ const {
     buildSignupMessage
 } = require('../src/features/seasonEvents/renderSignupMessage');
 
+function getEmbed(message) {
+    return message.embeds[0].toJSON();
+}
+
 function getConfirmedTable(message) {
-    const embed = message.embeds[0].toJSON();
+    const embed = getEmbed(message);
     const confirmedField = embed.fields.find(field => field.name.startsWith('Confirmed'));
 
     return confirmedField.value;
+}
+
+function getField(embed, name) {
+    return embed.fields.find(field => field.name === name);
 }
 
 test('donation signup table omits TH and donation unit text', () => {
@@ -139,4 +147,66 @@ test('push signup table uses emoji columns and compact league labels', () => {
     assert.doesNotMatch(table, /\bTH\b/);
     assert.doesNotMatch(table, /\bTitan\b/);
     assert.doesNotMatch(table, /\btrophies\b/i);
+});
+
+test('signup embed hides roster identity and promotes event timestamps', () => {
+    const embed = getEmbed(buildSignupMessage(
+        'push',
+        {
+            eventId: 'roster-push-2026-05',
+            type: 'push',
+            title: 'Push Event',
+            status: 'open',
+            signupsOpen: true,
+            clanName: 'Roster Clan',
+            clanTag: '#ABC123',
+            seasonId: 'roster-season-id',
+            startsAt: '2026-05-01T00:00:00.000Z',
+            endsAt: '2026-05-31T23:59:59.000Z'
+        },
+        { leaderboard: [] }
+    ));
+    const windowField = getField(embed, 'Event Window');
+
+    assert.equal(embed.author.name, 'Current Push Event');
+    assert.doesNotMatch(embed.author.name, /Roster|#ABC123|season-id/i);
+    assert.match(windowField.value, /\*\*Start:\*\* <t:\d+:f> \(<t:\d+:R>\)/);
+    assert.match(windowField.value, /\*\*End:\*\* <t:\d+:f> \(<t:\d+:R>\)/);
+    assert.doesNotMatch(embed.footer.text, /May|2026|<t:/);
+});
+
+test('signup embed uses editable event description before default info text', () => {
+    const embed = getEmbed(buildSignupMessage(
+        'push',
+        {
+            eventId: 'push-2026-05',
+            type: 'push',
+            title: 'Push Event',
+            status: 'open',
+            signupsOpen: true,
+            description: 'Custom push rules.\nBe in a clan at the end.'
+        },
+        { leaderboard: [] }
+    ));
+    const infoField = getField(embed, 'Event Info');
+
+    assert.equal(infoField.value, 'Custom push rules.\nBe in a clan at the end.');
+});
+
+test('donation signup default info is less strict about leaving', () => {
+    const embed = getEmbed(buildSignupMessage(
+        'donation',
+        {
+            eventId: 'donation-2026-05',
+            type: 'donation',
+            title: 'Donation Event',
+            status: 'open',
+            signupsOpen: true
+        },
+        { leaderboard: [] }
+    ));
+    const infoField = getField(embed, 'Event Info');
+
+    assert.match(infoField.value, /Leaving a clan before the event ends does not disqualify/i);
+    assert.match(embed.footer.text, /Multi-account ranks can repeat/);
 });

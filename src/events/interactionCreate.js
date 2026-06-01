@@ -3,6 +3,9 @@ const handleJoinClanModal = require('../features/joinClanApplication/handleJoinC
 const handleRecommendClanButton = require('../features/joinClanApplication/handleRecommendClanButton');
 const handleRecommendClanSelect = require('../features/joinClanApplication/handleRecommendClanSelect');
 const handleSeasonEventInteraction = require('../features/seasonEvents/handleSeasonEventInteraction');
+const {
+    handleRosterPlayersInteraction
+} = require('../features/rosterPlayers/rosterPlayersInteraction');
 
 async function replyToFailedInteraction(interaction) {
     try {
@@ -59,6 +62,10 @@ module.exports = {
                     return;
                 }
 
+                if (await handleRosterPlayersInteraction(interaction)) {
+                    return;
+                }
+
                 if (interaction.customId === 'join_clan_apply') {
                     await handleJoinClanButton(interaction);
                     return;
@@ -74,6 +81,10 @@ module.exports = {
 
             if (interaction.isStringSelectMenu()) {
                 if (await handleSeasonEventInteraction(interaction)) {
+                    return;
+                }
+
+                if (await handleRosterPlayersInteraction(interaction)) {
                     return;
                 }
 

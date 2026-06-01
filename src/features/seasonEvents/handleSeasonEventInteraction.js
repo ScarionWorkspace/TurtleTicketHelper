@@ -13,6 +13,7 @@ const {
 const {
     handleAdminSelect,
     handleOptionsButton,
+    handleInfoModal,
     handleTitleModal
 } = require('./adminFlow');
 const {
@@ -71,8 +72,15 @@ async function dispatchSeasonEventInteraction(interaction, parsed) {
         }
     }
 
-    if (interaction.isModalSubmit() && parsed.action === 'title') {
-        return handleTitleModal(interaction, parsed);
+    if (interaction.isModalSubmit()) {
+        switch (parsed.action) {
+            case 'title':
+                return handleTitleModal(interaction, parsed);
+            case 'info':
+                return handleInfoModal(interaction, parsed);
+            default:
+                return replyOnce(interaction, 'Unsupported season event form.');
+        }
     }
 
     return replyOnce(interaction, 'Unsupported season event interaction.');

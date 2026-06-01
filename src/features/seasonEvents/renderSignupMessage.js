@@ -13,12 +13,12 @@ const {
     extractLeaderboardRows,
     getActiveParticipants,
     getAccountRowsForParticipant,
-    getEventSeasonId,
     getLeaderboardRowsByTag,
     normalizePlayerTag
 } = require('./eventData');
 
 const MAX_SIGNUPS = 50;
+const INFO_MESSAGE_MAX_LENGTH = 900;
 
 function truncate(value, maxLength) {
     const text = String(value ?? '').replace(/\s+/g, ' ').trim();
@@ -28,6 +28,134 @@ function truncate(value, maxLength) {
     }
 
     return `${text.slice(0, Math.max(0, maxLength - 3))}...`;
+}
+
+function truncatePreservingLines(value, maxLength) {
+    const text = String(value ?? '').trim();
+
+    if (text.length <= maxLength) {
+        return text;
+    }
+
+    return `${text.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
+}
+
+function normalizeInfoText(value) {
+    return String(value ?? '')
+        .replace(/\r\n/g, '\n')
+        .split('\n')
+        .map(line => line.replace(/\s+/g, ' ').trim())
+        .filter(Boolean)
+        .join('\n');
+}
+
+function getConfiguredInfoMessage(type) {
+    const messages = appConfig.seasonEvents?.infoMessages || {};
+    return normalizeInfoText(messages[type]) ||
+        'Sign up to participate in the current season event.';
+}
+
+function getEventInfoMessage(event, type) {
+    const eventInfo = normalizeInfoText(
+        event?.description ||
+        event?.infoMessage ||
+        event?.signupInfoMessage ||
+        event?.settings?.description ||
+        event?.settings?.infoMessage ||
+        event?.settings?.signupInfoMessage
+    );
+    const text = eventInfo || getConfiguredInfoMessage(type);
+
+    return truncatePreservingLines(text, INFO_MESSAGE_MAX_LENGTH);
+}
+
+function parseEventDate(value) {
+    if (!value) {
+        return null;
+    }
+
+    const date = new Date(value);
+
+    return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function formatDiscordTimestamp(value, style) {
+    const date = parseEventDate(value);
+
+    if (!date) {
+        return null;
+    }
+
+    return `<t:${Math.floor(date.getTime() / 1000)}:${style}>`;
+}
+
+function formatEventTimeLine(label, value) {
+    const absolute = formatDiscordTimestamp(value, 'f');
+    const relative = formatDiscordTimestamp(value, 'R');
+
+    if (absolute && relative) {
+        return `**${label}:** ${absolute} (${relative})`;
+    }
+
+    if (value) {
+        return `**${label}:** ${String(value).trim()}`;
+    }
+
+    return `**${label}:** TBA`;
+}
+
+function buildEventWindowField(event) {
+    return {
+        name: 'Event Window',
+        value: [
+            formatEventTimeLine('Start', event?.startsAt),
+            formatEventTimeLine('End', event?.endsAt)
+        ].join('\n'),
+        inline: false
+    };
+}
+
+function formatStatusText(status) {
+    return String(status || '')
+        .trim()
+        .replace(/[-_]+/g, ' ')
+        .replace(/\b\w/g, char => char.toUpperCase());
+}
+
+function getStatusDescription(event) {
+    const lines = [
+        event?.signupsOpen === false
+            ? '**\u26D4 Signups closed**'
+            : '**\u2705 Signups open**'
+    ];
+    const status = String(event?.status || '').trim();
+
+    if (status && status.toLowerCase() !== 'open') {
+        lines.push(`Event status: ${formatStatusText(status)}`);
+    }
+
+    return lines.join('\n');
+}
+
+function getCurrentEventHeader(type) {
+    const eventName = type === 'donation'
+        ? 'Donation'
+        : type === 'push'
+            ? 'Push'
+            : 'Season';
+
+    return `Current ${eventName} Event`;
+}
+
+function getSignupTitle(event, typeConfig) {
+    const configuredTitle = String(typeConfig?.title || '').trim();
+    const title = String(event?.title || '').trim();
+
+    if (title && title.toLowerCase() !== configuredTitle.toLowerCase()) {
+        return truncate(title, 256);
+    }
+
+    return 'Signup & Leaderboard';
 }
 
 function formatNumber(value) {
@@ -371,21 +499,6 @@ function formatConfirmedTable(rows, type) {
     return `\`\`\`text\n${lines.join('\n')}\n\`\`\``;
 }
 
-function getClanIdentity(event) {
-    const clanName =
-        event?.clanName ||
-        event?.clan?.name ||
-        event?.familyName ||
-        'Turtle Roster';
-    const clanTag = event?.clanTag || event?.clan?.tag || '';
-    const season = event?.seasonName || event?.seasonLabel || getEventSeasonId(event) || '';
-    const seasonLabel = typeof season === 'string' || typeof season === 'number'
-        ? season
-        : '';
-
-    return [clanName, clanTag, seasonLabel].filter(Boolean).join(' | ');
-}
-
 function getTownHallRange(rows, event) {
     const configuredMin = event?.minTownHall || event?.minTownHallLevel || null;
     const configuredMax = event?.maxTownHall || event?.maxTownHallLevel || null;
@@ -410,60 +523,6 @@ function getTownHallRange(rows, event) {
     return min === max ? `TH ${min}` : `TH ${min}-${max}`;
 }
 
-function formatDate(value) {
-    if (!value) {
-        return null;
-    }
-
-    const date = new Date(value);
-
-    if (Number.isNaN(date.getTime())) {
-        return String(value);
-    }
-
-    return date.toLocaleDateString('en-US', {
-        month: 'short',
-        day: 'numeric'
-    });
-}
-
-function getDonationCycleRange(event) {
-    const cycles = Array.isArray(event?.donationCycles)
-        ? event.donationCycles
-        : Object.values(event?.donationCycles || {});
-
-    if (cycles.length === 0) {
-        const start = formatDate(event?.startsAt);
-        const end = formatDate(event?.endsAt);
-
-        return start || end
-            ? `${start || '?'} - ${end || '?'}`
-            : 'Cycle dates unknown';
-    }
-
-    const cycle =
-        cycles.find(item => ['active', 'current', 'open'].includes(String(item?.status || '').toLowerCase())) ||
-        cycles[0];
-    const start =
-        cycle?.startDate ||
-        cycle?.cycleStartDate ||
-        cycle?.startsAt ||
-        cycle?.from ||
-        null;
-    const end =
-        cycle?.endDate ||
-        cycle?.cycleEndDate ||
-        cycle?.endsAt ||
-        cycle?.to ||
-        null;
-
-    if (!start && !end) {
-        return 'Cycle dates unknown';
-    }
-
-    return `${formatDate(start) || '?'} - ${formatDate(end) || '?'}`;
-}
-
 function getFooterText(event, rows, type) {
     const activeParticipants = getActiveParticipants(event);
     const participantCount =
@@ -484,12 +543,12 @@ function getFooterText(event, rows, type) {
             rows.length ||
             0;
 
-        return `Total ${participantCount}/${MAX_SIGNUPS} | Accounts selected ${accountCount} | ${getDonationCycleRange(event)}`;
+        return `Confirmed ${participantCount}/${MAX_SIGNUPS} | Accounts selected ${accountCount} | Multi-account ranks can repeat`;
     }
 
     const townHallRange = getTownHallRange(rows, event);
 
-    return `Total ${participantCount}/${MAX_SIGNUPS}${townHallRange ? ` | ${townHallRange}` : ''}`;
+    return `Confirmed ${participantCount}/${MAX_SIGNUPS}${townHallRange ? ` | ${townHallRange}` : ''}`;
 }
 
 function getConfirmedCount(event, rows) {
@@ -557,20 +616,22 @@ function buildSignupMessage(type, event, leaderboard = null) {
     const maxRows = appConfig.seasonEvents?.maxLeaderboardRows || 10;
     const allRows = buildAllConfirmedRows(event, leaderboard, type);
     const rows = allRows.slice(0, maxRows);
-    const title = event.title || typeConfig?.title || 'Season Event';
-    const status = String(event.status || '').trim();
-    const signupsOpen = event.signupsOpen === false ? 'Signups closed' : 'Signups open';
 
     const embed = new EmbedBuilder()
         .setColor(colors[type] ?? colors.neutral ?? 0x95A5A6)
-        .setAuthor({ name: getClanIdentity(event) })
-        .setTitle(title)
-        .setDescription([
-            status ? `Status: ${status}` : null,
-            signupsOpen
-        ].filter(Boolean).join('\n'))
+        .setAuthor({ name: getCurrentEventHeader(type) })
+        .setTitle(getSignupTitle(event, typeConfig))
+        .setDescription(getStatusDescription(event))
+        .addFields(
+            buildEventWindowField(event),
+            {
+                name: 'Event Info',
+                value: getEventInfoMessage(event, type),
+                inline: false
+            }
+        )
         .addFields({
-            name: `Confirmed - ${getConfirmedCount(event, rows)}`,
+            name: `Confirmed Signups - ${getConfirmedCount(event, allRows)}`,
             value: formatConfirmedTable(rows, type),
             inline: false
         })

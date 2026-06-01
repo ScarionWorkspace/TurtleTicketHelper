@@ -4,6 +4,7 @@ const DEFAULT_TIMEOUT_MS = 12_000;
 const FB64_PREFIX = '__FB64__';
 const SEASON_EVENT_ROOT = 'events/seasonEvents';
 const PLAYER_METRICS_BY_TAG_PATH = 'active/playerMetrics/byTag';
+const ACTIVE_ROSTER_PATH = 'active';
 
 function normalizeDatabaseUrl(url) {
     return String(url || '')
@@ -281,6 +282,10 @@ function readAllActivePlayerMetricsByTag(options = {}) {
     return readJsonPath(PLAYER_METRICS_BY_TAG_PATH, options);
 }
 
+function readActiveRosterPayload(options = {}) {
+    return readJsonPath(ACTIVE_ROSTER_PATH, options);
+}
+
 function metricToLinkedAccount(metric, fallbackTag, matchType) {
     const identity = metric?.identity || {};
     const latest = metric?.latestSnapshot || {};
@@ -354,6 +359,7 @@ module.exports = {
     readSeasonEventsBySeason,
     readSeasonEventBySeasonAndType,
     readCurrentSeasonState,
+    readActiveRosterPayload,
     readActivePlayerMetricsByTag,
     readAllActivePlayerMetricsByTag,
     readLinkedAccountsForDiscordUser
