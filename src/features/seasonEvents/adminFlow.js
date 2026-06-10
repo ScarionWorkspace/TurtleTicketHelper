@@ -115,12 +115,12 @@ function getLeaderboardScoreLabel(row, type) {
 
     if (type === 'push') {
         const leagueLabel =
-            row?.bestLeagueName ||
-            row?.bestLeagueLabel ||
+            row?.currentLeagueLabel ||
+            row?.currentLeagueName ||
             row?.leagueName ||
             row?.leagueLabel ||
             '';
-        const trophies = row?.bestTrophies ?? row?.score ?? row?.value ?? null;
+        const trophies = row?.currentTrophies ?? row?.score ?? row?.value ?? null;
 
         if (trophies !== null && trophies !== undefined && trophies !== '') {
             return leagueLabel ? `${leagueLabel} - ${trophies} trophies` : `${trophies} trophies`;

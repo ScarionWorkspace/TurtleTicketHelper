@@ -75,7 +75,7 @@ async function callRosterBackendMethod(methodName, args, options = {}) {
 
         if (payload && Object.prototype.hasOwnProperty.call(payload, 'ok')) {
             if (payload.ok !== true) {
-                throw new RosterBackendError('Roster backend returned ok:false.', {
+                throw new RosterBackendError(payload.error || 'Roster backend returned ok:false.', {
                     status: response.status,
                     code: payload.code || payload.errorCode || 'BACKEND_NOT_OK'
                 });
@@ -173,6 +173,18 @@ function getCurrentSeasonEventLeaderboards(payload = {}, options = {}) {
     );
 }
 
+function getCwlLeagueSignupOptions(payload = {}, options = {}) {
+    return callSeasonEventMethod('getCwlLeagueSignupOptions', payload, options);
+}
+
+function setCwlLeaguePreference(payload = {}, options = {}) {
+    return callSeasonEventMethod('setCwlLeaguePreference', payload, options);
+}
+
+function resetCwlLeaguePreferences(payload = {}, options = {}) {
+    return callSeasonEventMethod('resetCwlLeaguePreferences', payload, options);
+}
+
 module.exports = {
     RosterBackendError,
     isRosterBackendConfigured,
@@ -185,5 +197,8 @@ module.exports = {
     cancelSeasonEventSignup,
     updateSeasonEvent,
     getSeasonEventLeaderboard,
-    getCurrentSeasonEventLeaderboards
+    getCurrentSeasonEventLeaderboards,
+    getCwlLeagueSignupOptions,
+    setCwlLeaguePreference,
+    resetCwlLeaguePreferences
 };

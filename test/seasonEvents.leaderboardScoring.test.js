@@ -52,6 +52,31 @@ function metric(tag, leagueTierId, trophies, capturedAt = '2026-05-10T12:00:00.0
     };
 }
 
+function metricWithTrophyPoints(tag, points) {
+    const latest = points[points.length - 1];
+
+    return {
+        identity: {
+            tag,
+            name: `Player ${tag}`
+        },
+        trophyHistoryDaily: points.map(point => ({
+            capturedAt: point.capturedAt,
+            leagueTier: {
+                id: point.leagueTierId
+            },
+            trophies: point.trophies
+        })),
+        latestSnapshot: {
+            capturedAt: latest.capturedAt,
+            leagueTier: {
+                id: latest.leagueTierId
+            },
+            trophies: latest.trophies
+        }
+    };
+}
+
 function leaderboard(participantsByDiscordId, metricsByTag) {
     return buildLocalSeasonEventLeaderboard(
         {
@@ -101,6 +126,45 @@ test('higher leagueTier id rank beats higher trophies across push tiers', () => 
     );
     assert.equal(rows[0].metric, 'leagueTrophies');
     assert.equal(rows[0].score, 5200);
+});
+
+test('push ranking uses latest captured in-window trophy point instead of historical best', () => {
+    const rows = leaderboard(
+        {
+            dropped: participant('dropped', '#FALL1'),
+            steady: participant('steady', '#STDY1')
+        },
+        {
+            '#FALL1': metricWithTrophyPoints('#FALL1', [{
+                capturedAt: '2026-05-08T12:00:00.000Z',
+                leagueTierId: 105000036,
+                trophies: 6200
+            }, {
+                capturedAt: '2026-05-18T12:00:00.000Z',
+                leagueTierId: 105000027,
+                trophies: 5800
+            }]),
+            '#STDY1': metricWithTrophyPoints('#STDY1', [{
+                capturedAt: '2026-05-17T12:00:00.000Z',
+                leagueTierId: 105000035,
+                trophies: 5900
+            }])
+        }
+    );
+
+    assert.deepEqual(
+        rows.map(row => row.accounts[0].tag),
+        ['#STDY1', '#FALL1']
+    );
+    assert.deepEqual(
+        rows.map(row => row.scoreLabel),
+        ['L2 5900', 'T27 5800']
+    );
+    assert.equal(rows[1].score, 5800);
+    assert.equal(rows[1].currentTrophies, 5800);
+    assert.equal(rows[1].currentLeagueLabel, 'T27');
+    assert.equal(rows[1].currentCapturedMs, Date.parse('2026-05-18T12:00:00.000Z'));
+    assert.equal(Object.prototype.hasOwnProperty.call(rows[1], 'bestTrophies'), false);
 });
 
 test('league tier labels use compact in-game abbreviations', () => {

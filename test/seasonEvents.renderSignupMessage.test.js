@@ -44,6 +44,39 @@ test('donation signup table omits TH and donation unit text', () => {
     assert.doesNotMatch(table, /\bdonations?\b/i);
 });
 
+test('donation signup table compacts donations at 100k', () => {
+    const table = getConfirmedTable(buildSignupMessage(
+        'donation',
+        {
+            eventId: 'donation-2026-05',
+            type: 'donation',
+            title: 'Donation Event',
+            status: 'open',
+            signupsOpen: true
+        },
+        {
+            leaderboard: [{
+                rank: 1,
+                score: 123456,
+                name: 'Big Donor'
+            }, {
+                rank: 2,
+                score: 100000,
+                name: 'Threshold Donor'
+            }, {
+                rank: 3,
+                score: 99999,
+                name: 'Almost Donor'
+            }]
+        }
+    ));
+
+    assert.match(table, /1  123k\s+Big Donor/);
+    assert.match(table, /2  100k\s+Threshold Donor/);
+    assert.match(table, /3  99,999\s+Almost Donor/);
+    assert.doesNotMatch(table, /123,456|100,000/);
+});
+
 test('donation signup table sorts ranked rows with first place at the top', () => {
     const table = getConfirmedTable(buildSignupMessage(
         'donation',
@@ -91,6 +124,99 @@ test('donation signup table sorts ranked rows with first place at the top', () =
     assert(table.indexOf('1  300') < table.indexOf('2  100'));
 });
 
+test('donation signup table splits backend participant totals by account value', () => {
+    const table = getConfirmedTable(buildSignupMessage(
+        'donation',
+        {
+            eventId: 'donation-2026-05',
+            type: 'donation',
+            title: 'Donation Event',
+            status: 'open',
+            signupsOpen: true,
+            participantsByDiscordId: {
+                donor: {
+                    discordId: 'donor',
+                    discordUsername: 'Top Donor',
+                    status: 'signed_up',
+                    accounts: [{
+                        tag: '#MAIN1',
+                        name: 'Main Donor'
+                    }, {
+                        tag: '#ALT22',
+                        name: 'Alt Donor'
+                    }]
+                }
+            }
+        },
+        {
+            leaderboard: [{
+                rank: 1,
+                score: 146000,
+                displayName: 'Top Donor',
+                accounts: [{
+                    tag: '#MAIN1',
+                    name: 'Main Donor',
+                    currentValue: 126000
+                }, {
+                    tag: '#ALT22',
+                    name: 'Alt Donor',
+                    currentValue: 20000
+                }]
+            }]
+        }
+    ));
+
+    assert.match(table, /1  126k\s+Main Donor/);
+    assert.match(table, /1  20,000\s+Alt Donor/);
+    assert.doesNotMatch(table, /146k\s+Main Donor/);
+    assert.doesNotMatch(table, /146k\s+Alt Donor/);
+});
+
+test('donation signup table uses one Discord total when account values are unavailable', () => {
+    const table = getConfirmedTable(buildSignupMessage(
+        'donation',
+        {
+            eventId: 'donation-2026-05',
+            type: 'donation',
+            title: 'Donation Event',
+            status: 'open',
+            signupsOpen: true,
+            participantsByDiscordId: {
+                donor: {
+                    discordId: 'donor',
+                    discordUsername: 'Top Donor',
+                    status: 'signed_up',
+                    accounts: [{
+                        tag: '#MAIN1',
+                        name: 'Main Donor'
+                    }, {
+                        tag: '#ALT22',
+                        name: 'Alt Donor'
+                    }]
+                }
+            }
+        },
+        {
+            leaderboard: [{
+                rank: 1,
+                score: 146000,
+                displayName: 'Top Donor',
+                accounts: [{
+                    tag: '#MAIN1',
+                    name: 'Main Donor'
+                }, {
+                    tag: '#ALT22',
+                    name: 'Alt Donor'
+                }]
+            }]
+        }
+    ));
+
+    assert.match(table, /1  146k\s+Top Donor/);
+    assert.doesNotMatch(table, /Main Donor/);
+    assert.doesNotMatch(table, /Alt Donor/);
+});
+
 test('donation signup table falls back to donation count when rank is missing', () => {
     const table = getConfirmedTable(buildSignupMessage(
         'donation',
@@ -130,8 +256,8 @@ test('push signup table uses emoji columns and compact league labels', () => {
         {
             leaderboard: [{
                 rank: 1,
-                bestLeagueName: 'Titan 27',
-                bestTrophies: 6100,
+                currentLeagueName: 'Titan 27',
+                currentTrophies: 6100,
                 displayName: 'Discord Nick',
                 accounts: [{
                     tag: '#PUSH1',
@@ -209,4 +335,36 @@ test('donation signup default info is less strict about leaving', () => {
 
     assert.match(infoField.value, /Leaving a clan before the event ends does not disqualify/i);
     assert.match(embed.footer.text, /Multi-account ranks can repeat/);
+});
+
+test('signup embed uses backend summary counts when participants are omitted', () => {
+    const embed = getEmbed(buildSignupMessage(
+        'donation',
+        {
+            eventId: 'donation-2026-05',
+            type: 'donation',
+            title: 'Donation Event',
+            status: 'open',
+            signupsOpen: true,
+            activeParticipantCount: 12,
+            participantCount: 20,
+            accountCount: 18
+        },
+        {
+            leaderboard: [{
+                rank: 1,
+                score: 300,
+                displayName: 'Donor',
+                accounts: [{
+                    tag: '#DONOR',
+                    name: 'Donor',
+                    score: 300
+                }]
+            }]
+        }
+    ));
+    const confirmedField = embed.fields.find(field => field.name.startsWith('Confirmed'));
+
+    assert.equal(confirmedField.name, 'Confirmed Signups - 12');
+    assert.match(embed.footer.text, /Confirmed 12\/50 \| Accounts selected 18/);
 });

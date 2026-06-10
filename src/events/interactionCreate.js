@@ -4,6 +4,9 @@ const handleRecommendClanButton = require('../features/joinClanApplication/handl
 const handleRecommendClanSelect = require('../features/joinClanApplication/handleRecommendClanSelect');
 const handleSeasonEventInteraction = require('../features/seasonEvents/handleSeasonEventInteraction');
 const {
+    handleCwlLeagueSignupInteraction
+} = require('../features/cwlLeagueSignups/cwlLeagueSignupFlow');
+const {
     handleRosterPlayersInteraction
 } = require('../features/rosterPlayers/rosterPlayersInteraction');
 
@@ -58,6 +61,10 @@ module.exports = {
             }
 
             if (interaction.isButton()) {
+                if (await handleCwlLeagueSignupInteraction(interaction)) {
+                    return;
+                }
+
                 if (await handleSeasonEventInteraction(interaction)) {
                     return;
                 }
@@ -80,6 +87,10 @@ module.exports = {
             }
 
             if (interaction.isStringSelectMenu()) {
+                if (await handleCwlLeagueSignupInteraction(interaction)) {
+                    return;
+                }
+
                 if (await handleSeasonEventInteraction(interaction)) {
                     return;
                 }

@@ -216,7 +216,7 @@ function getPointTrophies(point) {
     return toNonNegativeInt(
         point?.trophies ??
         point?.trophyCount ??
-        point?.bestTrophies ??
+        point?.currentTrophies ??
         0
     );
 }
@@ -225,8 +225,8 @@ function getLeagueTierId(point) {
     return point?.leagueTier?.id ??
         point?.leagueTierId ??
         point?.leagueTierID ??
-        point?.bestLeagueTierId ??
-        point?.bestLeagueTierID ??
+        point?.currentLeagueTierId ??
+        point?.currentLeagueTierID ??
         null;
 }
 
@@ -244,22 +244,7 @@ function getRankTierFromLeagueTierId(leagueTierId) {
         : INVALID_RANK_TIER;
 }
 
-function getLeagueDisplayFallback(point) {
-    return String(
-        point?.bestLeagueName ||
-        point?.bestLeagueLabel ||
-        point?.leagueName ||
-        point?.leagueLabel ||
-        point?.leagueTierName ||
-        point?.league?.name ||
-        point?.league?.label ||
-        point?.leagueTier?.name ||
-        point?.leagueTier?.label ||
-        ''
-    ).trim();
-}
-
-function getLeagueTierLabel(rankTier, fallback = '') {
+function getLeagueTierLabel(rankTier) {
     if (Object.prototype.hasOwnProperty.call(LEGEND_TIER_LABELS, rankTier)) {
         return LEGEND_TIER_LABELS[rankTier];
     }
@@ -277,25 +262,29 @@ function hasValidLeagueBucket(value) {
     return Number.isFinite(value) && value > INVALID_RANK_TIER;
 }
 
-function getSortableLeagueBucket(value) {
-    return hasValidLeagueBucket(value) ? value : INVALID_RANK_TIER;
+function getPointSourcePriority(source) {
+    return source === 'latestSnapshot' ? 1 : 0;
 }
 
-function comparePushPoints(a, b) {
-    const aBucket = getSortableLeagueBucket(a.leagueBucket);
-    const bBucket = getSortableLeagueBucket(b.leagueBucket);
+function getLatestTrophyPoint(points) {
+    return points.reduce((latest, point) => {
+        if (!latest) {
+            return point;
+        }
 
-    if (aBucket !== bBucket) {
-        return bBucket - aBucket;
-    }
+        if (point.capturedMs !== latest.capturedMs) {
+            return point.capturedMs > latest.capturedMs ? point : latest;
+        }
 
-    const trophyDiff = b.trophies - a.trophies;
+        const pointPriority = getPointSourcePriority(point.source);
+        const latestPriority = getPointSourcePriority(latest.source);
 
-    if (trophyDiff !== 0) {
-        return trophyDiff;
-    }
+        if (pointPriority !== latestPriority) {
+            return pointPriority > latestPriority ? point : latest;
+        }
 
-    return b.capturedMs - a.capturedMs;
+        return point;
+    }, null);
 }
 
 function buildHistoryPoints(metricEntry) {
@@ -325,17 +314,11 @@ function collectTrophyPoints(metricEntry) {
     const points = [];
     const latest = metricEntry?.latestSnapshot || {};
     const latestRankTier = getRankTierFromLeagueTierId(getLeagueTierId(latest));
-    const latestLeagueFallback = getLeagueDisplayFallback(latest);
 
     for (const point of buildHistoryPoints(metricEntry)) {
         const capturedMs = getPointCapturedMs(point);
-        const rankTier =
-            getRankTierFromLeagueTierId(getLeagueTierId(point)) ||
-            latestRankTier;
-        const leagueLabel = getLeagueTierLabel(
-            rankTier,
-            getLeagueDisplayFallback(point) || latestLeagueFallback
-        );
+        const rankTier = getRankTierFromLeagueTierId(getLeagueTierId(point));
+        const leagueLabel = getLeagueTierLabel(rankTier);
 
         if (capturedMs > 0) {
             points.push({
@@ -351,7 +334,7 @@ function collectTrophyPoints(metricEntry) {
 
     if (Object.prototype.hasOwnProperty.call(latest, 'trophies')) {
         const capturedMs = getPointCapturedMs(latest);
-        const leagueLabel = getLeagueTierLabel(latestRankTier, latestLeagueFallback);
+        const leagueLabel = getLeagueTierLabel(latestRankTier);
 
         if (capturedMs > 0) {
             points.push({
@@ -367,8 +350,7 @@ function collectTrophyPoints(metricEntry) {
 
     return points.sort((a, b) =>
         a.capturedMs - b.capturedMs ||
-        a.trophies - b.trophies ||
-        a.source.localeCompare(b.source)
+        getPointSourcePriority(a.source) - getPointSourcePriority(b.source)
     );
 }
 
@@ -387,10 +369,9 @@ function noPushHistoryAccount(account, metricEntry, warnings = ['missing-trophy-
         coverage: 'no-history',
         warnings,
         currentTrophies: 0,
-        bestTrophies: 0,
-        bestLeagueName: '',
-        bestLeagueLabel: '',
-        bestCapturedMs: 0,
+        currentLeagueName: '',
+        currentLeagueLabel: '',
+        currentCapturedMs: 0,
         hasPushRank: false,
         leagueBucket: INVALID_RANK_TIER
     };
@@ -426,10 +407,8 @@ function scorePushAccount(event, account, metricEntry, nowIso) {
         return noPushHistoryAccount(account, metricEntry, ['missing-trophy-history']);
     }
 
-    const bestPoint = pointsInWindow.reduce((best, point) =>
-        comparePushPoints(point, best) < 0 ? point : best
-    );
-    const hasPushRank = hasValidLeagueBucket(bestPoint.leagueBucket);
+    const currentPoint = getLatestTrophyPoint(pointsInWindow);
+    const hasPushRank = hasValidLeagueBucket(currentPoint.leagueBucket);
     const warnings = hasPushRank ? [] : ['missing-valid-push-rank'];
     const coverage = hasPushRank ? 'full' : 'no-history';
 
@@ -437,20 +416,20 @@ function scorePushAccount(event, account, metricEntry, nowIso) {
         tag: account.tag,
         name: display.name,
         townHallLevel: display.townHallLevel,
-        leagueName: bestPoint.leagueName || display.leagueName,
+        leagueName: currentPoint.leagueName || display.leagueName,
+        leagueLabel: currentPoint.leagueLabel,
         startValue: 0,
-        currentValue: bestPoint.trophies,
-        score: bestPoint.trophies,
-        scoreLabel: formatPushScoreLabel(bestPoint.leagueLabel, bestPoint.trophies),
+        currentValue: currentPoint.trophies,
+        score: currentPoint.trophies,
+        scoreLabel: formatPushScoreLabel(currentPoint.leagueLabel, currentPoint.trophies),
         coverage,
         warnings: uniqueWarnings(warnings),
-        currentTrophies: bestPoint.trophies,
-        bestTrophies: bestPoint.trophies,
-        bestLeagueName: bestPoint.leagueName,
-        bestLeagueLabel: bestPoint.leagueLabel,
-        bestCapturedMs: bestPoint.capturedMs,
+        currentTrophies: currentPoint.trophies,
+        currentLeagueName: currentPoint.leagueName,
+        currentLeagueLabel: currentPoint.leagueLabel,
+        currentCapturedMs: currentPoint.capturedMs,
         hasPushRank,
-        leagueBucket: bestPoint.leagueBucket
+        leagueBucket: currentPoint.leagueBucket
     };
 }
 
@@ -582,10 +561,9 @@ function buildParticipantRow(event, participant, metricsByTag, metric, nowIso) {
             warnings: ['no-registered-accounts'],
             accountCount: 0,
             currentTrophies: 0,
-            bestTrophies: 0,
-            bestLeagueName: '',
-            bestLeagueLabel: '',
-            bestCapturedMs: 0,
+            currentLeagueName: '',
+            currentLeagueLabel: '',
+            currentCapturedMs: 0,
             hasPushRank: metric === 'donations' ? undefined : false,
             leagueBucket: metric === 'donations' ? undefined : INVALID_RANK_TIER
         };
@@ -599,8 +577,8 @@ function buildParticipantRow(event, participant, metricsByTag, metric, nowIso) {
         participant.discordId;
 
     if (metric === 'leagueTrophies') {
-        const bestAccount = accounts.reduce((best, account) =>
-            compareRows('push', account, best) < 0 ? account : best
+        const currentAccount = accounts.reduce((current, account) =>
+            compareRows('push', account, current) < 0 ? account : current
         );
 
         return {
@@ -608,19 +586,20 @@ function buildParticipantRow(event, participant, metricsByTag, metric, nowIso) {
             discordUsername: participant.discordUsername,
             displayName,
             accounts,
-            score: bestAccount.score,
-            scoreLabel: bestAccount.scoreLabel,
+            score: currentAccount.score,
+            scoreLabel: currentAccount.scoreLabel,
             metric,
             coverage: combineCoverage(accounts),
             warnings,
             accountCount: accounts.length,
-            currentTrophies: bestAccount.currentTrophies || 0,
-            bestTrophies: bestAccount.bestTrophies || 0,
-            bestLeagueName: bestAccount.bestLeagueName || '',
-            bestLeagueLabel: bestAccount.bestLeagueLabel || '',
-            bestCapturedMs: bestAccount.bestCapturedMs || 0,
-            hasPushRank: bestAccount.hasPushRank === true,
-            leagueBucket: bestAccount.leagueBucket ?? INVALID_RANK_TIER
+            leagueName: currentAccount.leagueName || '',
+            leagueLabel: currentAccount.leagueLabel || '',
+            currentTrophies: currentAccount.currentTrophies || 0,
+            currentLeagueName: currentAccount.currentLeagueName || '',
+            currentLeagueLabel: currentAccount.currentLeagueLabel || '',
+            currentCapturedMs: currentAccount.currentCapturedMs || 0,
+            hasPushRank: currentAccount.hasPushRank === true,
+            leagueBucket: currentAccount.leagueBucket ?? INVALID_RANK_TIER
         };
     }
 
@@ -637,8 +616,7 @@ function buildParticipantRow(event, participant, metricsByTag, metric, nowIso) {
         coverage: combineCoverage(accounts),
         warnings,
         accountCount: accounts.length,
-        currentTrophies: Math.max(0, ...accounts.map(account => account.currentTrophies || 0)),
-        bestTrophies: Math.max(0, ...accounts.map(account => account.bestTrophies || 0))
+        currentTrophies: Math.max(0, ...accounts.map(account => account.currentTrophies || 0))
     };
 }
 
@@ -667,7 +645,7 @@ function compareRows(type, a, b) {
     }
 
     if (type === 'push') {
-        const capturedDiff = (b.bestCapturedMs || 0) - (a.bestCapturedMs || 0);
+        const capturedDiff = (b.currentCapturedMs || 0) - (a.currentCapturedMs || 0);
 
         if (capturedDiff !== 0) {
             return capturedDiff;

@@ -233,16 +233,34 @@ function getLeaderboardRowsByTag(leaderboard) {
             const tag = normalizePlayerTag(account?.tag || account?.playerTag);
 
             if (tag) {
+                const hasAccountScore =
+                    account.score !== undefined ||
+                    account.currentValue !== undefined ||
+                    account.delta !== undefined ||
+                    account.donations !== undefined ||
+                    account.total !== undefined;
+                const accountScore =
+                    account.score ??
+                    account.currentValue ??
+                    account.delta ??
+                    account.donations ??
+                    account.total ??
+                    row.score;
                 rowsByTag.set(tag, {
                     ...row,
                     ...account,
                     scoreLabel: account.scoreLabel || row.scoreLabel,
-                    score: account.score ?? row.score,
+                    score: accountScore,
                     metric: account.metric || row.metric,
                     rank: row.rank,
-                    bestLeagueName: account.bestLeagueName || row.bestLeagueName,
-                    bestLeagueLabel: account.bestLeagueLabel || row.bestLeagueLabel,
-                    bestTrophies: account.bestTrophies ?? row.bestTrophies,
+                    hasAccountScore,
+                    leagueName: account.leagueName || row.leagueName,
+                    leagueLabel: account.leagueLabel || row.leagueLabel,
+                    currentLeagueName: account.currentLeagueName || row.currentLeagueName,
+                    currentLeagueLabel: account.currentLeagueLabel || row.currentLeagueLabel,
+                    currentTrophies: account.currentTrophies ?? row.currentTrophies,
+                    currentCapturedMs: account.currentCapturedMs ?? row.currentCapturedMs,
+                    leagueBucket: account.leagueBucket ?? row.leagueBucket,
                     hasPushRank: account.hasPushRank ?? row.hasPushRank
                 });
             }
@@ -292,6 +310,57 @@ function getEventAvailabilityStatus(event, now = new Date()) {
     return null;
 }
 
+async function readBackendLeaderboardForEvent(event, eventType, options = {}) {
+    if (!event || !rosterBackend.isRosterBackendConfigured?.()) {
+        return null;
+    }
+
+    const eventId = getEventId(event);
+
+    if (!eventId) {
+        return null;
+    }
+
+    try {
+        const leaderboard = await rosterBackend.getSeasonEventLeaderboard({
+            eventId,
+            limit: options.limit,
+            now: options.nowIso,
+            nowIso: options.nowIso,
+            source: options.source || {}
+        });
+
+        if (!leaderboard || typeof leaderboard !== 'object') {
+            return null;
+        }
+
+        const summaryEvent = leaderboard.event && typeof leaderboard.event === 'object'
+            ? leaderboard.event
+            : {};
+
+        return {
+            event: {
+                ...event,
+                ...summaryEvent,
+                eventId: getEventId(summaryEvent) || eventId,
+                type: getEventType(summaryEvent) || eventType
+            },
+            leaderboard
+        };
+    } catch (error) {
+        console.warn('Season event backend leaderboard unavailable; falling back to Firebase scoring.', {
+            eventId,
+            eventType,
+            errorName: error?.name || null,
+            errorMessage: error?.message || null,
+            errorCode: error?.code || null,
+            status: error?.status || null
+        });
+
+        return null;
+    }
+}
+
 async function loadEventForRendering(type, options = {}) {
     const eventType = normalizeEventType(type);
 
@@ -310,24 +379,34 @@ async function loadEventForRendering(type, options = {}) {
         });
     }
 
-    const event = await readCurrentEventFromFirebase(eventType, {
+    let event = await readCurrentEventFromFirebase(eventType, {
         includeParticipantsByDiscordId: true
     });
-    const metricsByTag = event
-        ? await rosterFirebase.readAllActivePlayerMetricsByTag()
-        : null;
-    const leaderboard = event
-        ? buildLocalSeasonEventLeaderboard(event, metricsByTag, {
-            type: eventType,
-            limit: options.limit,
-            nowIso: options.nowIso
-        })
-        : null;
+
+    let leaderboard = null;
+    let source = event ? 'firebase' : 'missing';
+
+    if (event) {
+        const backendResult = await readBackendLeaderboardForEvent(event, eventType, options);
+
+        if (backendResult) {
+            event = backendResult.event;
+            leaderboard = backendResult.leaderboard;
+            source = 'backend';
+        } else {
+            const metricsByTag = await rosterFirebase.readAllActivePlayerMetricsByTag();
+            leaderboard = buildLocalSeasonEventLeaderboard(event, metricsByTag, {
+                type: eventType,
+                limit: options.limit,
+                nowIso: options.nowIso
+            });
+        }
+    }
 
     return {
         event,
         leaderboard,
-        source: event ? 'firebase' : 'missing'
+        source
     };
 }
 

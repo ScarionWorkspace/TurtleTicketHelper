@@ -247,14 +247,25 @@ function parseNumberValue(value) {
     return match ? Number(match[0]) : 0;
 }
 
+function formatDonationDisplayValue(value) {
+    const text = stripDonationUnit(value);
+    const numericValue = parseNumberValue(text);
+
+    if (numericValue >= 100000) {
+        return `${Math.trunc(numericValue / 1000)}k`;
+    }
+
+    return text || 'pending';
+}
+
 function getPushLeagueValue(row, fallbackAccount = null) {
     const leagueLabel =
-        row?.bestLeagueLabel ||
-        row?.bestLeagueName ||
+        row?.currentLeagueLabel ||
+        row?.currentLeagueName ||
         row?.leagueLabel ||
         row?.leagueName ||
-        fallbackAccount?.bestLeagueLabel ||
-        fallbackAccount?.bestLeagueName ||
+        fallbackAccount?.currentLeagueLabel ||
+        fallbackAccount?.currentLeagueName ||
         fallbackAccount?.leagueLabel ||
         fallbackAccount?.leagueName ||
         '';
@@ -271,12 +282,10 @@ function getPushLeagueValue(row, fallbackAccount = null) {
 
 function getPushTrophyValue(row, fallbackAccount = null) {
     const trophies =
-        row?.bestTrophies ??
         row?.currentTrophies ??
         row?.score ??
         row?.value ??
         row?.trophies ??
-        fallbackAccount?.bestTrophies ??
         fallbackAccount?.currentTrophies ??
         fallbackAccount?.score ??
         fallbackAccount?.trophies ??
@@ -416,6 +425,17 @@ function compareDonationRows(a, b) {
     return String(a?.tag || '').localeCompare(String(b?.tag || ''));
 }
 
+function getParticipantSummaryName(participant, fallbackRow = null, fallbackAccount = null) {
+    return participant?.discordDisplayName ||
+        participant?.discordGlobalName ||
+        participant?.discordUsername ||
+        fallbackRow?.displayName ||
+        fallbackRow?.name ||
+        fallbackAccount?.name ||
+        fallbackAccount?.tag ||
+        'Unknown';
+}
+
 function buildAllConfirmedRows(event, leaderboard, type) {
     const leaderboardRows = getLeaderboardFallbackRows(leaderboard, type);
 
@@ -428,8 +448,34 @@ function buildAllConfirmedRows(event, leaderboard, type) {
     const rows = [];
 
     for (const participant of activeParticipants) {
-        for (const account of getAccountRowsForParticipant(participant)) {
-            const leaderboardRow = account.tag ? rowsByTag.get(account.tag) : null;
+        const accountRows = getAccountRowsForParticipant(participant);
+        const mappedRows = accountRows.map(account => ({
+            account,
+            leaderboardRow: account.tag ? rowsByTag.get(account.tag) : null
+        }));
+
+        if (
+            type === 'donation' &&
+            accountRows.length > 1 &&
+            mappedRows.some(item => item.leaderboardRow) &&
+            !mappedRows.every(item => item.leaderboardRow?.hasAccountScore === true)
+        ) {
+            const summaryRow = mappedRows.find(item => item.leaderboardRow)?.leaderboardRow;
+            const fallbackAccount = mappedRows.find(item => item.account)?.account;
+            rows.push({
+                rank: summaryRow?.rank || null,
+                tag: '',
+                townHall: null,
+                donationValue: getDonationValue(summaryRow),
+                leagueLabel: '',
+                trophies: '0',
+                scoreLabel: getScoreLabel(summaryRow, null, type),
+                name: getParticipantSummaryName(participant, summaryRow, fallbackAccount)
+            });
+            continue;
+        }
+
+        for (const { account, leaderboardRow } of mappedRows) {
             rows.push({
                 rank: leaderboardRow?.rank || null,
                 tag: account.tag,
@@ -460,7 +506,10 @@ function formatDonationTable(rows) {
     ];
 
     rows.forEach((row, index) => {
-        const donos = truncate(row.donationValue || row.scoreLabel || 'pending', 6).padEnd(6, ' ');
+        const donationValue = formatDonationDisplayValue(
+            row.donationValue || row.scoreLabel || 'pending'
+        );
+        const donos = truncate(donationValue, 6).padEnd(6, ' ');
         const name = truncate(row.name || row.tag || 'Unknown', 24);
         const rank = row.rank || index + 1;
 
@@ -527,6 +576,7 @@ function getFooterText(event, rows, type) {
     const activeParticipants = getActiveParticipants(event);
     const participantCount =
         activeParticipants.length ||
+        event?.activeParticipantCount ||
         event?.confirmedCount ||
         event?.participantCount ||
         event?.signupCount ||
@@ -538,8 +588,8 @@ function getFooterText(event, rows, type) {
                 (total, participant) => total + getAccountRowsForParticipant(participant).length,
                 0
             ) ||
-            event?.selectedAccountCount ||
             event?.accountCount ||
+            event?.selectedAccountCount ||
             rows.length ||
             0;
 
@@ -554,6 +604,7 @@ function getFooterText(event, rows, type) {
 function getConfirmedCount(event, rows) {
     const activeParticipants = getActiveParticipants(event);
     return activeParticipants.length ||
+        event?.activeParticipantCount ||
         event?.confirmedCount ||
         event?.participantCount ||
         event?.signupCount ||
