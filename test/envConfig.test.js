@@ -23,6 +23,7 @@ function cleanEnv(overrides = {}) {
 
     return {
         ...env,
+        TURTLE_HELPER_SKIP_DOTENV: '1',
         ...overrides
     };
 }

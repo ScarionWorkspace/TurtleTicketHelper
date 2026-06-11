@@ -35,6 +35,7 @@ DISCORD_GUILD_ID=your_discord_server_id_here
 OPEN_TICKET_CATEGORY_ID=your_open_ticket_category_id_here
 CLOSED_TICKET_CATEGORY_ID=your_closed_ticket_category_id_here
 TICKET_TOOL_BOT_ID=your_ticket_tool_bot_id_here
+CLASHPERK_BOT_ID=your_clashperk_bot_id_here
 COC_API_TOKEN=your_clash_of_clans_api_key_here
 ```
 
@@ -64,7 +65,15 @@ Copy the Ticket Tool bot ID and add it to:
 
 This ensures TurtleTicketHelper only reacts to Ticket Tool ticket messages.
 
-### 3. Configure Ticket Tool
+### 3. Get the ClashPerk bot ID
+
+Copy the ClashPerk bot ID and add it to:
+
+- `CLASHPERK_BOT_ID`
+
+This allows TurtleTicketHelper to detect ClashPerk successful-link messages and save unambiguous links to the roster backend automatically.
+
+### 4. Configure Ticket Tool
 
 Open the Ticket Tool dashboard and configure your ticket system.
 
@@ -172,6 +181,7 @@ npm run deploy:commands
 - Open ticket category ID added to `.env`
 - Closed ticket category ID added to `.env`
 - Ticket Tool bot ID added to `.env`
+- ClashPerk bot ID added to `.env`
 - Clash of Clans API key added to `.env` as `COC_API_TOKEN`
 - Server Members Intent enabled
 - Message Content Intent enabled

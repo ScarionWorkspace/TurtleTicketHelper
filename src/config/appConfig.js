@@ -2,6 +2,7 @@ const {
     OPEN_TICKET_CATEGORY_ID,
     CLOSED_TICKET_CATEGORY_ID,
     TICKET_TOOL_BOT_ID,
+    CLASHPERK_BOT_ID,
     ROSTER_WEBSITE_LEADERBOARD_URL
 } = require('./env');
 
@@ -24,6 +25,17 @@ const appConfig = {
 
         // Delay before a closed ticket channel gets deleted
         autoDeleteClosedChannelMs: 10000
+    },
+
+    clashPerk: {
+        botId: CLASHPERK_BOT_ID,
+        linkSavedMessage: 'Link Saved',
+        ambiguousDisplayNameMessage:
+            'Website sync did not work for {playerTag} because the Discord display name "{displayName}" is ambiguous. Please manually create the link or sync using the import function in the admin panel.',
+        missingDisplayNameMessage:
+            'Website sync did not work for {playerTag} because no Discord member with display name "{displayName}" was found. Please manually create the link or sync using the import function in the admin panel.',
+        backendFailureMessage:
+            'Website sync did not work for {playerTag} because the backend sync failed. Please manually create the link or sync using the import function in the admin panel.'
     },
 
     // Settings used when a new ticket channel is created

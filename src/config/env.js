@@ -1,10 +1,12 @@
 const path = require('node:path');
 const dotenv = require('dotenv');
 
-dotenv.config({
-    path: path.resolve(__dirname, '..', '..', '.env'),
-    quiet: true
-});
+if (process.env.TURTLE_HELPER_SKIP_DOTENV !== '1') {
+    dotenv.config({
+        path: path.resolve(__dirname, '..', '..', '.env'),
+        quiet: true
+    });
+}
 
 const SECRET_KEY_PATTERN = /(TOKEN|SECRET|KEY|PASSWORD)/i;
 const PLACEHOLDER_PATTERN = /^(your_|replace_|changeme|todo|example|null|undefined)/i;
@@ -13,6 +15,7 @@ const OPTIONAL_SNOWFLAKE_ENV_NAMES = [
     'DISCORD_CLIENT_ID',
     'DISCORD_GUILD_ID',
     'TICKET_TOOL_BOT_ID',
+    'CLASHPERK_BOT_ID',
     'OPEN_TICKET_CATEGORY_ID',
     'CLOSED_TICKET_CATEGORY_ID'
 ];
@@ -30,6 +33,7 @@ const ENV_DEFINITIONS = {
         requiredFor: ['commands']
     },
     TICKET_TOOL_BOT_ID: {},
+    CLASHPERK_BOT_ID: {},
     OPEN_TICKET_CATEGORY_ID: {},
     CLOSED_TICKET_CATEGORY_ID: {},
     COC_API_TOKEN: {
@@ -243,6 +247,10 @@ function getConfigWarnings() {
         warnings.push('Roster backend integration needs both ROSTER_BACKEND_URL and ROSTER_BOT_SECRET.');
     }
 
+    if (!getEnv('CLASHPERK_BOT_ID')) {
+        warnings.push('ClashPerk link sync needs CLASHPERK_BOT_ID.');
+    }
+
     return warnings;
 }
 
@@ -275,6 +283,7 @@ module.exports = {
     DISCORD_CLIENT_ID: getEnv('DISCORD_CLIENT_ID'),
     DISCORD_GUILD_ID: getEnv('DISCORD_GUILD_ID'),
     TICKET_TOOL_BOT_ID: getEnv('TICKET_TOOL_BOT_ID'),
+    CLASHPERK_BOT_ID: getEnv('CLASHPERK_BOT_ID'),
     OPEN_TICKET_CATEGORY_ID: getEnv('OPEN_TICKET_CATEGORY_ID'),
     CLOSED_TICKET_CATEGORY_ID: getEnv('CLOSED_TICKET_CATEGORY_ID'),
     COC_API_TOKEN: getEnv('COC_API_TOKEN'),

@@ -2,6 +2,7 @@ const {
     ActionRowBuilder,
     ButtonBuilder,
     ButtonStyle,
+    ChannelType,
     EmbedBuilder,
     StringSelectMenuBuilder,
     StringSelectMenuOptionBuilder
@@ -178,7 +179,28 @@ function formatLeagueOptionClanLabel(option) {
     return truncate(unique.join(', '), 120) || 'Clan';
 }
 
-function buildSignupMessagePayload(options, pageIndex = 0, pageCount = 1) {
+function formatSkippedRosterReason(reason) {
+    switch (String(reason || '')) {
+        case 'missingLeague':
+            return 'league could not be fetched from Clash';
+        case 'missingConnectedClanTag':
+            return 'connected clan tag is missing or invalid';
+        case 'missingRosterId':
+            return 'roster id is missing';
+        default:
+            return 'could not build a signup option';
+    }
+}
+
+function buildSkippedRosterLines(skippedRosters) {
+    return (Array.isArray(skippedRosters) ? skippedRosters : []).map(roster => {
+        const label = roster?.rosterTitle || roster?.rosterId || roster?.clanTag || 'Unnamed roster';
+        const clanTag = roster?.clanTag ? ` (${roster.clanTag})` : '';
+        return `- ${truncate(label, 80)}${clanTag}: ${formatSkippedRosterReason(roster?.reason)}`;
+    });
+}
+
+function buildSignupMessagePayload(options, signupId, pageIndex = 0, pageCount = 1) {
     const available = Array.isArray(options) ? options.slice(0, DISCORD_BUTTONS_PER_MESSAGE) : [];
     const embed = new EmbedBuilder()
         .setTitle('CWL League Preferences')
@@ -191,9 +213,13 @@ function buildSignupMessagePayload(options, pageIndex = 0, pageCount = 1) {
 
     if (available.length) {
         const optionLines = available.map(option => `${truncate(option.leagueName, 80)} (${formatLeagueOptionClanLabel(option)})`);
-        embed.addFields({
-            name: 'Choose your preferred league',
-            value: splitLinesForDiscord(optionLines, 1024)[0]
+        const optionChunks = splitLinesForDiscord(optionLines, 1024);
+
+        optionChunks.forEach((chunk, index) => {
+            embed.addFields({
+                name: index === 0 ? 'Choose your preferred league' : 'More choices',
+                value: chunk
+            });
         });
     } else {
         embed.addFields({
@@ -208,7 +234,7 @@ function buildSignupMessagePayload(options, pageIndex = 0, pageCount = 1) {
         for (const option of available.slice(index, index + 5)) {
             row.addComponents(
                 new ButtonBuilder()
-                    .setCustomId(buildCustomId('choose', option.leagueKey))
+                    .setCustomId(buildCustomId('choose', signupId, option.leagueKey))
                     .setLabel(safeComponentLabel(option.leagueName, DISCORD_BUTTON_LABEL_MAX_LENGTH, 'CWL League'))
                     .setStyle(ButtonStyle.Primary)
             );
@@ -223,14 +249,65 @@ function buildSignupMessagePayload(options, pageIndex = 0, pageCount = 1) {
 }
 
 async function sendCwlLeagueSignupMessage(interaction) {
+    if (!isSeasonEventAdmin(interaction.member)) {
+        await interaction.reply({
+            content: 'This command is staff only.',
+            flags: 64
+        });
+        return;
+    }
+
+    const channel = interaction.channel;
+
+    if (!channel || channel.type !== ChannelType.GuildText || typeof channel.send !== 'function') {
+        await interaction.reply({
+            content: 'Use this command in the text channel where the CWL signup message should be posted.',
+            flags: 64
+        });
+        return;
+    }
+
     await interaction.deferReply({ flags: 64 });
     const result = await rosterBackend.getCwlLeagueSignupOptions({ fetchMissing: true });
-    const optionChunks = chunkArray(result?.options || [], DISCORD_BUTTONS_PER_MESSAGE);
+    const signupId = String(result?.signupId || '').trim();
+    if (!signupId) {
+        throw new Error('Roster backend did not return a CWL signup id.');
+    }
+    const options = Array.isArray(result?.options) ? result.options : [];
+    const skippedRosterLines = buildSkippedRosterLines(result?.diagnostics?.skippedRosters);
+
+    if (!options.length) {
+        await interaction.editReply({
+            content: 'I did not send a CWL signup message because no roster league options were available. Check the connected clan tags and Clash API access, then try again.'
+        });
+        return;
+    }
+
+    if (skippedRosterLines.length) {
+        const chunks = splitLinesForDiscord([
+            'I did not send a CWL signup message because the league list would be incomplete.',
+            ...skippedRosterLines
+        ]);
+
+        await interaction.editReply({
+            content: chunks[0]
+        });
+
+        for (const chunk of chunks.slice(1)) {
+            await interaction.followUp({
+                content: chunk,
+                flags: 64
+            });
+        }
+        return;
+    }
+
+    const optionChunks = chunkArray(options, DISCORD_BUTTONS_PER_MESSAGE);
     const chunks = optionChunks.length ? optionChunks : [[]];
     const messages = [];
 
     for (let index = 0; index < chunks.length; index++) {
-        messages.push(await interaction.channel.send(buildSignupMessagePayload(chunks[index], index, chunks.length)));
+        messages.push(await channel.send(buildSignupMessagePayload(chunks[index], signupId, index, chunks.length)));
     }
 
     const responseLines = chunks.length === 1
@@ -263,7 +340,7 @@ function accountLabel(account) {
     return truncate(th ? `${prefix} TH${th}` : prefix, DISCORD_SELECT_LABEL_MAX_LENGTH);
 }
 
-async function savePreference(interaction, leagueKey, account, sourceMessageId = '') {
+async function savePreference(interaction, signupId, leagueKey, account, sourceMessageId = '') {
     const discordUser = buildDiscordUser(interaction);
     const playerTag = normalizePlayerTag(account?.playerTag || account?.tag);
 
@@ -272,6 +349,7 @@ async function savePreference(interaction, leagueKey, account, sourceMessageId =
         result = await rosterBackend.setCwlLeaguePreference({
             playerTag,
             playerName: account?.name || '',
+            signupId,
             leagueKey,
             discordId: discordUser.id,
             discordUsername: discordUser.username,
@@ -281,10 +359,16 @@ async function savePreference(interaction, leagueKey, account, sourceMessageId =
             guildId: interaction.guildId || ''
         });
     } catch (error) {
-        const alreadySet = String(error?.message || '').toLowerCase().includes('already has');
-        const content = alreadySet
-            ? `${accountLabel(account)} already has a CWL league preference.`
-            : 'Unable to save that CWL league preference right now.';
+        const errorMessage = String(error?.message || '').toLowerCase();
+        const alreadySet = errorMessage.includes('already has');
+        const staleSignup = errorMessage.includes('no longer active');
+        let content = 'Unable to save that CWL league preference right now.';
+
+        if (staleSignup) {
+            content = 'This CWL signup message is no longer active. Please use the latest signup message.';
+        } else if (alreadySet) {
+            content = `${accountLabel(account)} already has a CWL league preference.`;
+        }
 
         if (interaction.deferred || interaction.replied) {
             await interaction.editReply({
@@ -319,7 +403,17 @@ async function savePreference(interaction, leagueKey, account, sourceMessageId =
 }
 
 async function handleChooseButton(interaction, parsed) {
-    const leagueKey = parsed.parts[0] || '';
+    const signupId = parsed.parts[0] || '';
+    const leagueKey = parsed.parts[1] || '';
+
+    if (!signupId || !leagueKey) {
+        await interaction.reply({
+            content: 'This CWL signup message is no longer active. Please use the latest signup message.',
+            flags: 64
+        });
+        return;
+    }
+
     await interaction.deferReply({ flags: 64 });
 
     const discordUser = buildDiscordUser(interaction);
@@ -343,14 +437,14 @@ async function handleChooseButton(interaction, parsed) {
     }
 
     if (availableAccounts.length === 1) {
-        await savePreference(interaction, leagueKey, availableAccounts[0], interaction.message?.id || '');
+        await savePreference(interaction, signupId, leagueKey, availableAccounts[0], interaction.message?.id || '');
         return;
     }
 
     const accountChunks = chunkArray(availableAccounts, DISCORD_SELECT_OPTIONS_MAX).slice(0, DISCORD_ACTION_ROWS_MAX);
     const accountRows = accountChunks.map((accounts, chunkIndex) => {
         const select = new StringSelectMenuBuilder()
-            .setCustomId(buildCustomId('account', leagueKey, chunkIndex))
+            .setCustomId(buildCustomId('account', signupId, leagueKey, chunkIndex))
             .setPlaceholder(accountChunks.length > 1 ? `Choose account ${chunkIndex + 1}` : 'Choose account')
             .setMinValues(1)
             .setMaxValues(1)
@@ -375,7 +469,17 @@ async function handleChooseButton(interaction, parsed) {
 }
 
 async function handleAccountSelect(interaction, parsed) {
-    const leagueKey = parsed.parts[0] || '';
+    const signupId = parsed.parts[0] || '';
+    const leagueKey = parsed.parts[1] || '';
+
+    if (!signupId || !leagueKey) {
+        await interaction.reply({
+            content: 'This CWL signup message is no longer active. Please use the latest signup message.',
+            flags: 64
+        });
+        return;
+    }
+
     const selected = parseAccountSelectValue(interaction.values?.[0]);
     const selectedTag = selected.playerTag;
     const discordUser = buildDiscordUser(interaction);
@@ -391,7 +495,7 @@ async function handleAccountSelect(interaction, parsed) {
     }
 
     await interaction.deferUpdate();
-    await savePreference(interaction, leagueKey, account, selected.sourceMessageId);
+    await savePreference(interaction, signupId, leagueKey, account, selected.sourceMessageId);
 }
 
 async function getCwlLeaguePreferenceCount() {
@@ -587,6 +691,14 @@ async function buildCwlLeagueSignupSummary() {
 }
 
 async function showCwlLeagueSignupSummary(interaction) {
+    if (!isSeasonEventAdmin(interaction.member)) {
+        await interaction.reply({
+            content: 'This command is staff only.',
+            flags: 64
+        });
+        return;
+    }
+
     await interaction.deferReply({ flags: 64 });
     const chunks = await buildCwlLeagueSignupSummaryChunks();
 

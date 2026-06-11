@@ -9,6 +9,9 @@ const {
 const {
     handleRosterPlayersInteraction
 } = require('../features/rosterPlayers/rosterPlayersInteraction');
+const {
+    handleLinkListInteraction
+} = require('../features/linkList/linkListInteraction');
 
 async function replyToFailedInteraction(interaction) {
     try {
@@ -61,6 +64,10 @@ module.exports = {
             }
 
             if (interaction.isButton()) {
+                if (await handleLinkListInteraction(interaction)) {
+                    return;
+                }
+
                 if (await handleCwlLeagueSignupInteraction(interaction)) {
                     return;
                 }
@@ -87,6 +94,10 @@ module.exports = {
             }
 
             if (interaction.isStringSelectMenu()) {
+                if (await handleLinkListInteraction(interaction)) {
+                    return;
+                }
+
                 if (await handleCwlLeagueSignupInteraction(interaction)) {
                     return;
                 }
