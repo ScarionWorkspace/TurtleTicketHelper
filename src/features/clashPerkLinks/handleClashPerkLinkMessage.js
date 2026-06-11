@@ -4,14 +4,17 @@ const {
     isValidPlayerTag
 } = require('../joinClanApplication/fetchPlayerData');
 const {
+    deleteDiscordIdentityForPlayerTag,
     syncDiscordIdentityForPlayerTag
 } = require('../joinClanApplication/syncDiscordUsernameForPlayerTag');
 
 const CLASHPERK_AUTHOR_NAME_PATTERN = /\bclash\s*perk\b/i;
 const SUCCESSFUL_LINK_MARKER_PATTERN = /Successfully\s+linked/i;
+const SUCCESSFUL_DELETE_MARKER_PATTERN = /Successfully\s+deleted\s+the\s+link\s+with\s+the\s+tag/i;
 const LINK_MESSAGE_PATTERN = /Successfully\s+linked\s+(.+?)\s+\((#[A-Z0-9]+)\)\s+to\s+(.+)$/i;
+const DELETE_MESSAGE_PATTERN = /Successfully\s+deleted\s+the\s+link\s+with\s+the\s+tag\s+(#[A-Z0-9]+)\.?$/i;
 const DEFAULT_MEMBER_SEARCH_LIMIT = 1000;
-const DEFAULT_FULL_MEMBER_FETCH_TIMEOUT_MS = 20_000;
+const DEFAULT_FULL_MEMBER_FETCH_TIMEOUT_MS = 200_000;
 const DEFAULT_MEMBER_LIST_PAGE_LIMIT = 1000;
 const DEFAULT_MEMBER_LIST_MAX_PAGES = 100;
 const HANDLED_MESSAGE_ID_LIMIT = 500;
@@ -152,32 +155,55 @@ function parseClashPerkLinkCandidate(candidateRaw) {
     const candidate = normalizeClashPerkText(candidateRaw);
     const markerMatch = SUCCESSFUL_LINK_MARKER_PATTERN.exec(candidate);
 
-    if (!markerMatch) {
+    if (markerMatch) {
+        const linkText = candidate.slice(markerMatch.index);
+        const match = LINK_MESSAGE_PATTERN.exec(linkText);
+
+        if (!match) {
+            return null;
+        }
+
+        const playerName = cleanClashPerkText(match[1]);
+        const playerTag = normalizePlayerTag(match[2]);
+        const displayName = cleanClashPerkText(match[3]);
+        const discordMentionId = String(match[3] || '').match(/<@!?(\d{17,20})>/)?.[1] || null;
+
+        if (!isValidPlayerTag(playerTag) || !displayName) {
+            return null;
+        }
+
+        return {
+            playerName,
+            playerTag,
+            displayName,
+            discordMentionId,
+            rawText: linkText
+        };
+    }
+
+    const deleteMarkerMatch = SUCCESSFUL_DELETE_MARKER_PATTERN.exec(candidate);
+
+    if (!deleteMarkerMatch) {
         return null;
     }
 
-    const linkText = candidate.slice(markerMatch.index);
-    const match = LINK_MESSAGE_PATTERN.exec(linkText);
+    const deleteText = candidate.slice(deleteMarkerMatch.index);
+    const deleteMatch = DELETE_MESSAGE_PATTERN.exec(deleteText);
 
-    if (!match) {
+    if (!deleteMatch) {
         return null;
     }
 
-    const playerName = cleanClashPerkText(match[1]);
-    const playerTag = normalizePlayerTag(match[2]);
-    const displayName = cleanClashPerkText(match[3]);
-    const discordMentionId = String(match[3] || '').match(/<@!?(\d{17,20})>/)?.[1] || null;
+    const playerTag = normalizePlayerTag(deleteMatch[1]);
 
-    if (!isValidPlayerTag(playerTag) || !displayName) {
+    if (!isValidPlayerTag(playerTag)) {
         return null;
     }
 
     return {
-        playerName,
+        action: 'deleted',
         playerTag,
-        displayName,
-        discordMentionId,
-        rawText: linkText
+        rawText: deleteText
     };
 }
 
@@ -401,13 +427,95 @@ function formatConfiguredMessage(template, details) {
         .replaceAll('{displayName}', details.displayName || '');
 }
 
+function getClashPerkCreateSummary(parsed, member = null) {
+    const player = parsed?.playerName
+        ? `${parsed.playerName} (${parsed.playerTag})`
+        : parsed?.playerTag || 'this player';
+    const discordName = member
+        ? getMemberUsername(member) || getMemberDisplayName(member) || parsed?.displayName
+        : parsed?.displayName;
+
+    return discordName ? `${player} to ${discordName}` : player;
+}
+
+function getClashPerkFailureReason(parsed, reason, matchCount) {
+    const displayName = parsed?.displayName ? `"${parsed.displayName}"` : 'that Discord name';
+    const hasMatchCount = matchCount !== null && matchCount !== undefined && Number.isFinite(Number(matchCount));
+
+    if (hasMatchCount && Number(matchCount) > 1) {
+        return `multiple Discord members matched ${displayName}`;
+    }
+
+    if (hasMatchCount && Number(matchCount) === 0) {
+        return `no Discord member matched ${displayName}`;
+    }
+
+    const text = String(reason || '').trim();
+
+    if (/backend delete sync failed/i.test(text)) {
+        return 'the backend delete sync failed';
+    }
+
+    if (/backend sync failed/i.test(text)) {
+        return 'the backend sync failed';
+    }
+
+    return text
+        .replace(/^Website sync did not work for\s+#[A-Z0-9]+\s+because\s+/i, '')
+        .replace(/\s*Please manually.+$/i, '')
+        .replace(/\.$/, '')
+        .trim() || 'the sync failed';
+}
+
+function buildClashPerkStatusMessage({
+    status,
+    parsed,
+    member = null,
+    result = null,
+    reason = '',
+    matchCount = null
+}) {
+    if (parsed?.action === 'deleted') {
+        if (status === 'loading') {
+            return `Deleting link for ${parsed.playerTag} from the roster backend...`;
+        }
+
+        if (status === 'success') {
+            if (result?.found === false || result?.updated === false) {
+                return `Delete sync finished for ${parsed.playerTag}; no active roster link needed to be removed.`;
+            }
+
+            const removed = result?.removedDiscordUsername || result?.removedDiscordId || '';
+            return removed
+                ? `Deleted link for ${parsed.playerTag}; removed ${removed} from the roster backend.`
+                : `Deleted link for ${parsed.playerTag} from the roster backend.`;
+        }
+
+        return `Could not delete link for ${parsed.playerTag}: ${getClashPerkFailureReason(parsed, reason, matchCount)}.`;
+    }
+
+    const summary = getClashPerkCreateSummary(parsed, member);
+
+    if (status === 'loading') {
+        return `Saving link for ${summary} in the roster backend...`;
+    }
+
+    if (status === 'success') {
+        return result?.updated === false
+            ? `Link already up to date: ${summary}.`
+            : `Saved link: ${summary}.`;
+    }
+
+    return `Could not save link for ${summary}: ${getClashPerkFailureReason(parsed, reason, matchCount)}.`;
+}
+
 async function sendChannelMessage(message, content) {
     if (!content || typeof message?.channel?.send !== 'function') {
-        return;
+        return null;
     }
 
     try {
-        await message.channel.send(content);
+        return await message.channel.send(content);
     } catch (error) {
         console.error('ClashPerk link sync response send failed:', {
             errorName: error?.name || null,
@@ -415,7 +523,29 @@ async function sendChannelMessage(message, content) {
             errorCode: error?.code || null,
             status: error?.status || null
         });
+        return null;
     }
+}
+
+async function updateChannelMessage(message, sentMessage, content) {
+    if (!content) {
+        return null;
+    }
+
+    if (sentMessage && typeof sentMessage.edit === 'function') {
+        try {
+            return await sentMessage.edit(content);
+        } catch (error) {
+            console.error('ClashPerk link sync response edit failed:', {
+                errorName: error?.name || null,
+                errorMessage: error?.message || null,
+                errorCode: error?.code || null,
+                status: error?.status || null
+            });
+        }
+    }
+
+    return sendChannelMessage(message, content);
 }
 
 function isConfiguredClashPerkBotMessage(message, clashPerkConfig) {
@@ -517,8 +647,11 @@ async function handleClashPerkLinkMessage(message, options = {}) {
     const parsed = parseClashPerkLinkMessage(textCandidates);
 
     if (!parsed) {
-        if (textCandidates.some(candidate => SUCCESSFUL_LINK_MARKER_PATTERN.test(candidate))) {
-            console.warn('ClashPerk successful-link message was seen but could not be parsed:', {
+        if (textCandidates.some(candidate => (
+            SUCCESSFUL_LINK_MARKER_PATTERN.test(candidate) ||
+            SUCCESSFUL_DELETE_MARKER_PATTERN.test(candidate)
+        ))) {
+            console.warn('ClashPerk link message was seen but could not be parsed:', {
                 messageId: hydratedMessage?.id || null,
                 channelId: hydratedMessage?.channel?.id || null,
                 authorId: hydratedMessage?.author?.id || null,
@@ -531,13 +664,74 @@ async function handleClashPerkLinkMessage(message, options = {}) {
 
     markMessageHandled(hydratedMessage);
 
-    console.log('ClashPerk successful-link message detected:', {
+    console.log('ClashPerk link message detected:', {
         messageId: hydratedMessage?.id || null,
         channelId: hydratedMessage?.channel?.id || null,
         authorId: hydratedMessage?.author?.id || null,
+        action: parsed.action || 'created',
         playerTag: parsed.playerTag,
-        displayName: parsed.displayName
+        displayName: parsed.displayName || null
     });
+
+    const statusMessage = await sendChannelMessage(
+        hydratedMessage,
+        buildClashPerkStatusMessage({
+            title: parsed.action === 'deleted'
+                ? clashPerkConfig.linkDeletingMessage || 'Deleting Link'
+                : clashPerkConfig.linkSavingMessage || 'Saving Link',
+            status: 'loading',
+            parsed
+        })
+    );
+
+    if (parsed.action === 'deleted') {
+        const deleteIdentity = options.deleteDiscordIdentityForPlayerTag || deleteDiscordIdentityForPlayerTag;
+        const result = await deleteIdentity(parsed.playerTag);
+
+        if (!result || result.ok === false || result.skipped === true) {
+            const reason = formatConfiguredMessage(
+                clashPerkConfig.deleteBackendFailureMessage ||
+                `Website sync did not work for ${parsed.playerTag} because the backend delete sync failed. Please manually delete the link or sync using the import function in the admin panel.`,
+                parsed
+            );
+
+            await updateChannelMessage(
+                hydratedMessage,
+                statusMessage,
+                buildClashPerkStatusMessage({
+                    title: 'Link Delete Sync Failed',
+                    status: 'failed',
+                    parsed,
+                    result,
+                    reason
+                })
+            );
+
+            return {
+                ok: false,
+                reason: 'backend-delete-sync-failed',
+                parsed,
+                result
+            };
+        }
+
+        await updateChannelMessage(
+            hydratedMessage,
+            statusMessage,
+            buildClashPerkStatusMessage({
+                title: clashPerkConfig.linkDeletedMessage || 'Link Deleted',
+                status: 'success',
+                parsed,
+                result
+            })
+        );
+
+        return {
+            ok: true,
+            parsed,
+            result
+        };
+    }
 
     const mentionedMember = parsed.discordMentionId
         ? await fetchGuildMemberById(hydratedMessage.guild, parsed.discordMentionId)
@@ -558,9 +752,16 @@ async function handleClashPerkLinkMessage(message, options = {}) {
             ? `Website sync did not work for ${parsed.playerTag} because the Discord display name "${parsed.displayName}" is ambiguous. Please manually create the link or sync using the import function in the admin panel.`
             : `Website sync did not work for ${parsed.playerTag} because no Discord member with display name "${parsed.displayName}" was found. Please manually create the link or sync using the import function in the admin panel.`;
 
-        await sendChannelMessage(
+        await updateChannelMessage(
             hydratedMessage,
-            formatConfiguredMessage(template || fallback, parsed)
+            statusMessage,
+            buildClashPerkStatusMessage({
+                title: 'Link Save Sync Failed',
+                status: 'failed',
+                parsed,
+                matchCount: matches.length,
+                reason: formatConfiguredMessage(template || fallback, parsed)
+            })
         );
 
         return {
@@ -580,10 +781,23 @@ async function handleClashPerkLinkMessage(message, options = {}) {
     );
 
     if (!result || result.ok === false || result.skipped === true) {
-        const fallback = `Website sync did not work for ${parsed.playerTag} because the backend sync failed. Please manually create the link or sync using the import function in the admin panel.`;
-        await sendChannelMessage(
+        const reason = formatConfiguredMessage(
+            clashPerkConfig.backendFailureMessage ||
+            `Website sync did not work for ${parsed.playerTag} because the backend sync failed. Please manually create the link or sync using the import function in the admin panel.`,
+            parsed
+        );
+
+        await updateChannelMessage(
             hydratedMessage,
-            formatConfiguredMessage(clashPerkConfig.backendFailureMessage || fallback, parsed)
+            statusMessage,
+            buildClashPerkStatusMessage({
+                title: 'Link Save Sync Failed',
+                status: 'failed',
+                parsed,
+                member,
+                result,
+                reason
+            })
         );
 
         return {
@@ -594,7 +808,17 @@ async function handleClashPerkLinkMessage(message, options = {}) {
         };
     }
 
-    await sendChannelMessage(hydratedMessage, clashPerkConfig.linkSavedMessage || 'Link Saved');
+    await updateChannelMessage(
+        hydratedMessage,
+        statusMessage,
+        buildClashPerkStatusMessage({
+            title: clashPerkConfig.linkSavedMessage || 'Link Saved',
+            status: 'success',
+            parsed,
+            member,
+            result
+        })
+    );
 
     return {
         ok: true,

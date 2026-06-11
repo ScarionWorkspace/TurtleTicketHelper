@@ -71,7 +71,7 @@ Copy the ClashPerk bot ID and add it to:
 
 - `CLASHPERK_BOT_ID`
 
-This allows TurtleTicketHelper to detect ClashPerk successful-link messages and save unambiguous links to the roster backend automatically.
+This allows TurtleTicketHelper to detect ClashPerk link creation and deletion messages and sync unambiguous changes to the roster backend automatically.
 
 ### 4. Configure Ticket Tool
 

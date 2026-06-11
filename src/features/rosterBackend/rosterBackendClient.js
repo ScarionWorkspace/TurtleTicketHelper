@@ -4,6 +4,7 @@ const {
 } = require('../../config/env');
 
 const DEFAULT_TIMEOUT_MS = 60_000;
+const DISCORD_IDENTITY_SYNC_TIMEOUT_MS = 180_000;
 
 class RosterBackendError extends Error {
     constructor(message, details = {}) {
@@ -54,7 +55,9 @@ async function callRosterBackendMethod(methodName, args, options = {}) {
         const response = await fetch(ROSTER_BACKEND_URL, {
             method: 'POST',
             headers: {
-                'Content-Type': 'application/json'
+                'Authorization': `Bearer ${ROSTER_BOT_SECRET}`,
+                'Content-Type': 'application/json',
+                'X-Discord-Bot-Secret': ROSTER_BOT_SECRET
             },
             body: JSON.stringify({
                 method: methodName,
@@ -125,7 +128,24 @@ function syncDiscordIdentityForPlayerTag(payload = {}, options = {}) {
             discordUsername: payload.discordUsername,
             botSecret: ROSTER_BOT_SECRET
         }],
-        options
+        {
+            timeoutMs: DISCORD_IDENTITY_SYNC_TIMEOUT_MS,
+            ...options
+        }
+    );
+}
+
+function deleteDiscordIdentityForPlayerTag(payload = {}, options = {}) {
+    return callRosterBackendMethod(
+        'deleteDiscordIdentityForPlayerTag',
+        [{
+            playerTag: payload.playerTag,
+            botSecret: ROSTER_BOT_SECRET
+        }],
+        {
+            timeoutMs: DISCORD_IDENTITY_SYNC_TIMEOUT_MS,
+            ...options
+        }
     );
 }
 
@@ -188,6 +208,7 @@ function resetCwlLeaguePreferences(payload = {}, options = {}) {
 module.exports = {
     RosterBackendError,
     isRosterBackendConfigured,
+    deleteDiscordIdentityForPlayerTag,
     syncDiscordIdentityForPlayerTag,
     reconcileCurrentSeasonEvents,
     getCurrentSeasonEvents,

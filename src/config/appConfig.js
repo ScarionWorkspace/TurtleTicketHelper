@@ -29,13 +29,18 @@ const appConfig = {
 
     clashPerk: {
         botId: CLASHPERK_BOT_ID,
+        linkSavingMessage: 'Saving Link',
+        linkDeletingMessage: 'Deleting Link',
         linkSavedMessage: 'Link Saved',
+        linkDeletedMessage: 'Link Deleted',
         ambiguousDisplayNameMessage:
             'Website sync did not work for {playerTag} because the Discord display name "{displayName}" is ambiguous. Please manually create the link or sync using the import function in the admin panel.',
         missingDisplayNameMessage:
             'Website sync did not work for {playerTag} because no Discord member with display name "{displayName}" was found. Please manually create the link or sync using the import function in the admin panel.',
         backendFailureMessage:
-            'Website sync did not work for {playerTag} because the backend sync failed. Please manually create the link or sync using the import function in the admin panel.'
+            'Website sync did not work for {playerTag} because the backend sync failed. Please manually create the link or sync using the import function in the admin panel.',
+        deleteBackendFailureMessage:
+            'Website sync did not work for {playerTag} because the backend delete sync failed. Please manually delete the link or sync using the import function in the admin panel.'
     },
 
     // Settings used when a new ticket channel is created
