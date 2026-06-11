@@ -10,14 +10,15 @@ const {
     searchGuildMembersByDisplayName
 } = require('../src/features/clashPerkLinks/handleClashPerkLinkMessage');
 
-function buildMember(id, displayName, username = displayName, bot = false) {
+function buildMember(id, displayName, username = displayName, bot = false, userOverrides = {}) {
     return {
         id,
         displayName,
         user: {
             id,
             username,
-            bot
+            bot,
+            ...userOverrides
         }
     };
 }
@@ -102,9 +103,13 @@ test('parses ClashPerk link text with harmless prefix content', () => {
     assert.equal(parsed.displayName, 'cleanupkid_');
 });
 
-test('matches guild members by exact display name and ignores bots', async () => {
-    const human = buildMember('111', 'sagar', 'real_sagar');
-    const bot = buildMember('222', 'sagar', 'bot_sagar', true);
+test('matches guild members by exact account display name and ignores bots', async () => {
+    const human = buildMember('111', 'server-sagar', 'real_sagar', false, {
+        globalName: 'sagar'
+    });
+    const bot = buildMember('222', 'server-sagar', 'bot_sagar', true, {
+        globalName: 'sagar'
+    });
     const guild = {
         members: {
             cache: new Map(),
@@ -119,7 +124,9 @@ test('matches guild members by exact display name and ignores bots', async () =>
 });
 
 test('falls back to full guild member listing for global display names', async () => {
-    const member = buildMember('111', 'Display Name', 'actual_username');
+    const member = buildMember('111', 'Server Display Name', 'actual_username', false, {
+        globalName: 'Display Name'
+    });
     const guild = {
         members: {
             cache: new Map(),
@@ -129,6 +136,19 @@ test('falls back to full guild member listing for global display names', async (
     };
 
     assert.deepEqual(await searchGuildMembersByDisplayName(guild, 'Display Name'), [member]);
+});
+
+test('uses Discord username before server-level display names', async () => {
+    const member = buildMember('111', 'server_name', 'account_username');
+    const guild = {
+        members: {
+            cache: new Map(),
+            search: async () => new Map([[member.id, member]])
+        }
+    };
+
+    assert.deepEqual(await searchGuildMembersByDisplayName(guild, 'account_username'), [member]);
+    assert.deepEqual(await searchGuildMembersByDisplayName(guild, 'server_name'), []);
 });
 
 test('accepts a ClashPerk-named bot or webhook when author id is not the configured id', () => {
@@ -165,7 +185,9 @@ test('accepts ClashPerk webhook-style public interaction replies', async () => {
 });
 
 test('saves unambiguous ClashPerk link to backend and sends success message', async () => {
-    const member = buildMember('111', 'cleanupkid_', 'cleanupkid');
+    const member = buildMember('111', 'server-cleanupkid', 'cleanupkid', false, {
+        globalName: 'cleanupkid_'
+    });
     const message = buildMessage({
         content: 'Successfully linked **DOOM (#P29LQ2C2U)** to **cleanupkid_**.',
         members: [member]
@@ -266,8 +288,12 @@ test('warns and skips backend sync for ambiguous display names', async () => {
     const message = buildMessage({
         content: 'Successfully linked Ashish v2.0 (#P2QUL292G) to sagar.',
         members: [
-            buildMember('111', 'sagar', 'sagar_one'),
-            buildMember('222', 'sagar', 'sagar_two')
+            buildMember('111', 'server-sagar-one', 'sagar_one', false, {
+                globalName: 'sagar'
+            }),
+            buildMember('222', 'server-sagar-two', 'sagar_two', false, {
+                globalName: 'sagar'
+            })
         ]
     });
     let syncCalled = false;

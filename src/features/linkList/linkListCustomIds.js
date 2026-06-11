@@ -25,6 +25,12 @@ function buildLinkListSwitchCustomId(mode) {
     return `${CUSTOM_ID_PREFIX}:switch:${normalizeMode(mode)}`;
 }
 
+function buildLinkListRefreshCustomId(clanTag, mode) {
+    const cleanClanTag = normalizeCustomIdClanTag(clanTag);
+
+    return `${CUSTOM_ID_PREFIX}:refresh:${normalizeMode(mode)}:${cleanClanTag}`;
+}
+
 function buildLinkListClanValue(clanTag) {
     return `clan:${normalizeCustomIdClanTag(clanTag)}`;
 }
@@ -62,6 +68,26 @@ function parseLinkListSwitchCustomId(customId) {
     };
 }
 
+function parseLinkListRefreshCustomId(customId) {
+    const parts = String(customId || '').split(':');
+
+    if (parts[0] !== 'link_list' || parts[1] !== 'v1' || parts[2] !== 'refresh') {
+        return null;
+    }
+
+    const clanTag = normalizeCustomIdClanTag(parts[4]);
+
+    if (!clanTag) {
+        return null;
+    }
+
+    return {
+        action: 'refresh',
+        mode: normalizeMode(parts[3]),
+        clanTag: `#${clanTag}`
+    };
+}
+
 function parseLinkListClanValue(value) {
     const parts = String(value || '').split(':');
 
@@ -86,9 +112,11 @@ module.exports = {
     normalizeCustomIdClanTag,
     buildLinkListViewCustomId,
     buildLinkListSwitchCustomId,
+    buildLinkListRefreshCustomId,
     buildLinkListClanValue,
     parseLinkListViewCustomId,
     parseLinkListSwitchCustomId,
+    parseLinkListRefreshCustomId,
     parseLinkListClanValue,
     isLinkListCustomId
 };

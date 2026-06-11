@@ -24,6 +24,7 @@ const {
     MODE_TAGS,
     isLinkListCustomId,
     parseLinkListClanValue,
+    parseLinkListRefreshCustomId,
     parseLinkListSwitchCustomId,
     parseLinkListViewCustomId
 } = require('./linkListCustomIds');
@@ -467,6 +468,13 @@ async function handleLinkListInteraction(interaction) {
 
     if (viewParsed && interaction.isButton()) {
         await handleViewButton(interaction, viewParsed);
+        return true;
+    }
+
+    const refreshParsed = parseLinkListRefreshCustomId(interaction.customId);
+
+    if (refreshParsed && interaction.isButton()) {
+        await handleViewButton(interaction, refreshParsed);
         return true;
     }
 

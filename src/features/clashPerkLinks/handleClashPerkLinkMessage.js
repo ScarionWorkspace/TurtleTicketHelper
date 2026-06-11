@@ -220,7 +220,6 @@ function getMemberDisplayName(member) {
         member?.user?.username ||
         member?.nickname ||
         member?.displayName ||
-        member?.user?.username ||
         ''
     ).trim();
 }

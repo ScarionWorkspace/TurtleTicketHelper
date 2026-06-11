@@ -20,6 +20,7 @@ const {
     MODE_TAGS,
     normalizeMode,
     buildLinkListClanValue,
+    buildLinkListRefreshCustomId,
     buildLinkListSwitchCustomId,
     buildLinkListViewCustomId
 } = require('./linkListCustomIds');
@@ -28,6 +29,7 @@ const EMBED_DESCRIPTION_MAX_CHARS = 3900;
 const DISPLAY_VALUE_LIMITS = [32, 28, 24, 20, 16, 12];
 const LINKED_TAG_MODE_NAME_LIMITS = [32, 28, 24, 20, 16, 12, 8, 0];
 const MAX_CLAN_SWITCH_OPTIONS = 25;
+const REFRESH_BUTTON_EMOJI = '\uD83D\uDD04';
 
 function getNextMode(mode) {
     return normalizeMode(mode) === MODE_NAMES ? MODE_TAGS : MODE_NAMES;
@@ -221,6 +223,13 @@ function buildToggleButton(model, mode) {
         .setStyle(ButtonStyle.Secondary);
 }
 
+function buildRefreshButton(model, mode) {
+    return new ButtonBuilder()
+        .setCustomId(buildLinkListRefreshCustomId(model.clanTag, mode))
+        .setEmoji(REFRESH_BUTTON_EMOJI)
+        .setStyle(ButtonStyle.Secondary);
+}
+
 function truncateOptionText(value, fallback) {
     const text = String(value || fallback || '').replace(/\s+/g, ' ').trim();
     const safeText = text || fallback || 'Clan';
@@ -303,7 +312,10 @@ function buildClanSwitchRow(model, mode, clanRosters) {
 }
 
 function buildComponents(model, mode, clanRosters) {
-    const buttonRow = new ActionRowBuilder().addComponents(buildToggleButton(model, mode));
+    const buttonRow = new ActionRowBuilder().addComponents(
+        buildToggleButton(model, mode),
+        buildRefreshButton(model, mode)
+    );
     const clanProfileUrl = buildClanProfileUrl(model.clanTag);
 
     if (clanProfileUrl) {
@@ -413,6 +425,7 @@ module.exports = {
     formatNotLinkedRow,
     buildDescription,
     buildClanSwitchRow,
+    buildRefreshButton,
     buildLinkListLoadingMessage,
     buildLinkListErrorMessage,
     buildLinkListMessage
