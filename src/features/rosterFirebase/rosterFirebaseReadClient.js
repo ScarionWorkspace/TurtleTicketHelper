@@ -1,11 +1,15 @@
 const { ROSTER_FIREBASE_DB_URL } = require('../../config/env');
 
 const DEFAULT_TIMEOUT_MS = 12_000;
+const DEFAULT_READ_CACHE_TTL_MS = 60_000;
+const READ_CACHE_TTL_ENV_NAME = 'ROSTER_FIREBASE_READ_CACHE_TTL_MS';
 const FB64_PREFIX = '__FB64__';
 const SEASON_EVENT_ROOT = 'events/seasonEvents';
 const PLAYER_METRICS_BY_TAG_PATH = 'active/playerMetrics/byTag';
 const ACTIVE_ROSTER_PATH = 'active';
 const CWL_LEAGUE_SIGNUPS_PATH = 'active/cwlLeagueSignups';
+const readCacheByPath = new Map();
+const pendingReadsByPath = new Map();
 
 function normalizeDatabaseUrl(url) {
     return String(url || '')
@@ -95,14 +99,47 @@ function buildFirebaseUrl(path) {
         .join('/')}.json`;
 }
 
-async function readJsonPath(path, options = {}) {
-    const url = buildFirebaseUrl(path);
+function parseNonNegativeInteger(value) {
+    if (value === null || value === undefined || value === '') {
+        return null;
+    }
 
+    const parsed = Number(value);
+
+    if (!Number.isFinite(parsed) || parsed < 0) {
+        return null;
+    }
+
+    return Math.floor(parsed);
+}
+
+function getReadCacheTtlMs(options = {}) {
+    return parseNonNegativeInteger(options.cacheTtlMs) ??
+        parseNonNegativeInteger(process.env[READ_CACHE_TTL_ENV_NAME]) ??
+        DEFAULT_READ_CACHE_TTL_MS;
+}
+
+function isCacheableReadValue(value) {
+    return value !== null && value !== undefined;
+}
+
+function cloneJsonValue(value) {
+    if (!value || typeof value !== 'object') {
+        return value;
+    }
+
+    if (typeof structuredClone === 'function') {
+        return structuredClone(value);
+    }
+
+    return JSON.parse(JSON.stringify(value));
+}
+
+async function fetchJsonPathUncached(url, timeoutMs) {
     if (!url) {
         return null;
     }
 
-    const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -132,6 +169,49 @@ async function readJsonPath(path, options = {}) {
     } finally {
         clearTimeout(timeoutId);
     }
+}
+
+async function readJsonPath(path, options = {}) {
+    const cleanPath = normalizePath(path);
+    const url = buildFirebaseUrl(cleanPath);
+
+    if (!url) {
+        return null;
+    }
+
+    const ttlMs = getReadCacheTtlMs(options);
+    const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const cached = readCacheByPath.get(cleanPath);
+
+    if (cached && cached.expiresAt > Date.now()) {
+        return cloneJsonValue(cached.value);
+    }
+
+    if (cached) {
+        readCacheByPath.delete(cleanPath);
+    }
+
+    let pending = pendingReadsByPath.get(cleanPath);
+
+    if (!pending) {
+        pending = fetchJsonPathUncached(url, timeoutMs)
+            .then(value => {
+                if (ttlMs > 0 && isCacheableReadValue(value)) {
+                    readCacheByPath.set(cleanPath, {
+                        value: cloneJsonValue(value),
+                        expiresAt: Date.now() + ttlMs
+                    });
+                }
+
+                return value;
+            })
+            .finally(() => {
+                pendingReadsByPath.delete(cleanPath);
+            });
+        pendingReadsByPath.set(cleanPath, pending);
+    }
+
+    return cloneJsonValue(await pending);
 }
 
 function normalizeType(type) {
