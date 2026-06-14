@@ -5,7 +5,9 @@ node_modules/
 .env
 .env.*
 !.env.example
+.envrc
 env
+*.env
 
 # logs
 logs/
@@ -28,9 +30,24 @@ coverage/
 dist/
 build/
 
+# generated archives / local exports
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.rar
+
+# local scratch files
+tmp/
+.tmp/
+*.tmp
+*.bak
+
 # OS files
 .DS_Store
 Thumbs.db
+desktop.ini
 
 # VS Code test artifacts
 .vscode-test/

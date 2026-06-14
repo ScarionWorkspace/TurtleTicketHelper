@@ -7,6 +7,7 @@ const ENV_KEYS = [
     'DISCORD_BOT_TOKEN',
     'DISCORD_CLIENT_ID',
     'DISCORD_GUILD_ID',
+    'DISCORD_REGISTER_GLOBAL_COMMANDS_ON_STARTUP',
     'COC_API_TOKEN',
     'CLASH_OF_CLANS_API_KEY',
     'ROSTER_BOT_SECRET'
@@ -86,4 +87,34 @@ test('bot config rejects placeholder token values', () => {
 
     assert.equal(result.status, 1);
     assert.match(result.stderr, /placeholder value/);
+});
+
+test('startup global command registration flag defaults off and accepts explicit true', () => {
+    const result = runNode(
+        "const { DISCORD_REGISTER_GLOBAL_COMMANDS_ON_STARTUP } = require('./src/config/env'); console.log(DISCORD_REGISTER_GLOBAL_COMMANDS_ON_STARTUP ? 'on' : 'off');"
+    );
+    const enabled = runNode(
+        "const { DISCORD_REGISTER_GLOBAL_COMMANDS_ON_STARTUP } = require('./src/config/env'); console.log(DISCORD_REGISTER_GLOBAL_COMMANDS_ON_STARTUP ? 'on' : 'off');",
+        {
+            DISCORD_REGISTER_GLOBAL_COMMANDS_ON_STARTUP: 'true'
+        }
+    );
+
+    assert.equal(result.status, 0);
+    assert.equal(result.stdout.trim(), 'off');
+    assert.equal(enabled.status, 0);
+    assert.equal(enabled.stdout.trim(), 'on');
+});
+
+test('config report fully redacts configured secret values', () => {
+    const result = runNode(
+        "const { getConfigReport } = require('./src/config/env'); const item = getConfigReport().find(entry => entry.name === 'DISCORD_TOKEN'); console.log(JSON.stringify(item));",
+        {
+            DISCORD_TOKEN: VALID_TOKEN
+        }
+    );
+
+    assert.equal(result.status, 0);
+    assert.equal(result.stdout.includes(VALID_TOKEN), false);
+    assert.match(result.stdout, /"value":"<redacted>"/);
 });

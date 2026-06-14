@@ -32,6 +32,7 @@ Create a `.env` file in the project root:
 DISCORD_TOKEN=your_discord_bot_token_here
 DISCORD_CLIENT_ID=your_discord_application_client_id_here
 DISCORD_GUILD_ID=your_discord_server_id_here
+DISCORD_REGISTER_GLOBAL_COMMANDS_ON_STARTUP=false
 OPEN_TICKET_CATEGORY_ID=your_open_ticket_category_id_here
 CLOSED_TICKET_CATEGORY_ID=your_closed_ticket_category_id_here
 TICKET_TOOL_BOT_ID=your_ticket_tool_bot_id_here
@@ -160,6 +161,7 @@ npm start
 ```
 
 If everything is configured correctly, the bot should log in and begin reacting to Ticket Tool ticket events.
+The bot does not deploy slash commands during normal startup by default.
 
 Validate local configuration without logging into Discord:
 
@@ -167,17 +169,46 @@ Validate local configuration without logging into Discord:
 npm run check:config
 ```
 
-Deploy guild slash commands:
+Deploy slash commands explicitly when command definitions change.
+Guild deployment is the default and is recommended for local/dev testing because Discord updates guild commands quickly:
 
 ```bash
 npm run deploy:commands
 ```
+
+Equivalent explicit guild command:
+
+```bash
+npm run deploy:commands:guild
+```
+
+Deploy global slash commands for production only when you intentionally want to update the bot application's global command set:
+
+```bash
+npm run deploy:commands:global
+```
+
+You can also choose the target with the deploy script directly:
+
+```bash
+node deploy-commands.js --guild
+node deploy-commands.js --global
+```
+
+Startup command deployment is intentionally off. If you need the old behavior for a controlled environment, set:
+
+```env
+DISCORD_REGISTER_GLOBAL_COMMANDS_ON_STARTUP=true
+```
+
+Leave this unset or `false` for normal local/dev/prod bot startup.
 
 ## Setup Checklist
 
 - Discord bot token added to `.env` as `DISCORD_TOKEN`
 - Discord client/application ID added to `.env` as `DISCORD_CLIENT_ID`
 - Discord server ID added to `.env` as `DISCORD_GUILD_ID`
+- Slash commands deployed explicitly with `npm run deploy:commands` for guild/dev or `npm run deploy:commands:global` for production global commands
 - Open ticket category ID added to `.env`
 - Closed ticket category ID added to `.env`
 - Ticket Tool bot ID added to `.env`
@@ -202,13 +233,15 @@ This includes:
 - clan recommendation names, links, and explanations
 - ticket rename and ticket create settings
 
-## `.gitignore`
+## Project Hygiene
 
-Make sure your `.env` file is ignored:
+The repository `.gitignore` excludes local secrets and generated files, including:
 
 ```gitignore
-# Environment variables
 .env
-.env.local
-.env.*.local
+env
+node_modules/
+*.zip
 ```
+
+Do not commit real bot tokens, API keys, generated archives, or installed dependencies.

@@ -8,6 +8,8 @@
     "start": "node src/index.js",
     "check:config": "node scripts/validate-config.js",
     "deploy:commands": "node deploy-commands.js",
+    "deploy:commands:guild": "node deploy-commands.js --guild",
+    "deploy:commands:global": "node deploy-commands.js --global",
     "clear:guild-commands": "node clear-guild-commands.js",
     "clear:global-commands": "node clear-global-commands.js"
   },

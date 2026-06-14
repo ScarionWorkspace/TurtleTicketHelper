@@ -22,6 +22,11 @@ const OPTIONAL_SNOWFLAKE_ENV_NAMES = [
     'OPEN_TICKET_CATEGORY_ID',
     'CLOSED_TICKET_CATEGORY_ID'
 ];
+const BOOLEAN_ENV_NAMES = [
+    'DISCORD_REGISTER_GLOBAL_COMMANDS_ON_STARTUP'
+];
+const BOOLEAN_TRUE_VALUES = new Set(['1', 'true', 'yes', 'on']);
+const BOOLEAN_FALSE_VALUES = new Set(['0', 'false', 'no', 'off']);
 
 const ENV_DEFINITIONS = {
     DISCORD_TOKEN: {
@@ -35,6 +40,7 @@ const ENV_DEFINITIONS = {
     DISCORD_GUILD_ID: {
         requiredFor: ['commands']
     },
+    DISCORD_REGISTER_GLOBAL_COMMANDS_ON_STARTUP: {},
     TICKET_TOOL_BOT_ID: {},
     CLASHPERK_BOT_ID: {},
     OPEN_TICKET_CATEGORY_ID: {},
@@ -111,18 +117,24 @@ function getEnv(name) {
     return resolveEnv(name).value;
 }
 
-function redactValue(value, visibleChars = 4) {
+function parseBooleanEnv(value) {
+    const normalized = normalizeEnvValue(value).toLowerCase();
+
+    return BOOLEAN_TRUE_VALUES.has(normalized);
+}
+
+function getBooleanEnv(name) {
+    return parseBooleanEnv(getEnv(name));
+}
+
+function redactValue(value) {
     const text = String(value || '');
 
     if (!text) {
         return '<missing>';
     }
 
-    if (text.length <= visibleChars * 2) {
-        return '<redacted>';
-    }
-
-    return `${text.slice(0, visibleChars)}...${text.slice(-visibleChars)}`;
+    return '<redacted>';
 }
 
 function redactKnownSecrets(value) {
@@ -238,6 +250,14 @@ function getConfigWarnings() {
         }
     }
 
+    for (const name of BOOLEAN_ENV_NAMES) {
+        const value = getEnv(name).toLowerCase();
+
+        if (value && !BOOLEAN_TRUE_VALUES.has(value) && !BOOLEAN_FALSE_VALUES.has(value)) {
+            warnings.push(`${name} should be one of: true, false, 1, 0, yes, no, on, off.`);
+        }
+    }
+
     if (!getEnv('OPEN_TICKET_CATEGORY_ID') || !getEnv('CLOSED_TICKET_CATEGORY_ID')) {
         warnings.push('Ticket rename/delete automation needs OPEN_TICKET_CATEGORY_ID and CLOSED_TICKET_CATEGORY_ID.');
     }
@@ -285,6 +305,7 @@ module.exports = {
     DISCORD_TOKEN: getEnv('DISCORD_TOKEN'),
     DISCORD_CLIENT_ID: getEnv('DISCORD_CLIENT_ID'),
     DISCORD_GUILD_ID: getEnv('DISCORD_GUILD_ID'),
+    DISCORD_REGISTER_GLOBAL_COMMANDS_ON_STARTUP: getBooleanEnv('DISCORD_REGISTER_GLOBAL_COMMANDS_ON_STARTUP'),
     TICKET_TOOL_BOT_ID: getEnv('TICKET_TOOL_BOT_ID'),
     CLASHPERK_BOT_ID: getEnv('CLASHPERK_BOT_ID'),
     OPEN_TICKET_CATEGORY_ID: getEnv('OPEN_TICKET_CATEGORY_ID'),
@@ -299,6 +320,7 @@ module.exports = {
     getConfigReport,
     getConfigWarnings,
     normalizeEnvValue,
+    parseBooleanEnv,
     redactKnownSecrets,
     validateDiscordToken
 };
