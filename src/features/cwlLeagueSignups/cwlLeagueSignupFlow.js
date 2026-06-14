@@ -17,9 +17,11 @@ const DISCORD_BUTTON_LABEL_MAX_LENGTH = 80;
 const DISCORD_SELECT_LABEL_MAX_LENGTH = 100;
 const DISCORD_SELECT_DESCRIPTION_MAX_LENGTH = 100;
 const DISCORD_MESSAGE_SAFE_LENGTH = 1900;
-const DISCORD_BUTTONS_PER_MESSAGE = 25;
+const DISCORD_LEAGUE_BUTTONS_PER_MESSAGE = 20;
+const DISCORD_BUTTONS_PER_ROW = 5;
 const DISCORD_SELECT_OPTIONS_MAX = 25;
 const DISCORD_ACTION_ROWS_MAX = 5;
+const DISCORD_UTILITY_ACTION_ROWS = 1;
 
 function normalizePlayerTag(tag) {
     let cleaned = String(tag || '').trim().toUpperCase().replace(/\s+/g, '');
@@ -200,8 +202,184 @@ function buildSkippedRosterLines(skippedRosters) {
     });
 }
 
+function staleSignupMessage() {
+    return 'This CWL signup message is no longer active. Please use the latest signup message.';
+}
+
+function isStaleSignupError(error) {
+    const message = String(error?.message || '').toLowerCase();
+    const code = String(error?.code || '').toLowerCase();
+
+    return code.includes('stale') ||
+        code.includes('not_active') ||
+        message.includes('no longer active') ||
+        message.includes('not active') ||
+        message.includes('stale signup');
+}
+
+function buildUtilityButtonRow(signupId) {
+    return new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId(buildCustomId('my_votes', signupId))
+            .setLabel('My votes')
+            .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+            .setCustomId(buildCustomId('clear_vote', signupId))
+            .setLabel('Clear vote')
+            .setStyle(ButtonStyle.Danger)
+    );
+}
+
+function normalizeCwlLeaguePreferenceList(result, discordId = '') {
+    const source = Array.isArray(result)
+        ? result
+        : Array.isArray(result?.preferences)
+            ? result.preferences
+            : Array.isArray(result?.items)
+                ? result.items
+                : result?.preferencesByTag && typeof result.preferencesByTag === 'object'
+                    ? Object.values(result.preferencesByTag)
+                    : result?.preference
+                        ? [result.preference]
+                        : [];
+    const expectedDiscordId = String(discordId || '').trim();
+    const seen = new Set();
+
+    return source
+        .filter(preference => preference && typeof preference === 'object')
+        .filter(preference => {
+            const preferenceDiscordId = String(
+                preference.discordId ||
+                preference.discordUserId ||
+                preference.userId ||
+                ''
+            ).trim();
+
+            return !expectedDiscordId || !preferenceDiscordId || preferenceDiscordId === expectedDiscordId;
+        })
+        .map(preference => ({
+            ...preference,
+            playerTag: normalizePlayerTag(preference.playerTag || preference.tag),
+            playerName: String(preference.playerName || preference.name || '').trim(),
+            leagueName: String(preference.leagueName || preference.leagueLabel || preference.leagueKey || '').trim()
+        }))
+        .filter(preference => {
+            const key = preference.playerTag || `${preference.playerName}|${preference.leagueName}`;
+            if (!key || seen.has(key)) {
+                return false;
+            }
+            seen.add(key);
+            return true;
+        });
+}
+
+function preferenceAccountLabel(preference) {
+    const playerTag = normalizePlayerTag(preference?.playerTag || preference?.tag);
+    const playerName = String(preference?.playerName || preference?.name || '').trim();
+    const townHall = preference?.townHallLevel || preference?.townHall;
+    const label = playerName || playerTag || 'Unknown account';
+    const suffix = [
+        townHall ? `TH${townHall}` : '',
+        playerName && playerTag ? playerTag : ''
+    ].filter(Boolean).join(' ');
+
+    return truncate(suffix ? `${label} (${suffix})` : label, 120);
+}
+
+function preferenceLeagueLabel(preference) {
+    return truncate(
+        preference?.leagueName ||
+        preference?.leagueLabel ||
+        preference?.leagueKey ||
+        'Unknown league',
+        80
+    );
+}
+
+function formatPreferenceLine(preference) {
+    return `- ${preferenceAccountLabel(preference)}: ${preferenceLeagueLabel(preference)}`;
+}
+
+function formatUserPreferencesResponse(preferences) {
+    const lines = normalizeCwlLeaguePreferenceList(preferences);
+
+    if (!lines.length) {
+        return 'You do not have any saved CWL league preferences yet.';
+    }
+
+    return [
+        'Your saved CWL league preferences:',
+        ...lines.map(formatPreferenceLine)
+    ].join('\n');
+}
+
+function buildUserPreferencePayload(interaction, signupId, extra = {}) {
+    const discordUser = buildDiscordUser(interaction);
+
+    return {
+        signupId,
+        discordId: discordUser.id,
+        discordUsername: discordUser.username,
+        discordDisplayName: discordUser.displayName || discordUser.globalName,
+        ...extra
+    };
+}
+
+async function getUserCwlLeaguePreferences(interaction, signupId) {
+    const payload = buildUserPreferencePayload(interaction, signupId);
+    const result = await rosterBackend.getCwlLeaguePreferencesForDiscordUser(payload);
+
+    return normalizeCwlLeaguePreferenceList(result, payload.discordId);
+}
+
+async function clearUserCwlLeaguePreference(interaction, signupId, preference) {
+    const playerTag = normalizePlayerTag(preference?.playerTag || preference?.tag);
+
+    return rosterBackend.clearCwlLeaguePreference(buildUserPreferencePayload(interaction, signupId, {
+        playerTag,
+        source: 'discord-user-clear',
+        messageId: interaction.message?.id || '',
+        channelId: interaction.channelId || '',
+        guildId: interaction.guildId || ''
+    }));
+}
+
+function buildClearPreferenceSelectRows(preferences, signupId, userId) {
+    const clearablePreferences = normalizeCwlLeaguePreferenceList(preferences)
+        .filter(preference => normalizePlayerTag(preference.playerTag || preference.tag));
+    const selectRowLimit = DISCORD_ACTION_ROWS_MAX;
+    const preferenceChunks = chunkArray(clearablePreferences, DISCORD_SELECT_OPTIONS_MAX).slice(0, selectRowLimit);
+
+    return preferenceChunks.map((chunk, chunkIndex) => {
+        const select = new StringSelectMenuBuilder()
+            .setCustomId(buildCustomId('clear_vote_select', signupId, userId, chunkIndex))
+            .setPlaceholder(preferenceChunks.length > 1 ? `Clear vote ${chunkIndex + 1}` : 'Choose vote to clear')
+            .setMinValues(1)
+            .setMaxValues(1)
+            .addOptions(
+                chunk.map(preference =>
+                    new StringSelectMenuOptionBuilder()
+                        .setLabel(safeComponentLabel(
+                            `${preferenceAccountLabel(preference)} - ${preferenceLeagueLabel(preference)}`,
+                            DISCORD_SELECT_LABEL_MAX_LENGTH,
+                            'CWL vote'
+                        ))
+                        .setDescription(
+                            truncate(
+                                normalizePlayerTag(preference.playerTag || preference.tag),
+                                DISCORD_SELECT_DESCRIPTION_MAX_LENGTH
+                            ) || 'Player tag'
+                        )
+                        .setValue(normalizePlayerTag(preference.playerTag || preference.tag))
+                )
+            );
+
+        return new ActionRowBuilder().addComponents(select);
+    });
+}
+
 function buildSignupMessagePayload(options, signupId, pageIndex = 0, pageCount = 1) {
-    const available = Array.isArray(options) ? options.slice(0, DISCORD_BUTTONS_PER_MESSAGE) : [];
+    const available = Array.isArray(options) ? options.slice(0, DISCORD_LEAGUE_BUTTONS_PER_MESSAGE) : [];
     const embed = new EmbedBuilder()
         .setTitle('CWL League Preferences')
         .setDescription('Tell us where you would love to play this CWL. Your choice helps us shape the rosters, but final placement still depends on balance, availability, and lineup fit.')
@@ -229,9 +407,12 @@ function buildSignupMessagePayload(options, signupId, pageIndex = 0, pageCount =
     }
 
     const rows = [];
-    for (let index = 0; index < available.length; index += 5) {
+    const leagueRowLimit = DISCORD_ACTION_ROWS_MAX - DISCORD_UTILITY_ACTION_ROWS;
+    const leagueRowOptions = available.slice(0, leagueRowLimit * DISCORD_BUTTONS_PER_ROW);
+
+    for (let index = 0; index < leagueRowOptions.length; index += DISCORD_BUTTONS_PER_ROW) {
         const row = new ActionRowBuilder();
-        for (const option of available.slice(index, index + 5)) {
+        for (const option of leagueRowOptions.slice(index, index + DISCORD_BUTTONS_PER_ROW)) {
             row.addComponents(
                 new ButtonBuilder()
                     .setCustomId(buildCustomId('choose', signupId, option.leagueKey))
@@ -241,6 +422,7 @@ function buildSignupMessagePayload(options, signupId, pageIndex = 0, pageCount =
         }
         rows.push(row);
     }
+    rows.push(buildUtilityButtonRow(signupId));
 
     return {
         embeds: [embed],
@@ -302,7 +484,7 @@ async function sendCwlLeagueSignupMessage(interaction) {
         return;
     }
 
-    const optionChunks = chunkArray(options, DISCORD_BUTTONS_PER_MESSAGE);
+    const optionChunks = chunkArray(options, DISCORD_LEAGUE_BUTTONS_PER_MESSAGE);
     const chunks = optionChunks.length ? optionChunks : [[]];
     const messages = [];
 
@@ -313,7 +495,7 @@ async function sendCwlLeagueSignupMessage(interaction) {
     const responseLines = chunks.length === 1
         ? [`CWL league signup message sent: ${messages[0].url}`]
         : [
-            `${chunks.length} CWL league signup messages sent because Discord allows ${DISCORD_BUTTONS_PER_MESSAGE} buttons per message.`,
+            `${chunks.length} CWL league signup messages sent because each message shows up to ${DISCORD_LEAGUE_BUTTONS_PER_MESSAGE} league choices while reserving utility buttons.`,
             ...messages.map((message, index) => `Part ${index + 1}: ${message.url}`)
         ];
 
@@ -361,11 +543,11 @@ async function savePreference(interaction, signupId, leagueKey, account, sourceM
     } catch (error) {
         const errorMessage = String(error?.message || '').toLowerCase();
         const alreadySet = errorMessage.includes('already has');
-        const staleSignup = errorMessage.includes('no longer active');
+        const staleSignup = isStaleSignupError(error);
         let content = 'Unable to save that CWL league preference right now.';
 
         if (staleSignup) {
-            content = 'This CWL signup message is no longer active. Please use the latest signup message.';
+            content = staleSignupMessage();
         } else if (alreadySet) {
             content = `${accountLabel(account)} already has a CWL league preference.`;
         }
@@ -408,7 +590,7 @@ async function handleChooseButton(interaction, parsed) {
 
     if (!signupId || !leagueKey) {
         await interaction.reply({
-            content: 'This CWL signup message is no longer active. Please use the latest signup message.',
+            content: staleSignupMessage(),
             flags: 64
         });
         return;
@@ -474,7 +656,7 @@ async function handleAccountSelect(interaction, parsed) {
 
     if (!signupId || !leagueKey) {
         await interaction.reply({
-            content: 'This CWL signup message is no longer active. Please use the latest signup message.',
+            content: staleSignupMessage(),
             flags: 64
         });
         return;
@@ -496,6 +678,174 @@ async function handleAccountSelect(interaction, parsed) {
 
     await interaction.deferUpdate();
     await savePreference(interaction, signupId, leagueKey, account, selected.sourceMessageId);
+}
+
+async function handleMyVotesButton(interaction, parsed) {
+    const signupId = parsed.parts[0] || '';
+
+    if (!signupId) {
+        await interaction.reply({
+            content: staleSignupMessage(),
+            flags: 64
+        });
+        return;
+    }
+
+    await interaction.deferReply({ flags: 64 });
+
+    try {
+        const preferences = await getUserCwlLeaguePreferences(interaction, signupId);
+
+        await interaction.editReply({
+            content: formatUserPreferencesResponse(preferences),
+            components: []
+        });
+    } catch (error) {
+        await interaction.editReply({
+            content: isStaleSignupError(error)
+                ? staleSignupMessage()
+                : 'Unable to load your CWL league preferences right now.',
+            components: []
+        });
+    }
+}
+
+async function handleClearVoteButton(interaction, parsed) {
+    const signupId = parsed.parts[0] || '';
+
+    if (!signupId) {
+        await interaction.reply({
+            content: staleSignupMessage(),
+            flags: 64
+        });
+        return;
+    }
+
+    await interaction.deferReply({ flags: 64 });
+
+    let preferences;
+    try {
+        preferences = await getUserCwlLeaguePreferences(interaction, signupId);
+    } catch (error) {
+        await interaction.editReply({
+            content: isStaleSignupError(error)
+                ? staleSignupMessage()
+                : 'Unable to load your CWL league preferences right now.',
+            components: []
+        });
+        return;
+    }
+
+    const clearablePreferences = preferences.filter(preference => normalizePlayerTag(preference.playerTag || preference.tag));
+
+    if (!clearablePreferences.length) {
+        await interaction.editReply({
+            content: 'You do not have any saved CWL league preferences to clear.',
+            components: []
+        });
+        return;
+    }
+
+    if (clearablePreferences.length === 1) {
+        const preference = clearablePreferences[0];
+
+        try {
+            await clearUserCwlLeaguePreference(interaction, signupId, preference);
+            await interaction.editReply({
+                content: `${preferenceAccountLabel(preference)} no longer has a saved CWL league preference.`,
+                components: []
+            });
+        } catch (error) {
+            await interaction.editReply({
+                content: isStaleSignupError(error)
+                    ? staleSignupMessage()
+                    : 'Unable to clear that CWL league preference right now.',
+                components: []
+            });
+        }
+        return;
+    }
+
+    const rows = buildClearPreferenceSelectRows(clearablePreferences, signupId, interaction.user.id);
+    const maxShown = DISCORD_SELECT_OPTIONS_MAX * DISCORD_ACTION_ROWS_MAX;
+
+    await interaction.editReply({
+        content: clearablePreferences.length > maxShown
+            ? `Choose which CWL league preference to clear. Showing the first ${maxShown} saved preferences because Discord limits one response to ${DISCORD_ACTION_ROWS_MAX} select menus.`
+            : 'Choose which CWL league preference to clear.',
+        components: rows
+    });
+}
+
+async function handleClearVoteSelect(interaction, parsed) {
+    const signupId = parsed.parts[0] || '';
+    const userId = parsed.parts[1] || '';
+
+    if (!signupId) {
+        await interaction.reply({
+            content: staleSignupMessage(),
+            flags: 64
+        });
+        return;
+    }
+
+    if (userId && userId !== interaction.user.id) {
+        await interaction.reply({
+            content: 'This CWL clear vote menu is not for you.',
+            flags: 64
+        });
+        return;
+    }
+
+    const selectedTag = normalizePlayerTag(interaction.values?.[0]);
+
+    if (!selectedTag) {
+        await interaction.reply({
+            content: 'That CWL league preference selection is no longer valid.',
+            flags: 64
+        });
+        return;
+    }
+
+    await interaction.deferUpdate();
+
+    let preferences;
+    try {
+        preferences = await getUserCwlLeaguePreferences(interaction, signupId);
+    } catch (error) {
+        await interaction.editReply({
+            content: isStaleSignupError(error)
+                ? staleSignupMessage()
+                : 'Unable to load your CWL league preferences right now.',
+            components: []
+        });
+        return;
+    }
+
+    const preference = preferences.find(item => normalizePlayerTag(item.playerTag || item.tag) === selectedTag);
+
+    if (!preference) {
+        await interaction.editReply({
+            content: 'That CWL league preference is no longer saved.',
+            components: []
+        });
+        return;
+    }
+
+    try {
+        await clearUserCwlLeaguePreference(interaction, signupId, preference);
+        await interaction.editReply({
+            content: `${preferenceAccountLabel(preference)} no longer has a saved CWL league preference.`,
+            components: []
+        });
+    } catch (error) {
+        await interaction.editReply({
+            content: isStaleSignupError(error)
+                ? staleSignupMessage()
+                : 'Unable to clear that CWL league preference right now.',
+            components: []
+        });
+    }
 }
 
 async function getCwlLeaguePreferenceCount() {
@@ -641,6 +991,21 @@ async function handleCwlLeagueSignupInteraction(interaction) {
         return true;
     }
 
+    if (interaction.isButton() && parsed.action === 'my_votes') {
+        await handleMyVotesButton(interaction, parsed);
+        return true;
+    }
+
+    if (interaction.isButton() && parsed.action === 'clear_vote') {
+        await handleClearVoteButton(interaction, parsed);
+        return true;
+    }
+
+    if (interaction.isStringSelectMenu() && parsed.action === 'clear_vote_select') {
+        await handleClearVoteSelect(interaction, parsed);
+        return true;
+    }
+
     if (interaction.isButton() && parsed.action === 'reset_confirm') {
         await handleResetConfirm(interaction, parsed);
         return true;
@@ -720,5 +1085,10 @@ module.exports = {
     handleCwlLeagueSignupInteraction,
     showCwlLeagueSignupSummary,
     buildCwlLeagueSignupSummary,
-    buildCwlLeagueSignupSummaryChunks
+    buildCwlLeagueSignupSummaryChunks,
+    buildCwlLeagueSignupMessagePayload: buildSignupMessagePayload,
+    buildCwlLeagueCustomId: buildCustomId,
+    parseCwlLeagueCustomId: parseCustomId,
+    normalizeCwlLeaguePreferenceList,
+    formatUserPreferencesResponse
 };

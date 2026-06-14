@@ -241,6 +241,14 @@ function setCwlLeaguePreference(payload = {}, options = {}) {
     return callSeasonEventMethod('setCwlLeaguePreference', payload, options);
 }
 
+function getCwlLeaguePreferencesForDiscordUser(payload = {}, options = {}) {
+    return callSeasonEventMethod('getCwlLeaguePreferencesForDiscordUser', payload, options);
+}
+
+function clearCwlLeaguePreference(payload = {}, options = {}) {
+    return callSeasonEventMethod('clearCwlLeaguePreference', payload, options);
+}
+
 function resetCwlLeaguePreferences(payload = {}, options = {}) {
     return callSeasonEventMethod('resetCwlLeaguePreferences', payload, options);
 }
@@ -263,5 +271,7 @@ module.exports = {
     getCurrentSeasonEventLeaderboards,
     getCwlLeagueSignupOptions,
     setCwlLeaguePreference,
+    getCwlLeaguePreferencesForDiscordUser,
+    clearCwlLeaguePreference,
     resetCwlLeaguePreferences
 };

@@ -1,0 +1,290 @@
+const { afterEach, test } = require('node:test');
+const assert = require('node:assert/strict');
+const rosterBackend = require('../src/features/rosterBackend/rosterBackendClient');
+const {
+    buildCwlLeagueSignupMessagePayload,
+    buildCwlLeagueCustomId,
+    parseCwlLeagueCustomId,
+    handleCwlLeagueSignupInteraction
+} = require('../src/features/cwlLeagueSignups/cwlLeagueSignupFlow');
+
+const originalBackend = {
+    getCwlLeaguePreferencesForDiscordUser: rosterBackend.getCwlLeaguePreferencesForDiscordUser,
+    clearCwlLeaguePreference: rosterBackend.clearCwlLeaguePreference,
+    resetCwlLeaguePreferences: rosterBackend.resetCwlLeaguePreferences
+};
+
+function makeLeagueOption(index) {
+    return {
+        leagueKey: `league-${index}`,
+        leagueName: `League ${index}`,
+        clanNames: [`Clan ${index}`]
+    };
+}
+
+function makePreference(overrides = {}) {
+    return {
+        discordId: 'user-1',
+        playerTag: '#MAIN1',
+        playerName: 'Main',
+        leagueKey: 'league-1',
+        leagueName: 'League 1',
+        ...overrides
+    };
+}
+
+function makeInteraction({
+    customId,
+    componentType = 'button',
+    values = [],
+    user = {
+        id: 'user-1',
+        username: 'alice',
+        globalName: 'Alice'
+    }
+} = {}) {
+    return {
+        customId,
+        values,
+        user,
+        member: {
+            displayName: 'Alice Nick'
+        },
+        message: {
+            id: 'source-message-1'
+        },
+        channelId: 'channel-1',
+        guildId: 'guild-1',
+        deferred: false,
+        replied: false,
+        calls: [],
+        isButton() {
+            return componentType === 'button';
+        },
+        isStringSelectMenu() {
+            return componentType === 'select';
+        },
+        async deferReply(payload) {
+            this.deferred = true;
+            this.deferReplyPayload = payload;
+            this.calls.push(['deferReply', payload]);
+        },
+        async deferUpdate() {
+            this.deferred = true;
+            this.deferUpdateCalled = true;
+            this.calls.push(['deferUpdate']);
+        },
+        async reply(payload) {
+            this.replied = true;
+            this.replyPayload = payload;
+            this.calls.push(['reply', payload]);
+        },
+        async editReply(payload) {
+            this.editReplyPayload = payload;
+            this.calls.push(['editReply', payload]);
+        },
+        async update(payload) {
+            this.updatePayload = payload;
+            this.calls.push(['update', payload]);
+        }
+    };
+}
+
+afterEach(() => {
+    Object.assign(rosterBackend, originalBackend);
+});
+
+test('CWL signup message reserves a utility row and keeps league buttons within Discord limits', () => {
+    const payload = buildCwlLeagueSignupMessagePayload(
+        Array.from({ length: 25 }, (_, index) => makeLeagueOption(index + 1)),
+        'signup-1',
+        0,
+        2
+    );
+    const rows = payload.components.map(row => row.toJSON());
+    const leagueButtons = rows.slice(0, 4).flatMap(row => row.components);
+    const utilityButtons = rows[4].components;
+
+    assert.equal(rows.length, 5);
+    assert(rows.every(row => row.components.length <= 5));
+    assert.equal(leagueButtons.length, 20);
+    assert.equal(leagueButtons[0].custom_id, 'cwl:v1:choose:signup-1:league-1');
+    assert.equal(leagueButtons.at(-1).custom_id, 'cwl:v1:choose:signup-1:league-20');
+    assert.deepEqual(
+        utilityButtons.map(button => button.label),
+        ['My votes', 'Clear vote']
+    );
+    assert.deepEqual(
+        utilityButtons.map(button => button.custom_id),
+        ['cwl:v1:my_votes:signup-1', 'cwl:v1:clear_vote:signup-1']
+    );
+
+    const customId = buildCwlLeagueCustomId('clear_vote_select', 'signup:with-colon', 'user-1', 0);
+    assert.equal(customId, 'cwl:v1:clear_vote_select:signup%3Awith-colon:user-1:0');
+    assert.deepEqual(parseCwlLeagueCustomId(customId), {
+        action: 'clear_vote_select',
+        parts: ['signup:with-colon', 'user-1', '0']
+    });
+});
+
+test('My votes replies ephemerally with only the clicking user preferences', async () => {
+    const backendPayloads = [];
+    rosterBackend.getCwlLeaguePreferencesForDiscordUser = async payload => {
+        backendPayloads.push(payload);
+        return {
+            preferences: [
+                makePreference(),
+                makePreference({
+                    discordId: 'other-user',
+                    playerTag: '#OTHER',
+                    playerName: 'Other',
+                    leagueName: 'League Other'
+                })
+            ]
+        };
+    };
+    rosterBackend.resetCwlLeaguePreferences = async () => assert.fail('user vote actions must not reset all preferences');
+
+    const interaction = makeInteraction({
+        customId: buildCwlLeagueCustomId('my_votes', 'signup-1')
+    });
+
+    assert.equal(await handleCwlLeagueSignupInteraction(interaction), true);
+    assert.deepEqual(interaction.deferReplyPayload, { flags: 64 });
+    assert.equal(backendPayloads.length, 1);
+    assert.equal(backendPayloads[0].signupId, 'signup-1');
+    assert.equal(backendPayloads[0].discordId, 'user-1');
+    assert.match(interaction.editReplyPayload.content, /Main/);
+    assert.match(interaction.editReplyPayload.content, /League 1/);
+    assert.doesNotMatch(interaction.editReplyPayload.content, /Other/);
+    assert.deepEqual(interaction.editReplyPayload.components, []);
+});
+
+test('Clear vote clears one saved preference directly for the clicking user', async () => {
+    let clearPayload = null;
+    rosterBackend.getCwlLeaguePreferencesForDiscordUser = async () => ({
+        preferences: [makePreference()]
+    });
+    rosterBackend.clearCwlLeaguePreference = async payload => {
+        clearPayload = payload;
+        return { cleared: true };
+    };
+    rosterBackend.resetCwlLeaguePreferences = async () => assert.fail('user vote actions must not reset all preferences');
+
+    const interaction = makeInteraction({
+        customId: buildCwlLeagueCustomId('clear_vote', 'signup-1')
+    });
+
+    assert.equal(await handleCwlLeagueSignupInteraction(interaction), true);
+    assert.deepEqual(interaction.deferReplyPayload, { flags: 64 });
+    assert.equal(clearPayload.signupId, 'signup-1');
+    assert.equal(clearPayload.discordId, 'user-1');
+    assert.equal(clearPayload.playerTag, '#MAIN1');
+    assert.equal(clearPayload.source, 'discord-user-clear');
+    assert.match(interaction.editReplyPayload.content, /Main/);
+    assert.deepEqual(interaction.editReplyPayload.components, []);
+});
+
+test('Clear vote shows a select menu for multiple saved preferences and clears the selected one', async () => {
+    const preferences = [
+        makePreference(),
+        makePreference({
+            playerTag: '#ALT22',
+            playerName: 'Alt',
+            leagueName: 'League 2'
+        })
+    ];
+    const clearPayloads = [];
+    rosterBackend.getCwlLeaguePreferencesForDiscordUser = async () => ({ preferences });
+    rosterBackend.clearCwlLeaguePreference = async payload => {
+        clearPayloads.push(payload);
+        return { cleared: true };
+    };
+    rosterBackend.resetCwlLeaguePreferences = async () => assert.fail('user vote actions must not reset all preferences');
+
+    const buttonInteraction = makeInteraction({
+        customId: buildCwlLeagueCustomId('clear_vote', 'signup-1')
+    });
+
+    assert.equal(await handleCwlLeagueSignupInteraction(buttonInteraction), true);
+    assert.deepEqual(buttonInteraction.deferReplyPayload, { flags: 64 });
+
+    const rows = buttonInteraction.editReplyPayload.components.map(row => row.toJSON());
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].components.length, 1);
+    const select = rows[0].components[0];
+    assert.equal(select.custom_id, 'cwl:v1:clear_vote_select:signup-1:user-1:0');
+    assert.deepEqual(
+        select.options.map(option => option.value),
+        ['#MAIN1', '#ALT22']
+    );
+
+    const selectInteraction = makeInteraction({
+        componentType: 'select',
+        customId: select.custom_id,
+        values: ['#ALT22']
+    });
+
+    assert.equal(await handleCwlLeagueSignupInteraction(selectInteraction), true);
+    assert.equal(selectInteraction.deferUpdateCalled, true);
+    assert.equal(clearPayloads.length, 1);
+    assert.equal(clearPayloads[0].playerTag, '#ALT22');
+    assert.equal(clearPayloads[0].discordId, 'user-1');
+    assert.match(selectInteraction.editReplyPayload.content, /Alt/);
+    assert.deepEqual(selectInteraction.editReplyPayload.components, []);
+});
+
+test('Clear vote reports the no-vote state without calling clear or reset', async () => {
+    let clearCalled = false;
+    rosterBackend.getCwlLeaguePreferencesForDiscordUser = async () => ({ preferences: [] });
+    rosterBackend.clearCwlLeaguePreference = async () => {
+        clearCalled = true;
+    };
+    rosterBackend.resetCwlLeaguePreferences = async () => assert.fail('user vote actions must not reset all preferences');
+
+    const interaction = makeInteraction({
+        customId: buildCwlLeagueCustomId('clear_vote', 'signup-1')
+    });
+
+    assert.equal(await handleCwlLeagueSignupInteraction(interaction), true);
+    assert.equal(clearCalled, false);
+    assert.deepEqual(interaction.deferReplyPayload, { flags: 64 });
+    assert.match(interaction.editReplyPayload.content, /do not have any saved CWL league preferences/i);
+    assert.deepEqual(interaction.editReplyPayload.components, []);
+});
+
+test('CWL utility actions report stale signup state ephemerally', async () => {
+    rosterBackend.getCwlLeaguePreferencesForDiscordUser = async () => {
+        const error = new Error('CWL signup is no longer active');
+        error.code = 'CWL_SIGNUP_NOT_ACTIVE';
+        throw error;
+    };
+
+    const interaction = makeInteraction({
+        customId: buildCwlLeagueCustomId('my_votes', 'signup-1')
+    });
+
+    assert.equal(await handleCwlLeagueSignupInteraction(interaction), true);
+    assert.deepEqual(interaction.deferReplyPayload, { flags: 64 });
+    assert.match(interaction.editReplyPayload.content, /no longer active/i);
+    assert.deepEqual(interaction.editReplyPayload.components, []);
+});
+
+test('Clear vote handles backend clear errors without resetting all preferences', async () => {
+    rosterBackend.getCwlLeaguePreferencesForDiscordUser = async () => ({
+        preferences: [makePreference()]
+    });
+    rosterBackend.clearCwlLeaguePreference = async () => {
+        throw new Error('backend unavailable');
+    };
+    rosterBackend.resetCwlLeaguePreferences = async () => assert.fail('user vote actions must not reset all preferences');
+
+    const interaction = makeInteraction({
+        customId: buildCwlLeagueCustomId('clear_vote', 'signup-1')
+    });
+
+    assert.equal(await handleCwlLeagueSignupInteraction(interaction), true);
+    assert.deepEqual(interaction.deferReplyPayload, { flags: 64 });
+    assert.match(interaction.editReplyPayload.content, /Unable to clear/i);
+    assert.deepEqual(interaction.editReplyPayload.components, []);
+});
