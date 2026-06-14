@@ -1,6 +1,7 @@
 const { afterEach, test } = require('node:test');
 const assert = require('node:assert/strict');
 const rosterBackend = require('../src/features/rosterBackend/rosterBackendClient');
+const rosterFirebase = require('../src/features/rosterFirebase/rosterFirebaseReadClient');
 const {
     buildCwlLeagueSignupMessagePayload,
     buildCwlLeagueCustomId,
@@ -9,9 +10,14 @@ const {
 } = require('../src/features/cwlLeagueSignups/cwlLeagueSignupFlow');
 
 const originalBackend = {
+    setCwlLeaguePreference: rosterBackend.setCwlLeaguePreference,
     getCwlLeaguePreferencesForDiscordUser: rosterBackend.getCwlLeaguePreferencesForDiscordUser,
     clearCwlLeaguePreference: rosterBackend.clearCwlLeaguePreference,
     resetCwlLeaguePreferences: rosterBackend.resetCwlLeaguePreferences
+};
+const originalFirebase = {
+    readLinkedAccountsForDiscordUser: rosterFirebase.readLinkedAccountsForDiscordUser,
+    readCwlLeagueSignups: rosterFirebase.readCwlLeagueSignups
 };
 
 function makeLeagueOption(index) {
@@ -29,6 +35,16 @@ function makePreference(overrides = {}) {
         playerName: 'Main',
         leagueKey: 'league-1',
         leagueName: 'League 1',
+        ...overrides
+    };
+}
+
+function makeLinkedAccount(overrides = {}) {
+    return {
+        playerTag: '#MAIN1',
+        tag: '#MAIN1',
+        name: 'Main',
+        townHallLevel: 16,
         ...overrides
     };
 }
@@ -92,6 +108,7 @@ function makeInteraction({
 
 afterEach(() => {
     Object.assign(rosterBackend, originalBackend);
+    Object.assign(rosterFirebase, originalFirebase);
 });
 
 test('CWL signup message reserves a utility row and keeps league buttons within Discord limits', () => {
@@ -287,4 +304,170 @@ test('Clear vote handles backend clear errors without resetting all preferences'
     assert.deepEqual(interaction.deferReplyPayload, { flags: 64 });
     assert.match(interaction.editReplyPayload.content, /Unable to clear/i);
     assert.deepEqual(interaction.editReplyPayload.components, []);
+});
+
+test('Clear vote treats backend not-found as neutral instead of success', async () => {
+    rosterBackend.getCwlLeaguePreferencesForDiscordUser = async () => ({
+        preferences: [makePreference()]
+    });
+    rosterBackend.clearCwlLeaguePreference = async () => ({
+        ok: true,
+        status: 'not-found',
+        cleared: false
+    });
+    rosterBackend.resetCwlLeaguePreferences = async () => assert.fail('user vote actions must not reset all preferences');
+
+    const interaction = makeInteraction({
+        customId: buildCwlLeagueCustomId('clear_vote', 'signup-1')
+    });
+
+    assert.equal(await handleCwlLeagueSignupInteraction(interaction), true);
+    assert.match(interaction.editReplyPayload.content, /did not have a saved CWL league preference/i);
+    assert.doesNotMatch(interaction.editReplyPayload.content, /no longer has/i);
+    assert.deepEqual(interaction.editReplyPayload.components, []);
+});
+
+test('Clear vote does not claim success when backend reports not-owner', async () => {
+    rosterBackend.getCwlLeaguePreferencesForDiscordUser = async () => ({
+        preferences: [makePreference()]
+    });
+    rosterBackend.clearCwlLeaguePreference = async () => ({
+        ok: true,
+        status: 'not-owner',
+        cleared: false
+    });
+    rosterBackend.resetCwlLeaguePreferences = async () => assert.fail('user vote actions must not reset all preferences');
+
+    const interaction = makeInteraction({
+        customId: buildCwlLeagueCustomId('clear_vote', 'signup-1')
+    });
+
+    assert.equal(await handleCwlLeagueSignupInteraction(interaction), true);
+    assert.match(interaction.editReplyPayload.content, /belongs to another Discord user/i);
+    assert.doesNotMatch(interaction.editReplyPayload.content, /no longer has/i);
+    assert.deepEqual(interaction.editReplyPayload.components, []);
+});
+
+test('Clear vote reports unknown backend clear results as errors', async () => {
+    rosterBackend.getCwlLeaguePreferencesForDiscordUser = async () => ({
+        preferences: [makePreference()]
+    });
+    rosterBackend.clearCwlLeaguePreference = async () => ({
+        ok: true,
+        status: 'unexpected-noop',
+        cleared: false
+    });
+    rosterBackend.resetCwlLeaguePreferences = async () => assert.fail('user vote actions must not reset all preferences');
+
+    const interaction = makeInteraction({
+        customId: buildCwlLeagueCustomId('clear_vote', 'signup-1')
+    });
+
+    assert.equal(await handleCwlLeagueSignupInteraction(interaction), true);
+    assert.match(interaction.editReplyPayload.content, /did not confirm the clear/i);
+    assert.doesNotMatch(interaction.editReplyPayload.content, /no longer has/i);
+    assert.deepEqual(interaction.editReplyPayload.components, []);
+});
+
+test('Choosing a new league for an owned existing preference asks for change confirmation', async () => {
+    rosterFirebase.readLinkedAccountsForDiscordUser = async () => [makeLinkedAccount()];
+    rosterFirebase.readCwlLeagueSignups = async () => ({
+        signupId: 'signup-1',
+        optionsByLeagueKey: {
+            'league-2': makeLeagueOption(2)
+        },
+        preferencesByTag: {
+            '#MAIN1': makePreference()
+        }
+    });
+    rosterBackend.setCwlLeaguePreference = async () => assert.fail('change must wait for confirmation');
+    rosterBackend.resetCwlLeaguePreferences = async () => assert.fail('user vote actions must not reset all preferences');
+
+    const interaction = makeInteraction({
+        customId: buildCwlLeagueCustomId('choose', 'signup-1', 'league-2')
+    });
+
+    assert.equal(await handleCwlLeagueSignupInteraction(interaction), true);
+    assert.deepEqual(interaction.deferReplyPayload, { flags: 64 });
+    assert.match(interaction.editReplyPayload.content, /League 1 -> League 2/);
+    const rows = interaction.editReplyPayload.components.map(row => row.toJSON());
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].components[0].custom_id.startsWith('cwl:v1:chg:signup-1:league-2:%23MAIN1:'), true);
+    assert.equal(rows[0].components[0].label, 'Confirm change');
+    assert.equal(rows[0].components[1].custom_id, 'cwl:v1:chg_cancel');
+});
+
+test('Confirming an owned preference change sends allowChange and reports old to new', async () => {
+    const signups = {
+        signupId: 'signup-1',
+        optionsByLeagueKey: {
+            'league-2': makeLeagueOption(2)
+        },
+        preferencesByTag: {
+            '#MAIN1': makePreference()
+        }
+    };
+    let setPayload = null;
+    rosterFirebase.readLinkedAccountsForDiscordUser = async () => [makeLinkedAccount()];
+    rosterFirebase.readCwlLeagueSignups = async () => signups;
+    rosterBackend.setCwlLeaguePreference = async payload => {
+        setPayload = payload;
+        return {
+            ok: true,
+            status: 'changed',
+            changed: true,
+            previousPreference: makePreference(),
+            preference: makePreference({
+                leagueKey: 'league-2',
+                leagueName: 'League 2'
+            })
+        };
+    };
+    rosterBackend.resetCwlLeaguePreferences = async () => assert.fail('user vote actions must not reset all preferences');
+
+    const chooseInteraction = makeInteraction({
+        customId: buildCwlLeagueCustomId('choose', 'signup-1', 'league-2')
+    });
+
+    assert.equal(await handleCwlLeagueSignupInteraction(chooseInteraction), true);
+    const confirmCustomId = chooseInteraction.editReplyPayload.components[0].toJSON().components[0].custom_id;
+    const confirmInteraction = makeInteraction({
+        customId: confirmCustomId
+    });
+
+    assert.equal(await handleCwlLeagueSignupInteraction(confirmInteraction), true);
+    assert.equal(confirmInteraction.deferUpdateCalled, true);
+    assert.equal(setPayload.signupId, 'signup-1');
+    assert.equal(setPayload.playerTag, '#MAIN1');
+    assert.equal(setPayload.leagueKey, 'league-2');
+    assert.equal(setPayload.discordId, 'user-1');
+    assert.equal(setPayload.allowChange, true);
+    assert.match(confirmInteraction.editReplyPayload.content, /League 1 -> League 2/);
+    assert.deepEqual(confirmInteraction.editReplyPayload.components, []);
+});
+
+test('Choosing a new league cannot change a preference owned by another user', async () => {
+    let setCalled = false;
+    rosterFirebase.readLinkedAccountsForDiscordUser = async () => [makeLinkedAccount()];
+    rosterFirebase.readCwlLeagueSignups = async () => ({
+        signupId: 'signup-1',
+        optionsByLeagueKey: {
+            'league-2': makeLeagueOption(2)
+        },
+        preferencesByTag: {
+            '#MAIN1': makePreference({ discordId: 'other-user' })
+        }
+    });
+    rosterBackend.setCwlLeaguePreference = async () => {
+        setCalled = true;
+    };
+    rosterBackend.resetCwlLeaguePreferences = async () => assert.fail('user vote actions must not reset all preferences');
+
+    const interaction = makeInteraction({
+        customId: buildCwlLeagueCustomId('choose', 'signup-1', 'league-2')
+    });
+
+    assert.equal(await handleCwlLeagueSignupInteraction(interaction), true);
+    assert.equal(setCalled, false);
+    assert.match(interaction.editReplyPayload.content, /No linked accounts are available/i);
 });
