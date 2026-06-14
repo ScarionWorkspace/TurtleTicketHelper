@@ -37,7 +37,14 @@ async function parseJsonResponse(response) {
     try {
         return JSON.parse(text);
     } catch {
-        throw new RosterBackendError('Roster backend returned invalid JSON.', {
+        const contentType = String(response.headers?.get?.('content-type') || '').trim();
+        const snippet = text.replace(/\s+/g, ' ').trim().slice(0, 160);
+        const detail = [
+            'Roster backend returned invalid JSON.',
+            contentType ? `Content-Type: ${contentType}.` : '',
+            snippet ? `Response started with: ${snippet}` : ''
+        ].filter(Boolean).join(' ');
+        throw new RosterBackendError(detail, {
             status: response.status,
             code: 'INVALID_JSON'
         });
@@ -70,9 +77,9 @@ async function callRosterBackendMethod(methodName, args, options = {}) {
         const payload = await parseJsonResponse(response);
 
         if (!response.ok) {
-            throw new RosterBackendError('Roster backend returned a non-2xx response.', {
+            throw new RosterBackendError(payload?.error || 'Roster backend returned a non-2xx response.', {
                 status: response.status,
-                code: 'HTTP_ERROR'
+                code: payload?.code || payload?.errorCode || 'HTTP_ERROR'
             });
         }
 
@@ -135,11 +142,44 @@ function syncDiscordIdentityForPlayerTag(payload = {}, options = {}) {
     );
 }
 
+function linkDiscordIdentityForPlayerTag(payload = {}, options = {}) {
+    return callRosterBackendMethod(
+        'linkDiscordIdentityForPlayerTag',
+        [{
+            playerTag: payload.playerTag,
+            discordId: payload.discordId,
+            discordUsername: payload.discordUsername,
+            force: payload.force === true,
+            botSecret: ROSTER_BOT_SECRET
+        }],
+        {
+            timeoutMs: DISCORD_IDENTITY_SYNC_TIMEOUT_MS,
+            ...options
+        }
+    );
+}
+
 function deleteDiscordIdentityForPlayerTag(payload = {}, options = {}) {
     return callRosterBackendMethod(
         'deleteDiscordIdentityForPlayerTag',
         [{
             playerTag: payload.playerTag,
+            botSecret: ROSTER_BOT_SECRET
+        }],
+        {
+            timeoutMs: DISCORD_IDENTITY_SYNC_TIMEOUT_MS,
+            ...options
+        }
+    );
+}
+
+function deleteDiscordIdentityLink(payload = {}, options = {}) {
+    return callRosterBackendMethod(
+        'deleteDiscordIdentityLink',
+        [{
+            playerTag: payload.playerTag,
+            discordId: payload.discordId,
+            discordUsername: payload.discordUsername,
             botSecret: ROSTER_BOT_SECRET
         }],
         {
@@ -209,6 +249,8 @@ module.exports = {
     RosterBackendError,
     isRosterBackendConfigured,
     deleteDiscordIdentityForPlayerTag,
+    deleteDiscordIdentityLink,
+    linkDiscordIdentityForPlayerTag,
     syncDiscordIdentityForPlayerTag,
     reconcileCurrentSeasonEvents,
     getCurrentSeasonEvents,

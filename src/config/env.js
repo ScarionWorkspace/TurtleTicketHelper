@@ -3,7 +3,10 @@ const dotenv = require('dotenv');
 
 if (process.env.TURTLE_HELPER_SKIP_DOTENV !== '1') {
     dotenv.config({
-        path: path.resolve(__dirname, '..', '..', '.env'),
+        path: [
+            path.resolve(__dirname, '..', '..', '.env'),
+            path.resolve(__dirname, '..', '..', 'env')
+        ],
         quiet: true
     });
 }
