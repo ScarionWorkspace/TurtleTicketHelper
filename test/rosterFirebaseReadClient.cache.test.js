@@ -145,3 +145,73 @@ test('readJsonPath de-duplicates concurrent reads for the same normalized path',
     assert.deepEqual(await secondRead, { shared: true });
     assert.equal(requestCount, 1);
 });
+
+test('readLinkedAccountsForDiscordUser prefers Discord ID over username collisions', async () => {
+    const client = loadClient();
+
+    global.fetch = async () => makeJsonResponse({
+        '#2LUCULP': {
+            identity: {
+                tag: '#2LUCULP',
+                name: 'Alpha',
+                discordId: '111',
+                discordUsername: 'shared'
+            }
+        },
+        '#9PYLQG': {
+            identity: {
+                tag: '#9PYLQG',
+                name: 'Bravo',
+                discordId: '222',
+                discordUsername: 'shared'
+            }
+        },
+        '#8CCVV': {
+            identity: {
+                tag: '#8CCVV',
+                name: 'Legacy',
+                discordUsername: 'shared'
+            }
+        }
+    });
+
+    const accounts = await client.readLinkedAccountsForDiscordUser({
+        id: '222',
+        username: 'shared'
+    });
+
+    assert.deepEqual(accounts.map(account => [account.tag, account.matchType]), [
+        ['#9PYLQG', 'discordId']
+    ]);
+});
+
+test('readLinkedAccountsForDiscordUser falls back only to legacy username-only identities', async () => {
+    const client = loadClient();
+
+    global.fetch = async () => makeJsonResponse({
+        '#2LUCULP': {
+            identity: {
+                tag: '#2LUCULP',
+                name: 'Alpha',
+                discordId: '111',
+                discordUsername: 'legacy'
+            }
+        },
+        '#8CCVV': {
+            identity: {
+                tag: '#8CCVV',
+                name: 'Legacy',
+                discordUsername: 'legacy'
+            }
+        }
+    });
+
+    const accounts = await client.readLinkedAccountsForDiscordUser({
+        id: '999',
+        username: 'legacy'
+    });
+
+    assert.deepEqual(accounts.map(account => [account.tag, account.matchType]), [
+        ['#8CCVV', 'discordUsername']
+    ]);
+});

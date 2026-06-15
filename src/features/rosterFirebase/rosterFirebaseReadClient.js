@@ -409,7 +409,7 @@ async function readLinkedAccountsForDiscordUser(discordUser, options = {}) {
 
     const entries = Object.entries(metricsByTag);
     const idMatches = entries
-        .filter(([, metric]) => String(metric?.identity?.discordId || '') === discordId)
+        .filter(([, metric]) => discordId && String(metric?.identity?.discordId || '') === discordId)
         .map(([tag, metric]) => metricToLinkedAccount(metric, tag, 'discordId'))
         .filter(Boolean);
 
@@ -422,7 +422,11 @@ async function readLinkedAccountsForDiscordUser(discordUser, options = {}) {
     }
 
     const usernameMatches = entries
-        .filter(([, metric]) => metric?.identity?.discordUsername === discordUsername)
+        .filter(([, metric]) => {
+            const identity = metric?.identity || {};
+            return !String(identity.discordId || '').trim() &&
+                identity.discordUsername === discordUsername;
+        })
         .map(([tag, metric]) => metricToLinkedAccount(metric, tag, 'discordUsername'))
         .filter(Boolean);
 
