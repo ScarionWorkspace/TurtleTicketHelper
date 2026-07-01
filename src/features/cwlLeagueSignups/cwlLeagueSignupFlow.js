@@ -24,6 +24,31 @@ const DISCORD_SELECT_OPTIONS_MAX = 25;
 const DISCORD_ACTION_ROWS_MAX = 5;
 const DISCORD_UTILITY_ACTION_ROWS = 1;
 
+const CWL_LEAGUE_EMOJIS_BY_KEY = {
+    'bronze-iii': { id: '1516059392552861848', name: 'WarBronzeIII', animated: false },
+    'bronze-ii': { id: '1516059367349162006', name: 'WarBronzeII', animated: false },
+    'bronze-i': { id: '1516059331735589019', name: 'WarBronzeI', animated: false },
+    'silver-iii': { id: '1516059277557502074', name: 'WarSilverIII', animated: false },
+    'silver-ii': { id: '1516059227561656410', name: 'WarSilverII', animated: false },
+    'silver-i': { id: '1516059206531158117', name: 'WarSilverI', animated: false },
+    'gold-iii': { id: '1516059179024912438', name: 'WarGoldIII', animated: false },
+    'gold-ii': { id: '1516059152286355496', name: 'WarGoldII', animated: false },
+    'gold-i': { id: '1516059127544287242', name: 'WarGoldI', animated: false },
+    'crystal-iii': { id: '1516059098440011816', name: 'WarCrystalIII', animated: false },
+    'crystal-ii': { id: '1516058705752363008', name: 'WarCrystalII', animated: false },
+    'crystal-i': { id: '1516058678396977202', name: 'WarCrystalI', animated: false },
+    'master-iii': { id: '1516058647937941585', name: 'WarMasterIII', animated: false },
+    'master-ii': { id: '1516058624357695558', name: 'WarMasterII', animated: false },
+    'master-i': { id: '1516058601616052396', name: 'WarMasterI', animated: false },
+    'champion-iii': { id: '1516058550353395722', name: 'WarChampionIII', animated: false },
+    'champion-ii': { id: '1516058524273344522', name: 'WarChampionII', animated: false },
+    'champion-i': { id: '1516058496632754287', name: 'WarChampionI', animated: false },
+    'titan-iii': { id: '1516058468635902122', name: 'WarTitanIII', animated: false },
+    'titan-ii': { id: '1516058442660315177', name: 'WarTitanII', animated: false },
+    'titan-i': { id: '1516058416546582731', name: 'WarTitanI', animated: false },
+    legend: { id: '1516058390626046143', name: 'WarLegendL', animated: false }
+};
+
 function normalizePlayerTag(tag) {
     let cleaned = String(tag || '').trim().toUpperCase().replace(/\s+/g, '');
 
@@ -36,6 +61,48 @@ function normalizePlayerTag(tag) {
     }
 
     return cleaned.replace(/O/g, '0');
+}
+
+function normalizeCwlLeagueEmojiKey(leagueName) {
+    const text = String(leagueName || '')
+        .toLowerCase()
+        .replace(/\b(clan|war|league)\b/g, ' ')
+        .replace(/[^a-z0-9ivx]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    if (!text) {
+        return '';
+    }
+
+    if (/\blegend\b/.test(text)) {
+        return 'legend';
+    }
+
+    const family = ['bronze', 'silver', 'gold', 'crystal', 'master', 'champion', 'titan']
+        .find(value => new RegExp(`\\b${value}\\b`).test(text));
+    if (!family) {
+        return '';
+    }
+
+    const tierMatch = text.match(/\b(iii|ii|i|3|2|1)\b/);
+    if (!tierMatch) {
+        return '';
+    }
+
+    const rawTier = tierMatch[1];
+    const tier = rawTier === '3' ? 'iii' : (rawTier === '2' ? 'ii' : (rawTier === '1' ? 'i' : rawTier));
+    return `${family}-${tier}`;
+}
+
+function resolveCwlLeagueEmoji(leagueName) {
+    const emoji = CWL_LEAGUE_EMOJIS_BY_KEY[normalizeCwlLeagueEmojiKey(leagueName)];
+    return emoji ? { ...emoji } : null;
+}
+
+function formatCwlLeagueEmojiMention(leagueName) {
+    const emoji = resolveCwlLeagueEmoji(leagueName);
+    return emoji ? `<:${emoji.name}:${emoji.id}>` : '';
 }
 
 function buildCustomId(action, ...parts) {
@@ -161,7 +228,58 @@ function splitLinesForDiscord(lines, maxLength = DISCORD_MESSAGE_SAFE_LENGTH) {
     return chunks.length ? chunks : ['No data available.'];
 }
 
+function normalizeSignupOption(option, fallbackKey = '') {
+    const source = option && typeof option === 'object' ? option : {};
+    const rosterIds = Array.isArray(source.rosterIds)
+        ? source.rosterIds.map(value => String(value || '').trim()).filter(Boolean)
+        : [];
+    const clanTags = Array.isArray(source.clanTags)
+        ? source.clanTags.map(value => String(value || '').trim()).filter(Boolean)
+        : [];
+    const clanNames = Array.isArray(source.clanNames)
+        ? source.clanNames.map(value => String(value || '').trim()).filter(Boolean)
+        : [];
+    const leagueName = String(source.leagueName || source.leagueLabel || source.leagueKey || fallbackKey || '').trim();
+    const leagueKey = String(source.leagueKey || leagueName || fallbackKey || '').trim();
+    const optionKey = String(source.optionKey || source.optionId || source.choiceKey || fallbackKey || leagueKey || '').trim();
+    const targetRosterId = String(source.targetRosterId || source.rosterId || rosterIds[0] || '').trim();
+    const targetClanTag = String(source.targetClanTag || source.clanTag || clanTags[0] || '').trim();
+    const targetClanName = String(source.targetClanName || source.clanName || clanNames[0] || '').trim();
+    const targetRosterTitle = String(source.targetRosterTitle || source.rosterTitle || '').trim();
+
+    return {
+        ...source,
+        optionKey,
+        leagueKey,
+        leagueName,
+        targetRosterId,
+        targetRosterTitle,
+        targetClanTag,
+        targetClanName,
+        rosterIds,
+        clanTags,
+        clanNames
+    };
+}
+
 function formatLeagueOptionClanLabel(option) {
+    const normalized = normalizeSignupOption(option);
+    if (normalized.targetClanName) {
+        return truncate(normalized.targetClanName, 120);
+    }
+
+    if (normalized.targetClanTag) {
+        return truncate(normalized.targetClanTag, 120);
+    }
+
+    if (normalized.targetRosterTitle) {
+        return truncate(normalized.targetRosterTitle, 120);
+    }
+
+    if (normalized.targetRosterId) {
+        return truncate(normalized.targetRosterId, 120);
+    }
+
     const clanNames = Array.isArray(option?.clanNames) ? option.clanNames : [];
     const clanTags = Array.isArray(option?.clanTags) ? option.clanTags : [];
     const rosterIds = Array.isArray(option?.rosterIds) ? option.rosterIds : [];
@@ -180,6 +298,14 @@ function formatLeagueOptionClanLabel(option) {
     }
 
     return truncate(unique.join(', '), 120) || 'Clan';
+}
+
+function formatLeagueOptionLine(option) {
+    const normalized = normalizeSignupOption(option);
+    const emojiMention = formatCwlLeagueEmojiMention(normalized.leagueName);
+    const leagueName = truncate(normalized.leagueName, 80) || 'Unknown league';
+    const clanLabel = formatLeagueOptionClanLabel(normalized);
+    return [emojiMention, `${leagueName} - ${clanLabel}`].filter(Boolean).join(' ');
 }
 
 function formatSkippedRosterReason(reason) {
@@ -262,7 +388,12 @@ function normalizeCwlLeaguePreferenceList(result, discordId = '') {
             ...preference,
             playerTag: normalizePlayerTag(preference.playerTag || preference.tag),
             playerName: String(preference.playerName || preference.name || '').trim(),
-            leagueName: String(preference.leagueName || preference.leagueLabel || preference.leagueKey || '').trim()
+            optionKey: String(preference.optionKey || preference.optionId || preference.choiceKey || '').trim(),
+            leagueKey: String(preference.leagueKey || '').trim(),
+            leagueName: String(preference.leagueName || preference.leagueLabel || preference.leagueKey || '').trim(),
+            targetRosterId: String(preference.targetRosterId || preference.rosterId || '').trim(),
+            targetClanTag: String(preference.targetClanTag || preference.clanTag || '').trim(),
+            targetClanName: String(preference.targetClanName || preference.clanName || '').trim()
         }))
         .filter(preference => {
             const key = preference.playerTag || `${preference.playerName}|${preference.leagueName}`;
@@ -288,13 +419,23 @@ function preferenceAccountLabel(preference) {
 }
 
 function preferenceLeagueLabel(preference) {
-    return truncate(
+    const league = truncate(
         preference?.leagueName ||
         preference?.leagueLabel ||
         preference?.leagueKey ||
         'Unknown league',
         80
     );
+    const target = truncate(
+        preference?.targetClanName ||
+        preference?.clanName ||
+        preference?.targetClanTag ||
+        preference?.clanTag ||
+        '',
+        80
+    );
+
+    return target ? `${league} - ${target}` : league;
 }
 
 function formatPreferenceLine(preference) {
@@ -324,29 +465,40 @@ function getPreferenceByTag(signups, playerTag) {
     return preference && typeof preference === 'object' ? {
         ...preference,
         playerTag: normalizePlayerTag(preference.playerTag || preference.tag || tag),
-        leagueName: preferenceLeagueLabel(preference)
+        optionKey: String(preference.optionKey || preference.optionId || preference.choiceKey || '').trim(),
+        leagueKey: String(preference.leagueKey || '').trim(),
+        leagueName: String(preference.leagueName || preference.leagueLabel || preference.leagueKey || '').trim(),
+        targetRosterId: String(preference.targetRosterId || preference.rosterId || '').trim(),
+        targetClanTag: String(preference.targetClanTag || preference.clanTag || '').trim(),
+        targetClanName: String(preference.targetClanName || preference.clanName || '').trim()
     } : null;
 }
 
-function getSignupLeagueOption(signups, leagueKey) {
-    const key = String(leagueKey || '').trim();
+function getSignupOption(signups, optionKey) {
+    const key = String(optionKey || '').trim();
+    const optionsByKey = signups?.optionsByKey && typeof signups.optionsByKey === 'object'
+        ? signups.optionsByKey
+        : {};
     const optionsByLeagueKey = signups?.optionsByLeagueKey && typeof signups.optionsByLeagueKey === 'object'
         ? signups.optionsByLeagueKey
         : {};
-    const option = optionsByLeagueKey[key];
+    const option = optionsByKey[key] || optionsByLeagueKey[key];
 
     return option && typeof option === 'object'
-        ? {
-            ...option,
-            leagueKey: String(option.leagueKey || key).trim(),
-            leagueName: String(option.leagueName || option.leagueLabel || key).trim()
-        }
+        ? normalizeSignupOption(option, key)
         : null;
 }
 
 function preferenceChangeToken(preference) {
     return createHash('sha256')
-        .update(String(preference?.leagueKey || preference?.leagueName || ''))
+        .update(String(
+            preference?.optionKey ||
+            preference?.targetRosterId ||
+            preference?.targetClanTag ||
+            preference?.leagueKey ||
+            preference?.leagueName ||
+            ''
+        ))
         .digest('hex')
         .slice(0, 8);
 }
@@ -491,13 +643,13 @@ function buildClearPreferenceSelectRows(preferences, signupId, userId) {
     });
 }
 
-function buildChangePreferenceConfirmationRows(signupId, leagueKey, preference) {
+function buildChangePreferenceConfirmationRows(signupId, optionKey, preference) {
     const playerTag = normalizePlayerTag(preference?.playerTag || preference?.tag);
 
     return [
         new ActionRowBuilder().addComponents(
             new ButtonBuilder()
-                .setCustomId(buildCustomId('chg', signupId, leagueKey, playerTag, preferenceChangeToken(preference)))
+                .setCustomId(buildCustomId('chg', signupId, optionKey, playerTag, preferenceChangeToken(preference)))
                 .setLabel('Confirm change')
                 .setStyle(ButtonStyle.Primary),
             new ButtonBuilder()
@@ -520,7 +672,7 @@ function buildSignupMessagePayload(options, signupId, pageIndex = 0, pageCount =
     }
 
     if (available.length) {
-        const optionLines = available.map(option => `${truncate(option.leagueName, 80)} (${formatLeagueOptionClanLabel(option)})`);
+        const optionLines = available.map(option => formatLeagueOptionLine(option));
         const optionChunks = splitLinesForDiscord(optionLines, 1024);
 
         optionChunks.forEach((chunk, index) => {
@@ -542,13 +694,17 @@ function buildSignupMessagePayload(options, signupId, pageIndex = 0, pageCount =
 
     for (let index = 0; index < leagueRowOptions.length; index += DISCORD_BUTTONS_PER_ROW) {
         const row = new ActionRowBuilder();
-        for (const option of leagueRowOptions.slice(index, index + DISCORD_BUTTONS_PER_ROW)) {
-            row.addComponents(
-                new ButtonBuilder()
-                    .setCustomId(buildCustomId('choose', signupId, option.leagueKey))
-                    .setLabel(safeComponentLabel(option.leagueName, DISCORD_BUTTON_LABEL_MAX_LENGTH, 'CWL League'))
-                    .setStyle(ButtonStyle.Primary)
-            );
+        for (const rawOption of leagueRowOptions.slice(index, index + DISCORD_BUTTONS_PER_ROW)) {
+            const option = normalizeSignupOption(rawOption);
+            const button = new ButtonBuilder()
+                .setCustomId(buildCustomId('choose', signupId, option.optionKey || option.leagueKey))
+                .setLabel(safeComponentLabel(formatLeagueOptionClanLabel(option), DISCORD_BUTTON_LABEL_MAX_LENGTH, 'Clan'))
+                .setStyle(ButtonStyle.Primary);
+            const emoji = resolveCwlLeagueEmoji(option.leagueName);
+            if (emoji) {
+                button.setEmoji(emoji);
+            }
+            row.addComponents(button);
         }
         rows.push(row);
     }
@@ -669,6 +825,7 @@ async function savePreference(interaction, signupId, leagueKey, account, sourceM
             playerTag,
             playerName: account?.name || '',
             signupId,
+            optionKey: options.optionKey || leagueKey,
             leagueKey,
             discordId: discordUser.id,
             discordUsername: discordUser.username,
@@ -713,14 +870,14 @@ async function savePreference(interaction, signupId, leagueKey, account, sourceM
     }
 
     const preference = result?.preference || {};
-    let content = `${accountLabel(account)} is signed up for ${truncate(preference.leagueName, 80) || 'that CWL league'}.`;
+    let content = `${accountLabel(account)} is signed up for ${preferenceLeagueLabel(preference) || 'that CWL league'}.`;
 
     if (options.allowChange === true) {
         const status = String(result?.status || '').toLowerCase();
         if (status === 'changed' || result?.changed === true) {
             content = buildChangePreferenceMessage(account, result?.previousPreference || options.previousPreference, preference);
         } else if (status === 'unchanged') {
-            content = `${accountLabel(account)} is already signed up for ${truncate(preference.leagueName, 80) || 'that CWL league'}.`;
+            content = `${accountLabel(account)} is already signed up for ${preferenceLeagueLabel(preference) || 'that CWL league'}.`;
         } else if (!result || result.ok === false || (!result.preference && !preference.leagueName)) {
             content = 'Unable to change that CWL league preference because the backend did not confirm the change.';
         }
@@ -745,12 +902,30 @@ async function savePreference(interaction, signupId, leagueKey, account, sourceM
 function buildChangePreferenceConfirmationContent(account, currentPreference, nextOption) {
     return [
         `Confirm CWL league preference change for ${accountLabel(account)}:`,
-        `${preferenceLeagueLabel(currentPreference)} -> ${truncate(nextOption?.leagueName, 80) || 'that CWL league'}`
+        `${preferenceLeagueLabel(currentPreference)} -> ${preferenceLeagueLabel(nextOption) || 'that CWL league'}`
     ].join('\n');
 }
 
-async function showChangePreferenceConfirmation(interaction, signupId, leagueKey, account, currentPreference, signups) {
-    const nextOption = getSignupLeagueOption(signups, leagueKey);
+function preferenceMatchesOption(preference, option) {
+    const current = preference && typeof preference === 'object' ? preference : {};
+    const next = normalizeSignupOption(option);
+    const currentOptionKey = String(current.optionKey || current.optionId || current.choiceKey || '').trim();
+    const nextOptionKey = String(next.optionKey || '').trim();
+    if (currentOptionKey || nextOptionKey) {
+        return Boolean(currentOptionKey && nextOptionKey && currentOptionKey === nextOptionKey);
+    }
+
+    const currentRosterId = String(current.targetRosterId || current.rosterId || '').trim();
+    const nextRosterId = String(next.targetRosterId || '').trim();
+    if (currentRosterId || nextRosterId) {
+        return Boolean(currentRosterId && nextRosterId && currentRosterId === nextRosterId);
+    }
+
+    return String(current.leagueKey || '').trim() === String(next.leagueKey || '').trim();
+}
+
+async function showChangePreferenceConfirmation(interaction, signupId, optionKey, account, currentPreference, signups) {
+    const nextOption = getSignupOption(signups, optionKey);
 
     if (!nextOption) {
         await interaction.editReply({
@@ -760,9 +935,9 @@ async function showChangePreferenceConfirmation(interaction, signupId, leagueKey
         return;
     }
 
-    if (String(currentPreference?.leagueKey || '') === String(leagueKey || '')) {
+    if (preferenceMatchesOption(currentPreference, nextOption)) {
         await interaction.editReply({
-            content: `${accountLabel(account)} is already signed up for ${truncate(nextOption.leagueName, 80) || 'that CWL league'}.`,
+            content: `${accountLabel(account)} is already signed up for ${preferenceLeagueLabel(nextOption) || 'that CWL league'}.`,
             components: []
         });
         return;
@@ -770,7 +945,7 @@ async function showChangePreferenceConfirmation(interaction, signupId, leagueKey
 
     await interaction.editReply({
         content: buildChangePreferenceConfirmationContent(account, currentPreference, nextOption),
-        components: buildChangePreferenceConfirmationRows(signupId, leagueKey, currentPreference)
+        components: buildChangePreferenceConfirmationRows(signupId, optionKey, currentPreference)
     });
 }
 
@@ -787,9 +962,9 @@ function buildSelectableCwlAccounts(linkedAccounts, signups, discordId) {
 
 async function handleChooseButton(interaction, parsed) {
     const signupId = parsed.parts[0] || '';
-    const leagueKey = parsed.parts[1] || '';
+    const optionKey = parsed.parts[1] || '';
 
-    if (!signupId || !leagueKey) {
+    if (!signupId || !optionKey) {
         await interaction.reply({
             content: staleSignupMessage(),
             flags: 64
@@ -815,22 +990,33 @@ async function handleChooseButton(interaction, parsed) {
         return;
     }
 
+    const selectedOption = getSignupOption(signups, optionKey);
+    if (!selectedOption) {
+        await interaction.editReply({
+            content: 'That CWL league choice is no longer available. Please use the latest signup message.',
+            components: []
+        });
+        return;
+    }
+
     if (selectableAccounts.length === 1) {
         const selected = selectableAccounts[0];
 
         if (selected.preference) {
-            await showChangePreferenceConfirmation(interaction, signupId, leagueKey, selected.account, selected.preference, signups);
+            await showChangePreferenceConfirmation(interaction, signupId, optionKey, selected.account, selected.preference, signups);
             return;
         }
 
-        await savePreference(interaction, signupId, leagueKey, selected.account, interaction.message?.id || '');
+        await savePreference(interaction, signupId, selectedOption.leagueKey, selected.account, interaction.message?.id || '', {
+            optionKey: selectedOption.optionKey
+        });
         return;
     }
 
     const accountChunks = chunkArray(selectableAccounts, DISCORD_SELECT_OPTIONS_MAX).slice(0, DISCORD_ACTION_ROWS_MAX);
     const accountRows = accountChunks.map((items, chunkIndex) => {
         const select = new StringSelectMenuBuilder()
-            .setCustomId(buildCustomId('account', signupId, leagueKey, chunkIndex))
+            .setCustomId(buildCustomId('account', signupId, optionKey, chunkIndex))
             .setPlaceholder(accountChunks.length > 1 ? `Choose account ${chunkIndex + 1}` : 'Choose account')
             .setMinValues(1)
             .setMaxValues(1)
@@ -861,9 +1047,9 @@ async function handleChooseButton(interaction, parsed) {
 
 async function handleAccountSelect(interaction, parsed) {
     const signupId = parsed.parts[0] || '';
-    const leagueKey = parsed.parts[1] || '';
+    const optionKey = parsed.parts[1] || '';
 
-    if (!signupId || !leagueKey) {
+    if (!signupId || !optionKey) {
         await interaction.reply({
             content: staleSignupMessage(),
             flags: 64
@@ -900,6 +1086,15 @@ async function handleAccountSelect(interaction, parsed) {
 
     await interaction.deferUpdate();
 
+    const selectedOption = getSignupOption(signups, optionKey);
+    if (!selectedOption) {
+        await interaction.editReply({
+            content: 'That CWL league choice is no longer available. Please use the latest signup message.',
+            components: []
+        });
+        return;
+    }
+
     const currentPreference = getPreferenceByTag(signups, selectedTag);
     if (currentPreference) {
         if (!userOwnsPreference(currentPreference, discordUser.id)) {
@@ -910,11 +1105,13 @@ async function handleAccountSelect(interaction, parsed) {
             return;
         }
 
-        await showChangePreferenceConfirmation(interaction, signupId, leagueKey, account, currentPreference, signups);
+        await showChangePreferenceConfirmation(interaction, signupId, optionKey, account, currentPreference, signups);
         return;
     }
 
-    await savePreference(interaction, signupId, leagueKey, account, selected.sourceMessageId);
+    await savePreference(interaction, signupId, selectedOption.leagueKey, account, selected.sourceMessageId, {
+        optionKey: selectedOption.optionKey
+    });
 }
 
 async function handleMyVotesButton(interaction, parsed) {
@@ -1089,11 +1286,11 @@ async function handleClearVoteSelect(interaction, parsed) {
 
 async function handleChangePreferenceConfirm(interaction, parsed) {
     const signupId = parsed.parts[0] || '';
-    const leagueKey = parsed.parts[1] || '';
+    const optionKey = parsed.parts[1] || '';
     const selectedTag = normalizePlayerTag(parsed.parts[2]);
     const expectedToken = parsed.parts[3] || '';
 
-    if (!signupId || !leagueKey || !selectedTag || !expectedToken) {
+    if (!signupId || !optionKey || !selectedTag || !expectedToken) {
         await interaction.reply({
             content: staleSignupMessage(),
             flags: 64
@@ -1153,7 +1350,7 @@ async function handleChangePreferenceConfirm(interaction, parsed) {
         return;
     }
 
-    const nextOption = getSignupLeagueOption(signups, leagueKey);
+    const nextOption = getSignupOption(signups, optionKey);
     if (!nextOption) {
         await interaction.editReply({
             content: 'That CWL league choice is no longer available. Please use the latest signup message.',
@@ -1162,15 +1359,16 @@ async function handleChangePreferenceConfirm(interaction, parsed) {
         return;
     }
 
-    if (String(currentPreference.leagueKey || '') === String(leagueKey || '')) {
+    if (preferenceMatchesOption(currentPreference, nextOption)) {
         await interaction.editReply({
-            content: `${accountLabel(account)} is already signed up for ${truncate(nextOption.leagueName, 80) || 'that CWL league'}.`,
+            content: `${accountLabel(account)} is already signed up for ${preferenceLeagueLabel(nextOption) || 'that CWL league'}.`,
             components: []
         });
         return;
     }
 
-    await savePreference(interaction, signupId, leagueKey, account, '', {
+    await savePreference(interaction, signupId, nextOption.leagueKey, account, '', {
+        optionKey: nextOption.optionKey,
         allowChange: true,
         previousPreference: currentPreference
     });
@@ -1387,7 +1585,7 @@ async function buildCwlLeagueSignupSummaryChunks() {
         const metric = metricsByTag[tag] || {};
         const latest = metric.latestSnapshot || {};
         const name = truncate(pref.playerName || metric.identity?.name || latest.name || tag, 80);
-        const leagueName = truncate(pref.leagueName, 80);
+        const leagueName = preferenceLeagueLabel(pref);
         const user = truncate(pref.discordId ? `<@${pref.discordId}>` : (pref.discordDisplayName || pref.discordUsername || 'unknown Discord'), 120);
 
         return `${leagueName}: ${name} (${tag}) - ${user}`;
@@ -1434,6 +1632,7 @@ module.exports = {
     buildCwlLeagueSignupMessagePayload: buildSignupMessagePayload,
     buildCwlLeagueCustomId: buildCustomId,
     parseCwlLeagueCustomId: parseCustomId,
+    resolveCwlLeagueEmoji,
     normalizeCwlLeaguePreferenceList,
     formatUserPreferencesResponse
 };

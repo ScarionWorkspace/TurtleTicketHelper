@@ -6,7 +6,8 @@ const {
     buildCwlLeagueSignupMessagePayload,
     buildCwlLeagueCustomId,
     parseCwlLeagueCustomId,
-    handleCwlLeagueSignupInteraction
+    handleCwlLeagueSignupInteraction,
+    resolveCwlLeagueEmoji
 } = require('../src/features/cwlLeagueSignups/cwlLeagueSignupFlow');
 
 const originalBackend = {
@@ -22,6 +23,7 @@ const originalFirebase = {
 
 function makeLeagueOption(index) {
     return {
+        optionKey: `league-${index}`,
         leagueKey: `league-${index}`,
         leagueName: `League ${index}`,
         clanNames: [`Clan ${index}`]
@@ -142,6 +144,57 @@ test('CWL signup message reserves a utility row and keeps league buttons within 
         action: 'clear_vote_select',
         parts: ['signup:with-colon', 'user-1', '0']
     });
+});
+
+test('CWL signup message renders same-league clan options as distinct emoji buttons', () => {
+    const payload = buildCwlLeagueSignupMessagePayload([
+        {
+            optionKey: 'turtle-main',
+            leagueKey: 'champion-i',
+            leagueName: 'Champion I',
+            targetRosterId: 'main',
+            targetClanName: 'Turtle Main',
+            clanNames: ['Turtle Main']
+        },
+        {
+            optionKey: 'turtle-second',
+            leagueKey: 'champion-i',
+            leagueName: 'Champion I',
+            targetRosterId: 'second',
+            targetClanName: 'Turtle Second',
+            clanNames: ['Turtle Second']
+        }
+    ], 'signup-1');
+    const rows = payload.components.map(row => row.toJSON());
+    const buttons = rows[0].components;
+    const infoText = payload.embeds[0].toJSON().fields[0].value;
+
+    assert.equal(resolveCwlLeagueEmoji('Champion League I').id, '1516058496632754287');
+    assert.deepEqual(
+        buttons.map(button => ({
+            customId: button.custom_id,
+            label: button.label,
+            emojiName: button.emoji?.name,
+            emojiId: button.emoji?.id
+        })),
+        [
+            {
+                customId: 'cwl:v1:choose:signup-1:turtle-main',
+                label: 'Turtle Main',
+                emojiName: 'WarChampionI',
+                emojiId: '1516058496632754287'
+            },
+            {
+                customId: 'cwl:v1:choose:signup-1:turtle-second',
+                label: 'Turtle Second',
+                emojiName: 'WarChampionI',
+                emojiId: '1516058496632754287'
+            }
+        ]
+    );
+    assert.doesNotMatch(buttons[0].label, /<:/);
+    assert.match(infoText, /<:WarChampionI:1516058496632754287> Champion I - Turtle Main/);
+    assert.match(infoText, /<:WarChampionI:1516058496632754287> Champion I - Turtle Second/);
 });
 
 test('My votes replies ephemerally with only the clicking user preferences', async () => {
@@ -366,6 +419,54 @@ test('Clear vote reports unknown backend clear results as errors', async () => {
     assert.equal(await handleCwlLeagueSignupInteraction(interaction), true);
     assert.match(interaction.editReplyPayload.content, /did not confirm the clear/i);
     assert.doesNotMatch(interaction.editReplyPayload.content, /no longer has/i);
+    assert.deepEqual(interaction.editReplyPayload.components, []);
+});
+
+test('Choosing a clan option saves the option key while keeping the league key', async () => {
+    const signups = {
+        signupId: 'signup-1',
+        optionsByKey: {
+            'turtle-second': {
+                optionKey: 'turtle-second',
+                leagueKey: 'champion-i',
+                leagueName: 'Champion I',
+                targetRosterId: 'second',
+                targetClanName: 'Turtle Second'
+            }
+        },
+        preferencesByTag: {}
+    };
+    let setPayload = null;
+    rosterFirebase.readLinkedAccountsForDiscordUser = async () => [makeLinkedAccount()];
+    rosterFirebase.readCwlLeagueSignups = async () => signups;
+    rosterBackend.setCwlLeaguePreference = async payload => {
+        setPayload = payload;
+        return {
+            ok: true,
+            status: 'created',
+            preference: {
+                playerTag: '#MAIN1',
+                playerName: 'Main',
+                optionKey: 'turtle-second',
+                leagueKey: 'champion-i',
+                leagueName: 'Champion I',
+                targetRosterId: 'second',
+                targetClanName: 'Turtle Second'
+            }
+        };
+    };
+    rosterBackend.resetCwlLeaguePreferences = async () => assert.fail('user vote actions must not reset all preferences');
+
+    const interaction = makeInteraction({
+        customId: buildCwlLeagueCustomId('choose', 'signup-1', 'turtle-second')
+    });
+
+    assert.equal(await handleCwlLeagueSignupInteraction(interaction), true);
+    assert.equal(setPayload.signupId, 'signup-1');
+    assert.equal(setPayload.playerTag, '#MAIN1');
+    assert.equal(setPayload.optionKey, 'turtle-second');
+    assert.equal(setPayload.leagueKey, 'champion-i');
+    assert.match(interaction.editReplyPayload.content, /Champion I - Turtle Second/);
     assert.deepEqual(interaction.editReplyPayload.components, []);
 });
 
