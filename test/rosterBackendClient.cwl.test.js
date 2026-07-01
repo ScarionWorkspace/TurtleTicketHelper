@@ -46,6 +46,17 @@ function makeJsonResponse(value) {
     };
 }
 
+function makeTextResponse(text, contentType = 'text/plain') {
+    return {
+        ok: true,
+        status: 200,
+        headers: {
+            get: () => contentType
+        },
+        text: async () => text
+    };
+}
+
 afterEach(() => {
     global.fetch = originalFetch;
     clearClientModules();
@@ -100,4 +111,27 @@ test('CWL user preference backend wrappers call user-scoped methods', async () =
         'secret'
     ]);
     assert(!bodies.some(body => body.method === 'resetCwlLeaguePreferences'));
+});
+
+test('backend client reports HTML responses without exposing raw markup', async () => {
+    const client = loadClient();
+
+    global.fetch = async () => makeTextResponse(
+        '<!doctype html><html><body>Apps Script error page</body></html>',
+        'text/html; charset=utf-8'
+    );
+
+    await assert.rejects(
+        () => client.linkDiscordIdentityForPlayerTag({
+            playerTag: '#PYYQQ',
+            discordId: '222222222222222222',
+            discordUsername: 'bravo'
+        }),
+        error => {
+            assert.equal(error.code, 'INVALID_JSON');
+            assert.match(error.message, /HTML response instead of JSON/);
+            assert.doesNotMatch(error.message, /<html/i);
+            return true;
+        }
+    );
 });

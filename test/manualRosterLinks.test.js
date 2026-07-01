@@ -5,6 +5,7 @@ const { ApplicationCommandOptionType, InteractionContextType, PermissionFlagsBit
 const linkCommand = require('../src/commands/utility/link');
 const linkDeleteCommand = require('../src/commands/utility/linkDelete');
 const {
+    buildLinkSuccessMessage,
     handleLinkCommand,
     handleLinkDeleteCommand,
     mapRosterLinkError
@@ -134,6 +135,22 @@ test('handleLinkCommand defers ephemerally and sends normalized backend payload'
     assert.match(interaction.calls.at(-1).payload.content, /Linked <@111111111111111111> to Alpha \(#2LUCULP\)/);
 });
 
+test('buildLinkSuccessMessage reports already linked results without conflict text', () => {
+    const content = buildLinkSuccessMessage(
+        {
+            ok: true,
+            tag: '#9PYLQG',
+            playerName: 'Bravo',
+            alreadyLinked: true,
+            conflictsResolvedCount: 0
+        },
+        { id: '222222222222222222', username: 'bravo' },
+        '#9PYLQG'
+    );
+
+    assert.equal(content, 'Bravo (#9PYLQG) is already linked to <@222222222222222222>.');
+});
+
 test('handleLinkCommand passes force true and maps backend conflicts clearly', async () => {
     const backendCalls = [];
     const interaction = buildInteraction({
@@ -247,9 +264,13 @@ test('mapRosterLinkError covers invalid tag, missing player, missing link, and b
     notFound.code = 'PLAYER_NOT_FOUND';
     const missingLink = new Error('No backend Discord link was found.');
     missingLink.code = 'DISCORD_LINK_MISSING';
+    const htmlResponse = new Error('<!doctype html><html><body>backend failed</body></html>');
+    htmlResponse.code = 'INVALID_JSON';
 
     assert.match(mapRosterLinkError(invalidTag), /Invalid player tag/);
     assert.match(mapRosterLinkError(notFound, { playerTag: '#PYYQQ' }), /Player not found for #PYYQQ/);
     assert.match(mapRosterLinkError(missingLink), /No backend link/);
+    assert.match(mapRosterLinkError(htmlResponse), /non-JSON response/);
+    assert.doesNotMatch(mapRosterLinkError(htmlResponse), /<html/i);
     assert.match(mapRosterLinkError(new Error('upstream broke')), /Roster backend failure/);
 });

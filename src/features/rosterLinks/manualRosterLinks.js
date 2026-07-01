@@ -74,6 +74,12 @@ function isMissingLinkError(error) {
         /no backend discord link|missing link/i.test(getBackendErrorMessage(error));
 }
 
+function isInvalidBackendResponseError(error) {
+    const message = getBackendErrorMessage(error);
+    return error?.code === 'INVALID_JSON' ||
+        /invalid json|html response|<!doctype|<html[\s>]/i.test(message);
+}
+
 function mapRosterLinkError(error, context = {}) {
     const action = context.action === 'delete' ? 'delete that link' : 'save that link';
     const tag = normalizePlayerTag(context.playerTag);
@@ -99,6 +105,10 @@ function mapRosterLinkError(error, context = {}) {
 
     if (isMissingLinkError(error)) {
         return 'No backend link was found for that lookup.';
+    }
+
+    if (isInvalidBackendResponseError(error)) {
+        return 'Roster backend returned a non-JSON response. Check the deployed backend URL and backend logs, then try again.';
     }
 
     if (error?.code === 'PLAYER_LOOKUP_FAILED') {
@@ -134,6 +144,10 @@ function buildLinkSuccessMessage(result, user, playerTag) {
     const tag = normalizePlayerTag(result?.tag || playerTag);
     const playerName = String(result?.playerName || result?.name || '').trim();
     const playerLabel = playerName && tag ? `${playerName} (${tag})` : (tag || 'that player');
+    if (result?.alreadyLinked === true) {
+        return `${playerLabel} is already linked to ${formatDiscordUser(user)}.`;
+    }
+
     const resolvedCount = Number(result?.conflictsResolvedCount) || 0;
     const resolvedText = resolvedCount > 0
         ? ` Resolved ${resolvedCount} conflicting link${resolvedCount === 1 ? '' : 's'}.`

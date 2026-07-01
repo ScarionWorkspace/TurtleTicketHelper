@@ -33,6 +33,7 @@ const appConfig = {
         linkDeletingMessage: 'Deleting Link',
         linkSavedMessage: 'Link Saved',
         linkDeletedMessage: 'Link Deleted',
+        successStatusDeleteDelayMs: 10000,
         ambiguousDisplayNameMessage:
             'Website sync did not work for {playerTag} because the Discord display name "{displayName}" is ambiguous. Please manually create the link or sync using the import function in the admin panel.',
         missingDisplayNameMessage:

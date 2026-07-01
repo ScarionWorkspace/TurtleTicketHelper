@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { setTimeout: sleep } = require('node:timers/promises');
 
 const handleClashPerkLinkMessage = require('../src/features/clashPerkLinks/handleClashPerkLinkMessage');
 const messageUpdateEvent = require('../src/events/messageUpdate');
@@ -54,9 +55,16 @@ function buildMessage({
                     initialContent: value,
                     content: value,
                     edits: [],
+                    deleted: false,
+                    deleteCalls: 0,
                     edit: async nextValue => {
                         sentMessage.edits.push(nextValue);
                         sentMessage.content = nextValue;
+                        return sentMessage;
+                    },
+                    delete: async () => {
+                        sentMessage.deleteCalls += 1;
+                        sentMessage.deleted = true;
                         return sentMessage;
                     }
                 };
@@ -215,7 +223,7 @@ test('accepts ClashPerk webhook-style public interaction replies', async () => {
     assert.deepEqual(calls, [['#2PCQ2CGL8', '111', 'steimi']]);
 });
 
-test('saves unambiguous ClashPerk link to backend and sends success message', async () => {
+test('successful ClashPerk link create sync resolves then cleans up the success message', async () => {
     const member = buildMember('111', 'server-cleanupkid', 'cleanupkid', false, {
         globalName: 'cleanupkid_'
     });
@@ -228,7 +236,8 @@ test('saves unambiguous ClashPerk link to backend and sends success message', as
     const result = await handleClashPerkLinkMessage(message, {
         clashPerkConfig: {
             botId: 'clashperk',
-            linkSavedMessage: 'Link Saved'
+            linkSavedMessage: 'Link Saved',
+            successStatusDeleteDelayMs: 1
         },
         syncDiscordIdentityForPlayerTag: async (...args) => {
             calls.push(args);
@@ -244,9 +253,15 @@ test('saves unambiguous ClashPerk link to backend and sends success message', as
     assert.match(sentInitialContents(message)[0], /Saving link for DOOM \(#P29LQ2C2U\) to cleanupkid_/);
     assert.match(sentContents(message)[0], /Saved link: DOOM \(#P29LQ2C2U\) to cleanupkid\./);
     assert.equal(sentEditContents(message).length, 1);
+    assert.equal(message.sent[0].deleted, false);
+
+    await sleep(10);
+
+    assert.equal(message.sent[0].deleted, true);
+    assert.equal(message.sent[0].deleteCalls, 1);
 });
 
-test('deletes ClashPerk link from backend by player tag and sends success message', async () => {
+test('successful ClashPerk link delete sync resolves then cleans up the success message', async () => {
     const message = buildMessage({
         content: 'Successfully deleted the link with the tag #2PCQ2CGL8.',
         members: []
@@ -257,7 +272,8 @@ test('deletes ClashPerk link from backend by player tag and sends success messag
     const result = await handleClashPerkLinkMessage(message, {
         clashPerkConfig: {
             botId: 'clashperk',
-            linkDeletedMessage: 'Link Deleted'
+            linkDeletedMessage: 'Link Deleted',
+            successStatusDeleteDelayMs: 1
         },
         deleteDiscordIdentityForPlayerTag: async (...args) => {
             deleteCalls.push(args);
@@ -279,6 +295,12 @@ test('deletes ClashPerk link from backend by player tag and sends success messag
     assert.match(sentInitialContents(message)[0], /Deleting link for #2PCQ2CGL8 from the roster backend/);
     assert.match(sentContents(message)[0], /Deleted link for #2PCQ2CGL8 from the roster backend\./);
     assert.equal(sentEditContents(message).length, 1);
+    assert.equal(message.sent[0].deleted, false);
+
+    await sleep(10);
+
+    assert.equal(message.sent[0].deleted, true);
+    assert.equal(message.sent[0].deleteCalls, 1);
 });
 
 test('handles ClashPerk link text arriving on message update', async () => {
@@ -409,14 +431,48 @@ test('warns and skips backend sync when display name is not found', async () => 
     assert.match(sentContents(message)[0], /Could not save link for Ashish v2\.0 \(#P2QUL292G\) to sagar: no Discord member matched "sagar"\./);
 });
 
-test('warns when ClashPerk delete sync fails', async () => {
+test('backend create failure leaves the ClashPerk failure status visible', async () => {
+    const member = buildMember('111', 'server-sagar', 'sagar', false, {
+        globalName: 'sagar'
+    });
+    const message = buildMessage({
+        content: 'Successfully linked Ashish v2.0 (#P2QUL292G) to sagar.',
+        members: [member]
+    });
+
+    const result = await handleClashPerkLinkMessage(message, {
+        clashPerkConfig: {
+            botId: 'clashperk',
+            successStatusDeleteDelayMs: 1
+        },
+        syncDiscordIdentityForPlayerTag: async () => ({ ok: false })
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'backend-sync-failed');
+    assert.equal(message.sent.length, 1);
+    assert.equal(sentInitialContents(message)[0].includes('\n'), false);
+    assert.equal(sentContents(message)[0].includes('\n'), false);
+    assert.match(sentInitialContents(message)[0], /Saving link for Ashish v2\.0 \(#P2QUL292G\) to sagar/);
+    assert.match(sentContents(message)[0], /Could not save link for Ashish v2\.0 \(#P2QUL292G\) to sagar: the backend sync failed\./);
+
+    await sleep(10);
+
+    assert.equal(message.sent[0].deleted, false);
+    assert.equal(message.sent[0].deleteCalls, 0);
+});
+
+test('backend delete failure leaves the ClashPerk failure status visible', async () => {
     const message = buildMessage({
         content: 'Successfully deleted the link with the tag #2PCQ2CGL8.',
         members: []
     });
 
     const result = await handleClashPerkLinkMessage(message, {
-        clashPerkConfig: { botId: 'clashperk' },
+        clashPerkConfig: {
+            botId: 'clashperk',
+            successStatusDeleteDelayMs: 1
+        },
         deleteDiscordIdentityForPlayerTag: async () => ({ ok: false })
     });
 
@@ -427,6 +483,100 @@ test('warns when ClashPerk delete sync fails', async () => {
     assert.equal(sentContents(message)[0].includes('\n'), false);
     assert.match(sentInitialContents(message)[0], /Deleting link for #2PCQ2CGL8 from the roster backend/);
     assert.match(sentContents(message)[0], /Could not delete link for #2PCQ2CGL8: the backend delete sync failed\./);
+
+    await sleep(10);
+
+    assert.equal(message.sent[0].deleted, false);
+    assert.equal(message.sent[0].deleteCalls, 0);
+});
+
+test('unexpected exception after ClashPerk loading status edits to failure', async () => {
+    const member = buildMember('111', 'server-sagar', 'sagar', false, {
+        globalName: 'sagar'
+    });
+    const message = buildMessage({
+        content: 'Successfully linked Ashish v2.0 (#P2QUL292G) to sagar.',
+        members: [member]
+    });
+    const originalError = console.error;
+    const errors = [];
+
+    console.error = (...args) => {
+        errors.push(args);
+    };
+
+    try {
+        const result = await handleClashPerkLinkMessage(message, {
+            clashPerkConfig: {
+                botId: 'clashperk',
+                successStatusDeleteDelayMs: 1
+            },
+            syncDiscordIdentityForPlayerTag: async () => {
+                throw new Error('backend threw after loading status');
+            }
+        });
+
+        assert.equal(result.ok, false);
+        assert.equal(result.reason, 'unexpected-sync-error');
+    } finally {
+        console.error = originalError;
+    }
+
+    assert.equal(message.sent.length, 1);
+    assert.equal(sentInitialContents(message)[0].includes('\n'), false);
+    assert.equal(sentContents(message)[0].includes('\n'), false);
+    assert.match(sentInitialContents(message)[0], /Saving link for Ashish v2\.0 \(#P2QUL292G\) to sagar/);
+    assert.match(sentContents(message)[0], /Could not save link for Ashish v2\.0 \(#P2QUL292G\) to sagar: an unexpected sync error happened\./);
+    assert.equal(sentEditContents(message).length, 1);
+    assert.equal(errors.length, 1);
+
+    await sleep(10);
+
+    assert.equal(message.sent[0].deleted, false);
+    assert.equal(message.sent[0].deleteCalls, 0);
+});
+
+test('unexpected delete exception after ClashPerk loading status edits to failure', async () => {
+    const message = buildMessage({
+        content: 'Successfully deleted the link with the tag #2PCQ2CGL8.',
+        members: []
+    });
+    const originalError = console.error;
+    const errors = [];
+
+    console.error = (...args) => {
+        errors.push(args);
+    };
+
+    try {
+        const result = await handleClashPerkLinkMessage(message, {
+            clashPerkConfig: {
+                botId: 'clashperk',
+                successStatusDeleteDelayMs: 1
+            },
+            deleteDiscordIdentityForPlayerTag: async () => {
+                throw new Error('backend delete threw after loading status');
+            }
+        });
+
+        assert.equal(result.ok, false);
+        assert.equal(result.reason, 'unexpected-delete-sync-error');
+    } finally {
+        console.error = originalError;
+    }
+
+    assert.equal(message.sent.length, 1);
+    assert.equal(sentInitialContents(message)[0].includes('\n'), false);
+    assert.equal(sentContents(message)[0].includes('\n'), false);
+    assert.match(sentInitialContents(message)[0], /Deleting link for #2PCQ2CGL8 from the roster backend/);
+    assert.match(sentContents(message)[0], /Could not delete link for #2PCQ2CGL8: an unexpected delete sync error happened\./);
+    assert.equal(sentEditContents(message).length, 1);
+    assert.equal(errors.length, 1);
+
+    await sleep(10);
+
+    assert.equal(message.sent[0].deleted, false);
+    assert.equal(message.sent[0].deleteCalls, 0);
 });
 
 test('ignores messages from other bots', async () => {

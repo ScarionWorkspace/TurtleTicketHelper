@@ -39,11 +39,18 @@ async function parseJsonResponse(response) {
     } catch {
         const contentType = String(response.headers?.get?.('content-type') || '').trim();
         const snippet = text.replace(/\s+/g, ' ').trim().slice(0, 160);
-        const detail = [
-            'Roster backend returned invalid JSON.',
-            contentType ? `Content-Type: ${contentType}.` : '',
-            snippet ? `Response started with: ${snippet}` : ''
-        ].filter(Boolean).join(' ');
+        const htmlResponse = /text\/html/i.test(contentType) || /^<!doctype\b/i.test(snippet) || /^<html[\s>]/i.test(snippet);
+        const detail = htmlResponse
+            ? [
+                'Roster backend returned an HTML response instead of JSON.',
+                contentType ? `Content-Type: ${contentType}.` : '',
+                'Check ROSTER_BACKEND_URL and the deployed Apps Script logs.'
+            ].filter(Boolean).join(' ')
+            : [
+                'Roster backend returned invalid JSON.',
+                contentType ? `Content-Type: ${contentType}.` : '',
+                snippet ? `Response started with: ${snippet}` : ''
+            ].filter(Boolean).join(' ');
         throw new RosterBackendError(detail, {
             status: response.status,
             code: 'INVALID_JSON'
