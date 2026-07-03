@@ -5,6 +5,7 @@ const DEFAULT_READ_CACHE_TTL_MS = 60_000;
 const READ_CACHE_TTL_ENV_NAME = 'ROSTER_FIREBASE_READ_CACHE_TTL_MS';
 const FB64_PREFIX = '__FB64__';
 const SEASON_EVENT_ROOT = 'events/seasonEvents';
+const DONATION_REFRESH_ROOT = 'donationRefresh';
 const PLAYER_METRICS_BY_TAG_PATH = 'active/playerMetrics/byTag';
 const ACTIVE_ROSTER_PATH = 'active';
 const CWL_LEAGUE_SIGNUPS_PATH = 'active/cwlLeagueSignups';
@@ -363,6 +364,19 @@ function readAllActivePlayerMetricsByTag(options = {}) {
     return readJsonPath(PLAYER_METRICS_BY_TAG_PATH, options);
 }
 
+function readDonationRefreshSeasonOverlay(seasonId, options = {}) {
+    const id = String(seasonId || '').trim();
+
+    if (!id) {
+        return null;
+    }
+
+    return readJsonPath(
+        `${DONATION_REFRESH_ROOT}/bySeason/${encodeFirebaseObjectKey(id)}`,
+        options
+    );
+}
+
 function readActiveRosterPayload(options = {}) {
     return readJsonPath(ACTIVE_ROSTER_PATH, options);
 }
@@ -452,5 +466,6 @@ module.exports = {
     readCwlLeagueSignups,
     readActivePlayerMetricsByTag,
     readAllActivePlayerMetricsByTag,
+    readDonationRefreshSeasonOverlay,
     readLinkedAccountsForDiscordUser
 };

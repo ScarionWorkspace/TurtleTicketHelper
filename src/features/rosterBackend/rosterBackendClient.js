@@ -6,6 +6,41 @@ const {
 const DEFAULT_TIMEOUT_MS = 60_000;
 const DISCORD_IDENTITY_SYNC_TIMEOUT_MS = 180_000;
 
+function normalizeBackendUrl(value) {
+    const raw = String(value || '').trim();
+
+    if (!raw) {
+        return '';
+    }
+
+    try {
+        const url = new URL(raw);
+        url.hash = '';
+        return url.toString().replace(/[\/\\]+$/, '');
+    } catch {
+        return raw.replace(/[\/\\]+$/, '');
+    }
+}
+
+function formatUrlForDiagnostics(value) {
+    const raw = String(value || '').trim();
+
+    if (!raw) {
+        return '';
+    }
+
+    try {
+        const url = new URL(raw);
+        url.search = '';
+        url.hash = '';
+        return url.toString();
+    } catch {
+        return raw.replace(/[?#].*$/, '');
+    }
+}
+
+const ROSTER_BACKEND_REQUEST_URL = normalizeBackendUrl(ROSTER_BACKEND_URL);
+
 class RosterBackendError extends Error {
     constructor(message, details = {}) {
         super(message);
@@ -16,18 +51,18 @@ class RosterBackendError extends Error {
 }
 
 function isRosterBackendConfigured() {
-    return Boolean(ROSTER_BACKEND_URL && ROSTER_BOT_SECRET);
+    return Boolean(ROSTER_BACKEND_REQUEST_URL && ROSTER_BOT_SECRET);
 }
 
 function assertRosterBackendConfigured() {
-    if (!ROSTER_BACKEND_URL || !ROSTER_BOT_SECRET) {
+    if (!ROSTER_BACKEND_REQUEST_URL || !ROSTER_BOT_SECRET) {
         throw new RosterBackendError('Roster backend configuration is missing.', {
             code: 'ROSTER_BACKEND_CONFIG_MISSING'
         });
     }
 }
 
-async function parseJsonResponse(response) {
+async function parseJsonResponse(response, context = {}) {
     const text = await response.text();
 
     if (!text) {
@@ -40,15 +75,25 @@ async function parseJsonResponse(response) {
         const contentType = String(response.headers?.get?.('content-type') || '').trim();
         const snippet = text.replace(/\s+/g, ' ').trim().slice(0, 160);
         const htmlResponse = /text\/html/i.test(contentType) || /^<!doctype\b/i.test(snippet) || /^<html[\s>]/i.test(snippet);
+        const requestUrl = formatUrlForDiagnostics(context.requestUrl);
+        const responseUrl = formatUrlForDiagnostics(response.url);
+        const urlDetails = [
+            requestUrl ? `Request URL: ${requestUrl}.` : '',
+            responseUrl && responseUrl !== requestUrl ? `Final URL: ${responseUrl}.` : ''
+        ].filter(Boolean);
         const detail = htmlResponse
             ? [
                 'Roster backend returned an HTML response instead of JSON.',
+                Number.isFinite(response.status) ? `Status: ${response.status}.` : '',
                 contentType ? `Content-Type: ${contentType}.` : '',
+                ...urlDetails,
                 'Check ROSTER_BACKEND_URL and the deployed Apps Script logs.'
             ].filter(Boolean).join(' ')
             : [
                 'Roster backend returned invalid JSON.',
+                Number.isFinite(response.status) ? `Status: ${response.status}.` : '',
                 contentType ? `Content-Type: ${contentType}.` : '',
+                ...urlDetails,
                 snippet ? `Response started with: ${snippet}` : ''
             ].filter(Boolean).join(' ');
         throw new RosterBackendError(detail, {
@@ -66,9 +111,11 @@ async function callRosterBackendMethod(methodName, args, options = {}) {
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
-        const response = await fetch(ROSTER_BACKEND_URL, {
+        const response = await fetch(ROSTER_BACKEND_REQUEST_URL, {
             method: 'POST',
+            redirect: 'follow',
             headers: {
+                'Accept': 'application/json',
                 'Authorization': `Bearer ${ROSTER_BOT_SECRET}`,
                 'Content-Type': 'application/json',
                 'X-Discord-Bot-Secret': ROSTER_BOT_SECRET
@@ -81,7 +128,9 @@ async function callRosterBackendMethod(methodName, args, options = {}) {
             signal: controller.signal
         });
 
-        const payload = await parseJsonResponse(response);
+        const payload = await parseJsonResponse(response, {
+            requestUrl: ROSTER_BACKEND_REQUEST_URL
+        });
 
         if (!response.ok) {
             throw new RosterBackendError(payload?.error || 'Roster backend returned a non-2xx response.', {

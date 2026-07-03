@@ -31,6 +31,83 @@ function getEventType(event) {
     return normalizeEventType(event?.type || event?.eventType || event?.kind);
 }
 
+function getDonationLedgerLastSeenMs(ledger) {
+    const lastSeenMs = Date.parse(ledger?.lastSeenAt || '');
+    if (Number.isFinite(lastSeenMs)) {
+        return lastSeenMs;
+    }
+
+    const firstSeenMs = Date.parse(ledger?.firstSeenAt || '');
+    return Number.isFinite(firstSeenMs) ? firstSeenMs : 0;
+}
+
+function mergeDonationRefreshOverlayIntoMetrics(event, metricsByTag, overlay) {
+    const seasonId = String(getEventSeasonId(event) || '').trim();
+
+    if (getEventType(event) !== 'donation' || !seasonId) {
+        return metricsByTag;
+    }
+
+    const byTag = overlay?.byTag && typeof overlay.byTag === 'object' ? overlay.byTag : null;
+
+    if (!byTag) {
+        return metricsByTag;
+    }
+
+    const merged = { ...(metricsByTag && typeof metricsByTag === 'object' ? metricsByTag : {}) };
+
+    for (const [rawTag, entry] of Object.entries(byTag)) {
+        const tag = normalizePlayerTag(rawTag || entry?.tag || entry?.identity?.tag);
+        const overlayLedger = entry?.donationCycle || entry?.ledger || entry?.donationCycles?.[seasonId];
+
+        if (!tag || !overlayLedger || typeof overlayLedger !== 'object') {
+            continue;
+        }
+
+        const current = merged[tag] && typeof merged[tag] === 'object' ? merged[tag] : {};
+        const currentLedger = current?.donationCycles?.[seasonId] || null;
+
+        if (currentLedger && getDonationLedgerLastSeenMs(currentLedger) > getDonationLedgerLastSeenMs(overlayLedger)) {
+            continue;
+        }
+
+        merged[tag] = {
+            ...current,
+            identity: {
+                ...(current.identity && typeof current.identity === 'object' ? current.identity : {}),
+                tag,
+                name: current.identity?.name || entry?.name || tag
+            },
+            donationCycles: {
+                ...(current.donationCycles && typeof current.donationCycles === 'object' ? current.donationCycles : {}),
+                [seasonId]: overlayLedger
+            }
+        };
+    }
+
+    return merged;
+}
+
+async function mergeDonationRefreshOverlayForEvent(event, metricsByTag) {
+    const seasonId = String(getEventSeasonId(event) || '').trim();
+
+    if (getEventType(event) !== 'donation' || !seasonId) {
+        return metricsByTag;
+    }
+
+    try {
+        const overlay = await rosterFirebase.readDonationRefreshSeasonOverlay(seasonId);
+        return mergeDonationRefreshOverlayIntoMetrics(event, metricsByTag, overlay);
+    } catch (error) {
+        console.warn('Season event donation overlay unavailable; using active metrics only.', {
+            seasonId,
+            errorName: error?.name || null,
+            errorMessage: error?.message || null
+        });
+        return metricsByTag;
+    }
+}
+
 function asArray(value) {
     if (!value) {
         return [];
@@ -395,7 +472,8 @@ async function loadEventForRendering(type, options = {}) {
             source = 'backend';
         } else {
             const metricsByTag = await rosterFirebase.readAllActivePlayerMetricsByTag();
-            leaderboard = buildLocalSeasonEventLeaderboard(event, metricsByTag, {
+            const scoringMetricsByTag = await mergeDonationRefreshOverlayForEvent(event, metricsByTag);
+            leaderboard = buildLocalSeasonEventLeaderboard(event, scoringMetricsByTag, {
                 type: eventType,
                 limit: options.limit,
                 nowIso: options.nowIso

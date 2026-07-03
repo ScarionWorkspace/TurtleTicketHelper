@@ -146,6 +146,31 @@ test('readJsonPath de-duplicates concurrent reads for the same normalized path',
     assert.equal(requestCount, 1);
 });
 
+test('readDonationRefreshSeasonOverlay reads encoded season path and decodes tag keys', async () => {
+    const requestedUrls = [];
+    const client = loadClient();
+
+    global.fetch = async url => {
+        requestedUrls.push(url);
+        return makeJsonResponse({
+            byTag: {
+                __FB64__I0FBQTExMQ: {
+                    tag: '#AAA111',
+                    donationCycle: {
+                        cycleTotalDonations: 42
+                    }
+                }
+            }
+        });
+    };
+
+    const overlay = await client.readDonationRefreshSeasonOverlay('ranked-legend-i-2026-05-18');
+
+    assert.equal(requestedUrls.length, 1);
+    assert.equal(requestedUrls[0], 'https://example.firebaseio.com/donationRefresh/bySeason/ranked-legend-i-2026-05-18.json');
+    assert.equal(overlay.byTag['#AAA111'].donationCycle.cycleTotalDonations, 42);
+});
+
 test('readLinkedAccountsForDiscordUser prefers Discord ID over username collisions', async () => {
     const client = loadClient();
 

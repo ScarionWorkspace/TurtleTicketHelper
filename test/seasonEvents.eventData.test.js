@@ -14,7 +14,8 @@ const originalBackend = {
 const originalFirebase = {
     readCurrentSeasonEventPointer: rosterFirebase.readCurrentSeasonEventPointer,
     readSeasonEventById: rosterFirebase.readSeasonEventById,
-    readAllActivePlayerMetricsByTag: rosterFirebase.readAllActivePlayerMetricsByTag
+    readAllActivePlayerMetricsByTag: rosterFirebase.readAllActivePlayerMetricsByTag,
+    readDonationRefreshSeasonOverlay: rosterFirebase.readDonationRefreshSeasonOverlay
 };
 
 afterEach(() => {
@@ -98,4 +99,70 @@ test('loadEventForRendering uses backend leaderboard before local Firebase scori
     assert.equal(result.event.activeParticipantCount, 1);
     assert.equal(result.event.participantsByDiscordId.user1.accounts[0].tag, '#AAA111');
     assert.equal(result.leaderboard.leaderboard[0].scoreLabel, 'Legends II - 5800 trophies');
+});
+
+test('loadEventForRendering merges donation overlay into local Firebase fallback scoring', async () => {
+    rosterBackend.isRosterBackendConfigured = () => false;
+    rosterFirebase.readCurrentSeasonEventPointer = async () => ({
+        eventId: 'donation-ranked-legend-i-2026-05-18',
+        seasonId: 'ranked-legend-i-2026-05-18'
+    });
+    rosterFirebase.readSeasonEventById = async () => ({
+        eventId: 'donation-ranked-legend-i-2026-05-18',
+        type: 'donation',
+        seasonId: 'ranked-legend-i-2026-05-18',
+        status: 'open',
+        signupsOpen: true,
+        startsAt: '2026-05-18T05:00:00.000Z',
+        endsAt: '2026-06-15T05:00:00.000Z',
+        participantsByDiscordId: {
+            user1: {
+                discordId: 'user1',
+                discordUsername: 'alpha',
+                discordDisplayName: 'Alpha',
+                status: 'signed_up',
+                accounts: [{ tag: '#AAA111', name: 'Alpha' }]
+            }
+        }
+    });
+    rosterFirebase.readAllActivePlayerMetricsByTag = async () => ({
+        '#AAA111': {
+            identity: { tag: '#AAA111', name: 'Alpha' },
+            donationCycles: {
+                'ranked-legend-i-2026-05-18': {
+                    startsAt: '2026-05-18T05:00:00.000Z',
+                    endsAt: '2026-06-15T05:00:00.000Z',
+                    cycleTotalDonations: 10,
+                    lastSeenAt: '2026-05-20T00:00:00.000Z'
+                }
+            }
+        }
+    });
+    rosterFirebase.readDonationRefreshSeasonOverlay = async seasonId => {
+        assert.equal(seasonId, 'ranked-legend-i-2026-05-18');
+
+        return {
+            byTag: {
+                '#AAA111': {
+                    tag: '#AAA111',
+                    name: 'Alpha',
+                    donationCycle: {
+                        startsAt: '2026-05-18T05:00:00.000Z',
+                        endsAt: '2026-06-15T05:00:00.000Z',
+                        cycleTotalDonations: 55,
+                        lastSeenAt: '2026-05-25T00:00:00.000Z'
+                    }
+                }
+            }
+        };
+    };
+
+    const result = await loadEventForRendering('donation', {
+        limit: 10,
+        nowIso: '2026-05-25T12:00:00.000Z'
+    });
+
+    assert.equal(result.source, 'firebase');
+    assert.equal(result.leaderboard.leaderboard[0].displayName, 'Alpha');
+    assert.equal(result.leaderboard.leaderboard[0].score, 55);
 });
