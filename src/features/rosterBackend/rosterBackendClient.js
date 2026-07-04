@@ -5,6 +5,7 @@ const {
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const DISCORD_IDENTITY_SYNC_TIMEOUT_MS = 180_000;
+const CWL_EVENT_REFRESH_TIMEOUT_MS = 180_000;
 
 function normalizeBackendUrl(value) {
     const raw = String(value || '').trim();
@@ -257,6 +258,17 @@ function ensureCurrentCwlSeasonEvent(payload = {}, options = {}) {
     return callSeasonEventMethod('ensureCurrentCwlSeasonEvent', payload, options);
 }
 
+function refreshCurrentCwlSeasonEvent(payload = {}, options = {}) {
+    return callSeasonEventMethod(
+        'refreshCurrentCwlSeasonEvent',
+        payload,
+        {
+            timeoutMs: CWL_EVENT_REFRESH_TIMEOUT_MS,
+            ...options
+        }
+    );
+}
+
 function getCurrentCwlSeasonEvent(payload = {}, options = {}) {
     return callSeasonEventMethod('getCurrentCwlSeasonEvent', payload, options);
 }
@@ -327,6 +339,7 @@ module.exports = {
     reconcileCurrentSeasonEvents,
     getCurrentSeasonEvents,
     ensureCurrentCwlSeasonEvent,
+    refreshCurrentCwlSeasonEvent,
     getCurrentCwlSeasonEvent,
     getSeasonEvent,
     registerSeasonEventSignup,

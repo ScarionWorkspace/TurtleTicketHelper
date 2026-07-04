@@ -317,6 +317,7 @@ async function handleAdminSelect(interaction, parsed) {
     if (action === 'refresh_message') {
         await refreshSignupMessage(interaction, parsed.type, {
             reconcile: true,
+            ensureCurrent: parsed.type === 'cwl',
             messageId: getSourceMessageId(interaction, parsed),
             sourceType: 'discord-admin'
         });

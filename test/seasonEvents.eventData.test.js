@@ -9,11 +9,15 @@ const {
 const originalBackend = {
     isRosterBackendConfigured: rosterBackend.isRosterBackendConfigured,
     getSeasonEventLeaderboard: rosterBackend.getSeasonEventLeaderboard,
-    reconcileCurrentSeasonEvents: rosterBackend.reconcileCurrentSeasonEvents
+    reconcileCurrentSeasonEvents: rosterBackend.reconcileCurrentSeasonEvents,
+    ensureCurrentCwlSeasonEvent: rosterBackend.ensureCurrentCwlSeasonEvent,
+    refreshCurrentCwlSeasonEvent: rosterBackend.refreshCurrentCwlSeasonEvent
 };
 const originalFirebase = {
     readCurrentSeasonEventPointer: rosterFirebase.readCurrentSeasonEventPointer,
+    readCurrentCwlSeasonEventPointer: rosterFirebase.readCurrentCwlSeasonEventPointer,
     readSeasonEventById: rosterFirebase.readSeasonEventById,
+    readCwlSeasonEventAggregate: rosterFirebase.readCwlSeasonEventAggregate,
     readAllActivePlayerMetricsByTag: rosterFirebase.readAllActivePlayerMetricsByTag,
     readDonationRefreshSeasonOverlay: rosterFirebase.readDonationRefreshSeasonOverlay
 };
@@ -99,6 +103,116 @@ test('loadEventForRendering uses backend leaderboard before local Firebase scori
     assert.equal(result.event.activeParticipantCount, 1);
     assert.equal(result.event.participantsByDiscordId.user1.accounts[0].tag, '#AAA111');
     assert.equal(result.leaderboard.leaderboard[0].scoreLabel, 'Legends II - 5800 trophies');
+});
+
+test('loadEventForRendering refreshes ensured CWL event before rendering signup message', async () => {
+    const calls = [];
+    const source = { type: 'test-cwl-signup' };
+    const waitingEvent = {
+        eventId: 'cwl-2026-07-04',
+        type: 'cwl',
+        status: 'open',
+        signupsOpen: true,
+        cwlTrackingState: 'waiting',
+        participantsByDiscordId: {
+            user1: {
+                discordId: 'user1',
+                discordUsername: 'alpha',
+                status: 'signed_up',
+                accounts: [{ tag: '#AAA111', name: 'Alpha' }]
+            }
+        }
+    };
+    const activeEvent = {
+        eventId: 'cwl-2026-07-04',
+        type: 'cwl',
+        status: 'open',
+        signupsOpen: true,
+        cwlTrackingState: 'active',
+        startsAt: '2026-07-04T03:20:17.000Z',
+        endsAt: '2026-07-06T08:01:20.000Z'
+    };
+
+    rosterBackend.isRosterBackendConfigured = () => true;
+    rosterBackend.ensureCurrentCwlSeasonEvent = async payload => {
+        calls.push({ method: 'ensure', payload });
+        return { event: waitingEvent };
+    };
+    rosterBackend.refreshCurrentCwlSeasonEvent = async payload => {
+        calls.push({ method: 'refresh', payload });
+        return { event: activeEvent };
+    };
+    rosterBackend.getSeasonEventLeaderboard = async payload => {
+        calls.push({ method: 'leaderboard', payload });
+        return {
+            event: {
+                eventId: activeEvent.eventId,
+                type: 'cwl',
+                cwlTrackingState: 'active',
+                startsAt: activeEvent.startsAt,
+                endsAt: activeEvent.endsAt
+            },
+            leaderboard: [{
+                rank: 1,
+                displayName: 'Alpha',
+                score: 15,
+                scoreLabel: '15 stars, 2 holds',
+                accounts: [{ tag: '#AAA111', name: 'Alpha' }]
+            }]
+        };
+    };
+    rosterFirebase.readCurrentCwlSeasonEventPointer = async () => ({
+        eventId: waitingEvent.eventId
+    });
+    rosterFirebase.readSeasonEventById = async () => waitingEvent;
+
+    const result = await loadEventForRendering('cwl', {
+        ensureCurrent: true,
+        source
+    });
+
+    assert.deepEqual(calls.map(call => call.method), ['ensure', 'refresh', 'leaderboard']);
+    assert.deepEqual(calls[0].payload.source, source);
+    assert.deepEqual(calls[1].payload.source, source);
+    assert.equal(calls[2].payload.eventId, activeEvent.eventId);
+    assert.equal(result.source, 'backend');
+    assert.equal(result.event.cwlTrackingState, 'active');
+    assert.equal(result.event.startsAt, activeEvent.startsAt);
+    assert.equal(result.event.participantsByDiscordId.user1.accounts[0].tag, '#AAA111');
+    assert.equal(result.leaderboard.leaderboard[0].scoreLabel, '15 stars, 2 holds');
+});
+
+test('loadEventForRendering keeps CWL signup usable when immediate refresh fails', async () => {
+    rosterBackend.isRosterBackendConfigured = () => false;
+    rosterBackend.ensureCurrentCwlSeasonEvent = async () => ({
+        event: {
+            eventId: 'cwl-waiting',
+            type: 'cwl',
+            status: 'open',
+            signupsOpen: true,
+            cwlTrackingState: 'waiting'
+        }
+    });
+    rosterBackend.refreshCurrentCwlSeasonEvent = async () => {
+        const error = new Error('temporary Clash API failure');
+        error.code = 'CLASH_API_UNAVAILABLE';
+        throw error;
+    };
+    rosterBackend.getSeasonEventLeaderboard = async () => {
+        throw new Error('backend leaderboard should not be requested when backend is disabled');
+    };
+    rosterFirebase.readCurrentCwlSeasonEventPointer = async () => null;
+    rosterFirebase.readCwlSeasonEventAggregate = async () => null;
+
+    const result = await loadEventForRendering('cwl', {
+        ensureCurrent: true,
+        source: { type: 'test-cwl-signup' }
+    });
+
+    assert.equal(result.event.eventId, 'cwl-waiting');
+    assert.equal(result.event.cwlTrackingState, 'waiting');
+    assert.equal(result.source, 'firebase-cwl-aggregate');
+    assert.deepEqual(result.leaderboard.leaderboard, []);
 });
 
 test('loadEventForRendering merges donation overlay into local Firebase fallback scoring', async () => {

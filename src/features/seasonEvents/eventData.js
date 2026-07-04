@@ -163,6 +163,63 @@ async function readCurrentEventFromFirebase(type, options = {}) {
     };
 }
 
+function mergeEventRefreshResult(storedEvent, refreshedEvent, eventType) {
+    if (!refreshedEvent || typeof refreshedEvent !== 'object') {
+        return storedEvent;
+    }
+
+    if (!storedEvent || typeof storedEvent !== 'object') {
+        return {
+            ...refreshedEvent,
+            eventId: getEventId(refreshedEvent),
+            type: getEventType(refreshedEvent) || eventType
+        };
+    }
+
+    const storedEventId = getEventId(storedEvent);
+    const refreshedEventId = getEventId(refreshedEvent);
+
+    if (storedEventId && refreshedEventId && storedEventId !== refreshedEventId) {
+        return {
+            ...refreshedEvent,
+            eventId: refreshedEventId,
+            type: getEventType(refreshedEvent) || eventType
+        };
+    }
+
+    return {
+        ...storedEvent,
+        ...refreshedEvent,
+        eventId: refreshedEventId || storedEventId,
+        type: getEventType(refreshedEvent) || getEventType(storedEvent) || eventType
+    };
+}
+
+async function refreshCurrentCwlEventForRendering(options = {}) {
+    if (typeof rosterBackend.refreshCurrentCwlSeasonEvent !== 'function') {
+        return null;
+    }
+
+    try {
+        const refreshed = await rosterBackend.refreshCurrentCwlSeasonEvent({
+            source: options.source || {}
+        });
+
+        return refreshed?.event && typeof refreshed.event === 'object'
+            ? refreshed.event
+            : null;
+    } catch (error) {
+        console.warn('CWL season event refresh unavailable; using current stored event.', {
+            errorName: error?.name || null,
+            errorMessage: error?.message || null,
+            errorCode: error?.code || null,
+            status: error?.status || null
+        });
+
+        return null;
+    }
+}
+
 async function buildCwlAggregateLeaderboardFallback(event) {
     const eventId = getEventId(event);
     const state = String(event?.cwlTrackingState || event?.cwlStatus || '').trim().toLowerCase();
@@ -501,11 +558,13 @@ async function loadEventForRendering(type, options = {}) {
     }
 
     let ensuredCwlEvent = null;
+    let refreshedCwlEvent = null;
     if (eventType === 'cwl' && options.ensureCurrent) {
         const ensured = await rosterBackend.ensureCurrentCwlSeasonEvent({
             source: options.source || {}
         });
         ensuredCwlEvent = ensured?.event && typeof ensured.event === 'object' ? ensured.event : null;
+        refreshedCwlEvent = await refreshCurrentCwlEventForRendering(options);
     } else if (options.reconcile && eventType !== 'cwl') {
         await rosterBackend.reconcileCurrentSeasonEvents({
             forceRefresh: false,
@@ -516,9 +575,11 @@ async function loadEventForRendering(type, options = {}) {
     let event = await readCurrentEventFromFirebase(eventType, {
         includeParticipantsByDiscordId: true
     });
-    if (!event && ensuredCwlEvent) {
-        event = ensuredCwlEvent;
-    }
+    event = mergeEventRefreshResult(
+        event,
+        refreshedCwlEvent || (event ? null : ensuredCwlEvent),
+        eventType
+    );
 
     let leaderboard = null;
     let source = event ? 'firebase' : 'missing';
@@ -562,8 +623,10 @@ async function resolveCurrentSeasonEvent(type, options = {}) {
         const ensured = await rosterBackend.ensureCurrentCwlSeasonEvent({
             source: options.source || {}
         });
-        if (ensured?.event) {
-            return ensured.event;
+        const refreshedEvent = await refreshCurrentCwlEventForRendering(options);
+        const ensuredEvent = ensured?.event && typeof ensured.event === 'object' ? ensured.event : null;
+        if (refreshedEvent || ensuredEvent) {
+            return mergeEventRefreshResult(ensuredEvent, refreshedEvent, eventType);
         }
     } else if (options.reconcile && eventType !== 'cwl') {
         await rosterBackend.reconcileCurrentSeasonEvents({
