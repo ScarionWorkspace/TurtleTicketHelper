@@ -253,6 +253,14 @@ function getCurrentSeasonEvents(payload = {}, options = {}) {
     return callSeasonEventMethod('getCurrentSeasonEvents', payload, options);
 }
 
+function ensureCurrentCwlSeasonEvent(payload = {}, options = {}) {
+    return callSeasonEventMethod('ensureCurrentCwlSeasonEvent', payload, options);
+}
+
+function getCurrentCwlSeasonEvent(payload = {}, options = {}) {
+    return callSeasonEventMethod('getCurrentCwlSeasonEvent', payload, options);
+}
+
 function getSeasonEvent(payload = {}, options = {}) {
     return callSeasonEventMethod('getSeasonEvent', payload, options);
 }
@@ -318,6 +326,8 @@ module.exports = {
     syncDiscordIdentityForPlayerTag,
     reconcileCurrentSeasonEvents,
     getCurrentSeasonEvents,
+    ensureCurrentCwlSeasonEvent,
+    getCurrentCwlSeasonEvent,
     getSeasonEvent,
     registerSeasonEventSignup,
     updateSeasonEventParticipantAccounts,

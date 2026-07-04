@@ -221,6 +221,7 @@ const appConfig = {
         colors: {
             push: 0x2ECC71,
             donation: 0x3498DB,
+            cwl: 0x9B59B6,
             neutral: 0x95A5A6,
             warning: 0xF59E0B,
             error: 0xED4245
@@ -228,6 +229,7 @@ const appConfig = {
         labels: {
             pushTitle: 'Push Event',
             donationTitle: 'Donation Event',
+            cwlTitle: 'CWL Event',
             refresh: 'Refresh',
             signup: 'Signup',
             optOut: 'Opt-out',
@@ -241,7 +243,10 @@ const appConfig = {
             donation:
                 'Sign up to participate in the current donation event. ' +
                 'The highest donor at the end of the event wins. ' +
-                'Leaving a clan before the event ends does not disqualify your donation result.'
+                'Leaving a clan before the event ends does not disqualify your donation result.',
+            cwl:
+                'Sign up for the next Clan War League event. ' +
+                'Standings are based on backend CWL offense and defense results once the event is active.'
         }
     },
 

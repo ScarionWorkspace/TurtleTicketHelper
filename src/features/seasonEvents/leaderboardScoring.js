@@ -685,6 +685,10 @@ function clampLimit(limit) {
 }
 
 function getLeaderboardMetric(event, type) {
+    if (type === 'cwl') {
+        return 'cwl';
+    }
+
     if (type === 'donation') {
         return event?.settings?.leaderboardMetric || 'donations';
     }
@@ -693,9 +697,21 @@ function getLeaderboardMetric(event, type) {
 }
 
 function buildLocalSeasonEventLeaderboard(event, rawPlayerMetricsByTag, options = {}) {
-    const type = String(event?.type || options.type || '').toLowerCase() === 'donation'
-        ? 'donation'
-        : 'push';
+    const rawType = String(event?.type || options.type || '').toLowerCase();
+    const type = rawType === 'donation' ? 'donation' : rawType === 'cwl' ? 'cwl' : 'push';
+    if (type === 'cwl') {
+        return {
+            ok: true,
+            event: {
+                eventId: event?.eventId || null,
+                type,
+                seasonId: event?.seasonId || null
+            },
+            leaderboard: [],
+            generatedAt: options.nowIso || new Date().toISOString(),
+            warning: 'cwl-requires-backend-aggregate'
+        };
+    }
     const metric = getLeaderboardMetric(event, type);
     const metricsByTag = buildPlayerMetricsByTag(rawPlayerMetricsByTag);
     const activeParticipants = sanitizeParticipants(event)

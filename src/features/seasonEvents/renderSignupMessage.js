@@ -128,6 +128,22 @@ function getStatusDescription(event) {
             ? '**\u26D4 Signups closed**'
             : '**\u2705 Signups open**'
     ];
+    const cwlState = String(event?.cwlTrackingState || event?.cwlStatus || '').trim().toLowerCase();
+
+    if (cwlState) {
+        if (cwlState === 'waiting') lines.push('CWL status: waiting for the next CWL.');
+        else if (cwlState === 'active') lines.push('CWL status: active provisional standings.');
+        else if (cwlState === 'finalizing') lines.push('CWL status: finalizing; standings await confirmation.');
+        else if (cwlState === 'completed') lines.push('CWL status: completed standings.');
+    }
+
+    if (event?.cwl?.stale) {
+        const refreshed = event?.cwl?.lastSuccessfulRefreshAt
+            ? ` Last successful refresh: ${event.cwl.lastSuccessfulRefreshAt}.`
+            : '';
+        lines.push(`CWL standings are stale.${refreshed}`);
+    }
+
     const status = String(event?.status || '').trim();
 
     if (status && status.toLowerCase() !== 'open') {
@@ -142,7 +158,9 @@ function getCurrentEventHeader(type) {
         ? 'Donation'
         : type === 'push'
             ? 'Push'
-            : 'Season';
+            : type === 'cwl'
+                ? 'CWL'
+                : 'Season';
 
     return `Current ${eventName} Event`;
 }
@@ -379,6 +397,7 @@ function getLeaderboardFallbackRows(leaderboard, type) {
         leagueLabel: getPushLeagueValue(row),
         trophies: getPushTrophyValue(row),
         scoreLabel: getScoreLabel(row, null, type),
+        cwlStats: row?.cwlStats || row?.account?.cwlStats || null,
         name: getLeaderboardRowName(row)
     }));
 }
@@ -439,7 +458,7 @@ function getParticipantSummaryName(participant, fallbackRow = null, fallbackAcco
 function buildAllConfirmedRows(event, leaderboard, type) {
     const leaderboardRows = getLeaderboardFallbackRows(leaderboard, type);
 
-    if (type === 'push' && leaderboardRows.length > 0) {
+    if ((type === 'push' || type === 'cwl') && leaderboardRows.length > 0) {
         return leaderboardRows;
     }
 
@@ -536,6 +555,31 @@ function formatPushTable(rows) {
     return lines;
 }
 
+function getCwlStatValue(row, key) {
+    const stats = row?.cwlStats && typeof row.cwlStats === 'object' ? row.cwlStats : {};
+    const value = Number(stats[key]);
+
+    return Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
+}
+
+function formatCwlTable(rows) {
+    const lines = [
+        '#  Stars Holds Def Player'
+    ];
+
+    rows.forEach((row, index) => {
+        const stars = truncate(String(getCwlStatValue(row, 'starsTotal')), 5).padEnd(5, ' ');
+        const holds = truncate(String(getCwlStatValue(row, 'defenseHolds')), 5).padEnd(5, ' ');
+        const defenses = truncate(String(getCwlStatValue(row, 'successfulDefensiveAttacks')), 3).padEnd(3, ' ');
+        const name = truncate(row.name || row.tag || 'Unknown', 22);
+        const rank = row.rank || index + 1;
+
+        lines.push(`${String(rank).padEnd(2, ' ')} ${stars} ${holds} ${defenses} ${name}`);
+    });
+
+    return lines;
+}
+
 function formatConfirmedTable(rows, type) {
     if (rows.length === 0) {
         return 'No confirmed signups yet.';
@@ -543,7 +587,9 @@ function formatConfirmedTable(rows, type) {
 
     const lines = type === 'push'
         ? formatPushTable(rows)
-        : formatDonationTable(rows);
+        : type === 'cwl'
+            ? formatCwlTable(rows)
+            : formatDonationTable(rows);
 
     return `\`\`\`text\n${lines.join('\n')}\n\`\`\``;
 }
@@ -594,6 +640,12 @@ function getFooterText(event, rows, type) {
             0;
 
         return `Confirmed ${participantCount}/${MAX_SIGNUPS} | Accounts selected ${accountCount} | Multi-account ranks can repeat`;
+    }
+
+    if (type === 'cwl') {
+        const cwlState = String(event?.cwlTrackingState || event?.cwlStatus || '').trim().toLowerCase();
+        const stateLabel = cwlState ? formatStatusText(cwlState) : 'Waiting';
+        return `Confirmed ${participantCount}/${MAX_SIGNUPS} | CWL ${stateLabel} | Backend-ranked standings`;
     }
 
     const townHallRange = getTownHallRange(rows, event);

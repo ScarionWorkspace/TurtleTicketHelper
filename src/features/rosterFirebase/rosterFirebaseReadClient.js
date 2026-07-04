@@ -237,6 +237,27 @@ function readCurrentSeasonEventPointer(type, options = {}) {
     return readJsonPath(`${SEASON_EVENT_ROOT}/current/${normalizeType(type)}`, options);
 }
 
+function readCurrentCwlSeasonEventPointer(options = {}) {
+    return readJsonPath(`${SEASON_EVENT_ROOT}/currentCwl`, options);
+}
+
+function readLatestCompletedCwlSeasonEventPointer(options = {}) {
+    return readJsonPath(`${SEASON_EVENT_ROOT}/latestCompletedCwl`, options);
+}
+
+function readCwlSeasonEventAggregate(eventId, kind = 'live', options = {}) {
+    const normalizedKind = String(kind || '').trim().toLowerCase();
+
+    if (!eventId || (normalizedKind !== 'live' && normalizedKind !== 'final')) {
+        return null;
+    }
+
+    return readJsonPath(
+        `${SEASON_EVENT_ROOT}/cwlAggregates/byEvent/${encodeFirebaseObjectKey(eventId)}/${normalizedKind}`,
+        options
+    );
+}
+
 function readSeasonEventById(eventId, options = {}) {
     if (!eventId) {
         return null;
@@ -258,6 +279,8 @@ function readSeasonEventById(eventId, options = {}) {
         'startsAt',
         'endsAt',
         'settings',
+        'cwlTrackingState',
+        'cwl',
         'participantCount',
         'activeParticipantCount',
         'accountCount'
@@ -455,6 +478,9 @@ module.exports = {
     decodeFirebaseKeys,
     readJsonPath,
     readCurrentSeasonEventPointer,
+    readCurrentCwlSeasonEventPointer,
+    readLatestCompletedCwlSeasonEventPointer,
+    readCwlSeasonEventAggregate,
     readSeasonEventById,
     readSeasonEventParticipantByDiscordId,
     readSeasonEventParticipantsByDiscordId,

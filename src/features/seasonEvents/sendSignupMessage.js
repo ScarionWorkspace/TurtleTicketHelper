@@ -39,7 +39,8 @@ async function sendSeasonEventSignupMessage(interaction, type) {
 
     const source = buildInteractionSource(interaction, eventType, null, 'discord-admin');
     const { event, leaderboard } = await loadEventForRendering(eventType, {
-        reconcile: true,
+        reconcile: eventType !== 'cwl',
+        ensureCurrent: eventType === 'cwl',
         source
     });
 

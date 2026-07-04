@@ -138,7 +138,9 @@ function pointerToEventId(pointer) {
 
 async function readCurrentEventFromFirebase(type, options = {}) {
     const eventType = normalizeEventType(type);
-    const pointer = await rosterFirebase.readCurrentSeasonEventPointer(eventType);
+    const pointer = eventType === 'cwl'
+        ? await rosterFirebase.readCurrentCwlSeasonEventPointer()
+        : await rosterFirebase.readCurrentSeasonEventPointer(eventType);
     const eventId = pointerToEventId(pointer);
 
     if (!eventId) {
@@ -158,6 +160,55 @@ async function readCurrentEventFromFirebase(type, options = {}) {
         ...event,
         eventId: getEventId(event) || eventId,
         type: getEventType(event) || eventType
+    };
+}
+
+async function buildCwlAggregateLeaderboardFallback(event) {
+    const eventId = getEventId(event);
+    const state = String(event?.cwlTrackingState || event?.cwlStatus || '').trim().toLowerCase();
+    const kind = state === 'completed' ? 'final' : 'live';
+    const aggregate = eventId
+        ? await rosterFirebase.readCwlSeasonEventAggregate(eventId, kind)
+        : null;
+
+    if (!aggregate || typeof aggregate !== 'object') {
+        return {
+            ok: true,
+            event,
+            leaderboard: [],
+            aggregate: null
+        };
+    }
+
+    const byTag = aggregate.byTag && typeof aggregate.byTag === 'object' ? aggregate.byTag : {};
+    const rankedTags = Array.isArray(aggregate.rankedTags)
+        ? aggregate.rankedTags.map(normalizePlayerTag).filter(Boolean)
+        : Object.keys(byTag).map(normalizePlayerTag).filter(Boolean).sort();
+    const rows = rankedTags.map((tag, index) => {
+        const stats = byTag[tag] && typeof byTag[tag] === 'object' ? byTag[tag] : {};
+        return {
+            rank: index + 1,
+            tag,
+            playerTag: tag,
+            displayName: tag,
+            accounts: [{ tag, name: tag, cwlStats: stats }],
+            score: Number(stats.starsTotal) || 0,
+            scoreLabel: `${Number(stats.starsTotal) || 0} stars, ${Number(stats.defenseHolds) || 0} holds`,
+            metric: 'cwl',
+            coverage: byTag[tag] ? 'full' : 'no-cwl-participation',
+            cwlStats: stats
+        };
+    });
+
+    return {
+        ok: true,
+        event,
+        leaderboard: rows,
+        aggregate: {
+            kind,
+            stale: aggregate.stale === true,
+            lastSuccessfulRefreshAt: aggregate.lastSuccessfulRefreshAt || ''
+        }
     };
 }
 
@@ -449,7 +500,13 @@ async function loadEventForRendering(type, options = {}) {
         };
     }
 
-    if (options.reconcile) {
+    let ensuredCwlEvent = null;
+    if (eventType === 'cwl' && options.ensureCurrent) {
+        const ensured = await rosterBackend.ensureCurrentCwlSeasonEvent({
+            source: options.source || {}
+        });
+        ensuredCwlEvent = ensured?.event && typeof ensured.event === 'object' ? ensured.event : null;
+    } else if (options.reconcile && eventType !== 'cwl') {
         await rosterBackend.reconcileCurrentSeasonEvents({
             forceRefresh: false,
             source: options.source || {}
@@ -459,6 +516,9 @@ async function loadEventForRendering(type, options = {}) {
     let event = await readCurrentEventFromFirebase(eventType, {
         includeParticipantsByDiscordId: true
     });
+    if (!event && ensuredCwlEvent) {
+        event = ensuredCwlEvent;
+    }
 
     let leaderboard = null;
     let source = event ? 'firebase' : 'missing';
@@ -470,6 +530,9 @@ async function loadEventForRendering(type, options = {}) {
             event = backendResult.event;
             leaderboard = backendResult.leaderboard;
             source = 'backend';
+        } else if (eventType === 'cwl') {
+            leaderboard = await buildCwlAggregateLeaderboardFallback(event);
+            source = 'firebase-cwl-aggregate';
         } else {
             const metricsByTag = await rosterFirebase.readAllActivePlayerMetricsByTag();
             const scoringMetricsByTag = await mergeDonationRefreshOverlayForEvent(event, metricsByTag);
@@ -495,7 +558,14 @@ async function resolveCurrentSeasonEvent(type, options = {}) {
         return null;
     }
 
-    if (options.reconcile) {
+    if (eventType === 'cwl' && options.ensureCurrent) {
+        const ensured = await rosterBackend.ensureCurrentCwlSeasonEvent({
+            source: options.source || {}
+        });
+        if (ensured?.event) {
+            return ensured.event;
+        }
+    } else if (options.reconcile && eventType !== 'cwl') {
         await rosterBackend.reconcileCurrentSeasonEvents({
             forceRefresh: false,
             source: options.source || {}

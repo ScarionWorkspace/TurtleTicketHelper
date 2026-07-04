@@ -15,6 +15,13 @@ const EVENT_TYPES = {
         defaultTitle: 'Donation Event',
         maxAccounts: 2,
         metricLabel: 'Donos'
+    },
+    cwl: {
+        value: 'cwl',
+        titleKey: 'cwlTitle',
+        defaultTitle: 'CWL Event',
+        maxAccounts: 50,
+        metricLabel: 'Stars'
     }
 };
 

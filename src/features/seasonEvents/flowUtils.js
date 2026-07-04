@@ -59,7 +59,8 @@ async function refreshSignupMessage(interaction, type, options = {}) {
         options.sourceType || 'discord-refresh'
     );
     const { event, leaderboard } = await loadEventForRendering(type, {
-        reconcile: options.reconcile === true,
+        reconcile: options.reconcile === true && type !== 'cwl',
+        ensureCurrent: type === 'cwl' && options.ensureCurrent === true,
         source
     });
     const message = await getSourceMessage(interaction, messageId);
