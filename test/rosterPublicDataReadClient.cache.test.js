@@ -2,14 +2,13 @@ const assert = require('node:assert/strict');
 const { setTimeout: sleep } = require('node:timers/promises');
 const { afterEach, test } = require('node:test');
 
-const CLIENT_MODULE_PATH = '../src/features/rosterFirebase/rosterFirebaseReadClient';
+const CLIENT_MODULE_PATH = '../src/features/rosterPublicData/rosterPublicDataReadClient';
 const ENV_MODULE_PATH = '../src/config/env';
 const ENV_KEYS = [
     'TURTLE_HELPER_SKIP_DOTENV',
     'ROSTER_BOT_SECRET',
-    'ROSTER_FIREBASE_DB_URL',
     'ROSTER_PUBLIC_DATA_URL',
-    'ROSTER_FIREBASE_READ_CACHE_TTL_MS'
+    'ROSTER_PUBLIC_DATA_READ_CACHE_TTL_MS'
 ];
 const originalEnv = Object.fromEntries(ENV_KEYS.map(key => [key, process.env[key]]));
 const originalFetch = global.fetch;
@@ -32,10 +31,9 @@ function clearClientModules() {
 function loadClient(env = {}) {
     clearClientModules();
     process.env.TURTLE_HELPER_SKIP_DOTENV = '1';
-    delete process.env.ROSTER_BOT_SECRET;
+    process.env.ROSTER_BOT_SECRET = 'bot-secret';
     delete process.env.ROSTER_PUBLIC_DATA_URL;
-    process.env.ROSTER_FIREBASE_DB_URL = 'https://example.firebaseio.com';
-    process.env.ROSTER_FIREBASE_READ_CACHE_TTL_MS = '60000';
+    process.env.ROSTER_PUBLIC_DATA_READ_CACHE_TTL_MS = '60000';
 
     for (const [key, value] of Object.entries(env)) {
         process.env[key] = value;
@@ -57,7 +55,7 @@ afterEach(() => {
     restoreEnv();
 });
 
-test('readJsonPath caches successful JSON reads by normalized Firebase path', async () => {
+test('readJsonPath caches successful JSON reads by normalized public-data path', async () => {
     const requestedUrls = [];
     const client = loadClient();
 
@@ -75,7 +73,7 @@ test('readJsonPath caches successful JSON reads by normalized Firebase path', as
     const second = await client.readJsonPath('active');
 
     assert.equal(requestedUrls.length, 1);
-    assert.equal(requestedUrls[0], 'https://example.firebaseio.com/active.json');
+    assert.equal(requestedUrls[0], 'https://turtlecoc.4jbf82gng5.workers.dev/api/bot-data/active.json');
     assert.deepEqual(second, {
         roster: {
             name: 'Alpha'
@@ -86,7 +84,7 @@ test('readJsonPath caches successful JSON reads by normalized Firebase path', as
 test('readJsonPath prefers protected Cloudflare bot data when configured', async () => {
     const requested = [];
     const client = loadClient({
-        ROSTER_BOT_SECRET: 'bot-secret',
+        ROSTER_BOT_SECRET: 'worker-secret',
         ROSTER_PUBLIC_DATA_URL: 'https://worker.example/api/bot-data'
     });
 
@@ -108,13 +106,29 @@ test('readJsonPath prefers protected Cloudflare bot data when configured', async
     });
     assert.equal(requested.length, 1);
     assert.equal(requested[0].url, 'https://worker.example/api/bot-data/active.json');
-    assert.equal(requested[0].options.headers.Authorization, 'Bearer bot-secret');
+    assert.equal(requested[0].options.headers.Authorization, 'Bearer worker-secret');
+});
+
+test('readJsonPath does not fall back to direct database when public data is not configured', async () => {
+    let requestCount = 0;
+    const client = loadClient({
+        ROSTER_BOT_SECRET: '',
+        ROSTER_PUBLIC_DATA_URL: ''
+    });
+
+    global.fetch = async () => {
+        requestCount += 1;
+        return makeJsonResponse({ shouldNotFetch: true });
+    };
+
+    assert.equal(await client.readJsonPath('active'), null);
+    assert.equal(requestCount, 0);
 });
 
 test('readJsonPath refreshes the cached value after the TTL expires', async () => {
     let requestCount = 0;
     const client = loadClient({
-        ROSTER_FIREBASE_READ_CACHE_TTL_MS: '5'
+        ROSTER_PUBLIC_DATA_READ_CACHE_TTL_MS: '5'
     });
 
     global.fetch = async () => {
@@ -199,7 +213,7 @@ test('readDonationRefreshSeasonOverlay reads encoded season path and decodes tag
     const overlay = await client.readDonationRefreshSeasonOverlay('ranked-legend-i-2026-05-18');
 
     assert.equal(requestedUrls.length, 1);
-    assert.equal(requestedUrls[0], 'https://example.firebaseio.com/donationRefresh/bySeason/ranked-legend-i-2026-05-18.json');
+    assert.equal(requestedUrls[0], 'https://turtlecoc.4jbf82gng5.workers.dev/api/bot-data/donationRefresh/bySeason/ranked-legend-i-2026-05-18.json');
     assert.equal(overlay.byTag['#AAA111'].donationCycle.cycleTotalDonations, 42);
 });
 

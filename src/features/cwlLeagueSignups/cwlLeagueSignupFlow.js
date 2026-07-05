@@ -9,7 +9,7 @@ const {
 } = require('discord.js');
 const { createHash } = require('node:crypto');
 const rosterBackend = require('../rosterBackend/rosterBackendClient');
-const rosterFirebase = require('../rosterFirebase/rosterFirebaseReadClient');
+const rosterPublicData = require('../rosterPublicData/rosterPublicDataReadClient');
 const { isSeasonEventAdmin } = require('../seasonEvents/permissions');
 
 const CUSTOM_ID_PREFIX = 'cwl:v1';
@@ -976,8 +976,8 @@ async function handleChooseButton(interaction, parsed) {
 
     const discordUser = buildDiscordUser(interaction);
     const [linkedAccounts, signups] = await Promise.all([
-        rosterFirebase.readLinkedAccountsForDiscordUser(discordUser),
-        rosterFirebase.readCwlLeagueSignups()
+        rosterPublicData.readLinkedAccountsForDiscordUser(discordUser),
+        rosterPublicData.readCwlLeagueSignups()
     ]);
     const selectableAccounts = buildSelectableCwlAccounts(linkedAccounts, signups, discordUser.id);
 
@@ -1064,8 +1064,8 @@ async function handleAccountSelect(interaction, parsed) {
     let signups;
     try {
         [linkedAccounts, signups] = await Promise.all([
-            rosterFirebase.readLinkedAccountsForDiscordUser(discordUser),
-            rosterFirebase.readCwlLeagueSignups()
+            rosterPublicData.readLinkedAccountsForDiscordUser(discordUser),
+            rosterPublicData.readCwlLeagueSignups()
         ]);
     } catch {
         await interaction.reply({
@@ -1305,8 +1305,8 @@ async function handleChangePreferenceConfirm(interaction, parsed) {
     let signups;
     try {
         [linkedAccounts, signups] = await Promise.all([
-            rosterFirebase.readLinkedAccountsForDiscordUser(discordUser),
-            rosterFirebase.readCwlLeagueSignups()
+            rosterPublicData.readLinkedAccountsForDiscordUser(discordUser),
+            rosterPublicData.readCwlLeagueSignups()
         ]);
     } catch {
         await interaction.editReply({
@@ -1382,7 +1382,7 @@ async function handleChangePreferenceCancel(interaction) {
 }
 
 async function getCwlLeaguePreferenceCount() {
-    const signups = await rosterFirebase.readCwlLeagueSignups();
+    const signups = await rosterPublicData.readCwlLeagueSignups();
     return Object.keys(getPreferenceMap(signups)).length;
 }
 
@@ -1564,8 +1564,8 @@ async function handleCwlLeagueSignupInteraction(interaction) {
 
 async function buildCwlLeagueSignupSummaryChunks() {
     const [signups, activeRoster] = await Promise.all([
-        rosterFirebase.readCwlLeagueSignups(),
-        rosterFirebase.readActiveRosterPayload()
+        rosterPublicData.readCwlLeagueSignups(),
+        rosterPublicData.readActiveRosterPayload()
     ]);
     const preferences = Object.values(getPreferenceMap(signups));
     const metricsByTag = activeRoster?.playerMetrics?.byTag || {};

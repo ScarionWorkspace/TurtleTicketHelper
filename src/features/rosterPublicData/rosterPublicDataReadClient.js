@@ -1,14 +1,13 @@
 const {
     ROSTER_BOT_SECRET,
-    ROSTER_FIREBASE_DB_URL,
     ROSTER_PUBLIC_DATA_URL
 } = require('../../config/env');
 
 const DEFAULT_TIMEOUT_MS = 12_000;
 const DEFAULT_READ_CACHE_TTL_MS = 60_000;
-const READ_CACHE_TTL_ENV_NAME = 'ROSTER_FIREBASE_READ_CACHE_TTL_MS';
+const READ_CACHE_TTL_ENV_NAME = 'ROSTER_PUBLIC_DATA_READ_CACHE_TTL_MS';
 const DEFAULT_BOT_DATA_URL = 'https://turtlecoc.4jbf82gng5.workers.dev/api/bot-data';
-const FB64_PREFIX = '__FB64__';
+const ENCODED_KEY_PREFIX = '__FB64__';
 const SEASON_EVENT_ROOT = 'events/seasonEvents';
 const DONATION_REFRESH_ROOT = 'donationRefresh';
 const PLAYER_METRICS_BY_TAG_PATH = 'active/playerMetrics/byTag';
@@ -17,7 +16,7 @@ const CWL_LEAGUE_SIGNUPS_PATH = 'active/cwlLeagueSignups';
 const readCacheByPath = new Map();
 const pendingReadsByPath = new Map();
 
-function normalizeDatabaseUrl(url) {
+function normalizePublicDataBaseUrl(url) {
     return String(url || '')
         .trim()
         .replace(/\/+$/, '')
@@ -25,7 +24,7 @@ function normalizeDatabaseUrl(url) {
 }
 
 function normalizePublicDataUrl(url) {
-    const normalized = normalizeDatabaseUrl(url);
+    const normalized = normalizePublicDataBaseUrl(url);
 
     if (!normalized || !/^https?:\/\//i.test(normalized)) {
         return '';
@@ -45,35 +44,35 @@ function keyNeedsEncoding(value) {
     const key = String(value ?? '');
 
     return key === '' ||
-        key.startsWith(FB64_PREFIX) ||
+        key.startsWith(ENCODED_KEY_PREFIX) ||
         /[.$#[\]/]/.test(key) ||
         /[\x00-\x1F\x7F]/.test(key);
 }
 
-function encodeFirebaseObjectKey(value) {
+function encodePublicDataObjectKey(value) {
     const key = String(value ?? '');
 
     if (!keyNeedsEncoding(key)) {
         return key;
     }
 
-    return `${FB64_PREFIX}${Buffer.from(key, 'utf8')
+    return `${ENCODED_KEY_PREFIX}${Buffer.from(key, 'utf8')
         .toString('base64')
         .replace(/\+/g, '-')
         .replace(/\//g, '_')
         .replace(/=+$/g, '')}`;
 }
 
-const encodeFirebaseKey = encodeFirebaseObjectKey;
+const encodePublicDataKey = encodePublicDataObjectKey;
 
-function decodeFirebaseKey(key) {
+function decodePublicDataKey(key) {
     const stringKey = String(key);
 
-    if (!stringKey.startsWith(FB64_PREFIX)) {
+    if (!stringKey.startsWith(ENCODED_KEY_PREFIX)) {
         return stringKey;
     }
 
-    const encoded = stringKey.slice(FB64_PREFIX.length);
+    const encoded = stringKey.slice(ENCODED_KEY_PREFIX.length);
     const padded = encoded
         .replace(/-/g, '+')
         .replace(/_/g, '/')
@@ -86,9 +85,9 @@ function decodeFirebaseKey(key) {
     }
 }
 
-function decodeFirebaseKeys(value) {
+function decodePublicDataKeys(value) {
     if (Array.isArray(value)) {
-        return value.map(item => decodeFirebaseKeys(item));
+        return value.map(item => decodePublicDataKeys(item));
     }
 
     if (!value || typeof value !== 'object') {
@@ -96,23 +95,9 @@ function decodeFirebaseKeys(value) {
     }
 
     return Object.entries(value).reduce((decoded, [key, nestedValue]) => {
-        decoded[decodeFirebaseKey(key)] = decodeFirebaseKeys(nestedValue);
+        decoded[decodePublicDataKey(key)] = decodePublicDataKeys(nestedValue);
         return decoded;
     }, {});
-}
-
-function buildFirebaseUrl(path) {
-    const baseUrl = normalizeDatabaseUrl(ROSTER_FIREBASE_DB_URL);
-    const cleanPath = normalizePath(path);
-
-    if (!baseUrl || !cleanPath) {
-        return null;
-    }
-
-    return `${baseUrl}/${cleanPath
-        .split('/')
-        .map(segment => encodeURIComponent(segment))
-        .join('/')}.json`;
 }
 
 function getConfiguredPublicDataUrl() {
@@ -146,12 +131,7 @@ function buildReadRequest(path) {
                 : {}
         };
     }
-
-    return {
-        url: buildFirebaseUrl(path),
-        source: 'firebase',
-        headers: {}
-    };
+    return { url: null, source: 'cloudflare', headers: {} };
 }
 
 function parseNonNegativeInteger(value) {
@@ -216,7 +196,7 @@ async function fetchJsonPathUncached(url, timeoutMs, headers = {}) {
         }
 
         try {
-            return decodeFirebaseKeys(JSON.parse(text));
+            return decodePublicDataKeys(JSON.parse(text));
         } catch {
             return null;
         }
@@ -314,7 +294,7 @@ function readCwlSeasonEventAggregate(eventId, kind = 'live', options = {}) {
     }
 
     return readJsonPath(
-        `${SEASON_EVENT_ROOT}/cwlAggregates/byEvent/${encodeFirebaseObjectKey(eventId)}/${normalizedKind}`,
+        `${SEASON_EVENT_ROOT}/cwlAggregates/byEvent/${encodePublicDataObjectKey(eventId)}/${normalizedKind}`,
         options
     );
 }
@@ -324,7 +304,7 @@ async function readSeasonEventById(eventId, options = {}) {
         return null;
     }
 
-    const basePath = `${SEASON_EVENT_ROOT}/byId/${encodeFirebaseObjectKey(eventId)}`;
+    const basePath = `${SEASON_EVENT_ROOT}/byId/${encodePublicDataObjectKey(eventId)}`;
     const includeParticipantsByDiscordId =
         options.includeParticipantsByDiscordId === true ||
         options.includeParticipants === true;
@@ -373,7 +353,7 @@ async function readSeasonEventParticipantByDiscordId(eventId, discordId, options
         return null;
     }
 
-    const event = await readJsonPath(`${SEASON_EVENT_ROOT}/byId/${encodeFirebaseObjectKey(eventId)}`, options);
+    const event = await readJsonPath(`${SEASON_EVENT_ROOT}/byId/${encodePublicDataObjectKey(eventId)}`, options);
     const participants = event?.participantsByDiscordId;
 
     return participants && typeof participants === 'object'
@@ -386,7 +366,7 @@ async function readSeasonEventParticipantsByDiscordId(eventId, options = {}) {
         return null;
     }
 
-    const event = await readJsonPath(`${SEASON_EVENT_ROOT}/byId/${encodeFirebaseObjectKey(eventId)}`, options);
+    const event = await readJsonPath(`${SEASON_EVENT_ROOT}/byId/${encodePublicDataObjectKey(eventId)}`, options);
 
     return event?.participantsByDiscordId && typeof event.participantsByDiscordId === 'object'
         ? event.participantsByDiscordId
@@ -400,7 +380,7 @@ async function readSeasonEventParticipantByTag(eventId, playerTag, options = {})
         return null;
     }
 
-    const event = await readJsonPath(`${SEASON_EVENT_ROOT}/byId/${encodeFirebaseObjectKey(eventId)}`, options);
+    const event = await readJsonPath(`${SEASON_EVENT_ROOT}/byId/${encodePublicDataObjectKey(eventId)}`, options);
     const participants = event?.participantsByTag;
 
     return participants && typeof participants === 'object'
@@ -414,7 +394,7 @@ function readSeasonEventsBySeason(seasonId, options = {}) {
     }
 
     return readJsonPath(
-        `${SEASON_EVENT_ROOT}/bySeason/${encodeFirebaseObjectKey(seasonId)}`,
+        `${SEASON_EVENT_ROOT}/bySeason/${encodePublicDataObjectKey(seasonId)}`,
         options
     );
 }
@@ -461,7 +441,7 @@ function readDonationRefreshSeasonOverlay(seasonId, options = {}) {
     }
 
     return readJsonPath(
-        `${DONATION_REFRESH_ROOT}/bySeason/${encodeFirebaseObjectKey(id)}`,
+        `${DONATION_REFRESH_ROOT}/bySeason/${encodePublicDataObjectKey(id)}`,
         options
     );
 }
@@ -568,11 +548,11 @@ async function readLinkedAccountsForDiscordUser(discordUser, options = {}) {
 }
 
 module.exports = {
-    normalizeDatabaseUrl,
+    normalizePublicDataBaseUrl,
     normalizePath,
-    encodeFirebaseObjectKey,
-    encodeFirebaseKey,
-    decodeFirebaseKeys,
+    encodePublicDataObjectKey,
+    encodePublicDataKey,
+    decodePublicDataKeys,
     readJsonPath,
     readCurrentSeasonEventPointer,
     readCurrentCwlSeasonEventPointer,

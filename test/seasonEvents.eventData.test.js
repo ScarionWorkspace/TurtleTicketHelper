@@ -1,7 +1,7 @@
 const { afterEach, test } = require('node:test');
 const assert = require('node:assert/strict');
 const rosterBackend = require('../src/features/rosterBackend/rosterBackendClient');
-const rosterFirebase = require('../src/features/rosterFirebase/rosterFirebaseReadClient');
+const rosterPublicData = require('../src/features/rosterPublicData/rosterPublicDataReadClient');
 const {
     loadEventForRendering
 } = require('../src/features/seasonEvents/eventData');
@@ -13,21 +13,21 @@ const originalBackend = {
     ensureCurrentCwlSeasonEvent: rosterBackend.ensureCurrentCwlSeasonEvent,
     refreshCurrentCwlSeasonEvent: rosterBackend.refreshCurrentCwlSeasonEvent
 };
-const originalFirebase = {
-    readCurrentSeasonEventPointer: rosterFirebase.readCurrentSeasonEventPointer,
-    readCurrentCwlSeasonEventPointer: rosterFirebase.readCurrentCwlSeasonEventPointer,
-    readSeasonEventById: rosterFirebase.readSeasonEventById,
-    readCwlSeasonEventAggregate: rosterFirebase.readCwlSeasonEventAggregate,
-    readAllActivePlayerMetricsByTag: rosterFirebase.readAllActivePlayerMetricsByTag,
-    readDonationRefreshSeasonOverlay: rosterFirebase.readDonationRefreshSeasonOverlay
+const originalPublicData = {
+    readCurrentSeasonEventPointer: rosterPublicData.readCurrentSeasonEventPointer,
+    readCurrentCwlSeasonEventPointer: rosterPublicData.readCurrentCwlSeasonEventPointer,
+    readSeasonEventById: rosterPublicData.readSeasonEventById,
+    readCwlSeasonEventAggregate: rosterPublicData.readCwlSeasonEventAggregate,
+    readAllActivePlayerMetricsByTag: rosterPublicData.readAllActivePlayerMetricsByTag,
+    readDonationRefreshSeasonOverlay: rosterPublicData.readDonationRefreshSeasonOverlay
 };
 
 afterEach(() => {
     Object.assign(rosterBackend, originalBackend);
-    Object.assign(rosterFirebase, originalFirebase);
+    Object.assign(rosterPublicData, originalPublicData);
 });
 
-test('loadEventForRendering uses backend leaderboard before local Firebase scoring', async () => {
+test('loadEventForRendering uses backend leaderboard before local Cloudflare public-data scoring', async () => {
     let backendPayload = null;
     let metricsRead = false;
 
@@ -62,11 +62,11 @@ test('loadEventForRendering uses backend leaderboard before local Firebase scori
             }]
         };
     };
-    rosterFirebase.readCurrentSeasonEventPointer = async () => ({
+    rosterPublicData.readCurrentSeasonEventPointer = async () => ({
         eventId: 'push-ranked-legend-i-2026-05-18',
         seasonId: 'ranked-legend-i-2026-05-18'
     });
-    rosterFirebase.readSeasonEventById = async () => ({
+    rosterPublicData.readSeasonEventById = async () => ({
         eventId: 'push-ranked-legend-i-2026-05-18',
         type: 'push',
         seasonId: 'ranked-legend-i-2026-05-18',
@@ -83,7 +83,7 @@ test('loadEventForRendering uses backend leaderboard before local Firebase scori
             }
         }
     });
-    rosterFirebase.readAllActivePlayerMetricsByTag = async () => {
+    rosterPublicData.readAllActivePlayerMetricsByTag = async () => {
         metricsRead = true;
         throw new Error('local metrics should not be read when backend leaderboard succeeds');
     };
@@ -161,10 +161,10 @@ test('loadEventForRendering refreshes ensured CWL event before rendering signup 
             }]
         };
     };
-    rosterFirebase.readCurrentCwlSeasonEventPointer = async () => ({
+    rosterPublicData.readCurrentCwlSeasonEventPointer = async () => ({
         eventId: waitingEvent.eventId
     });
-    rosterFirebase.readSeasonEventById = async () => waitingEvent;
+    rosterPublicData.readSeasonEventById = async () => waitingEvent;
 
     const result = await loadEventForRendering('cwl', {
         ensureCurrent: true,
@@ -201,8 +201,8 @@ test('loadEventForRendering keeps CWL signup usable when immediate refresh fails
     rosterBackend.getSeasonEventLeaderboard = async () => {
         throw new Error('backend leaderboard should not be requested when backend is disabled');
     };
-    rosterFirebase.readCurrentCwlSeasonEventPointer = async () => null;
-    rosterFirebase.readCwlSeasonEventAggregate = async () => null;
+    rosterPublicData.readCurrentCwlSeasonEventPointer = async () => null;
+    rosterPublicData.readCwlSeasonEventAggregate = async () => null;
 
     const result = await loadEventForRendering('cwl', {
         ensureCurrent: true,
@@ -211,17 +211,17 @@ test('loadEventForRendering keeps CWL signup usable when immediate refresh fails
 
     assert.equal(result.event.eventId, 'cwl-waiting');
     assert.equal(result.event.cwlTrackingState, 'waiting');
-    assert.equal(result.source, 'firebase-cwl-aggregate');
+    assert.equal(result.source, 'cloudflare-cwl-aggregate');
     assert.deepEqual(result.leaderboard.leaderboard, []);
 });
 
-test('loadEventForRendering merges donation overlay into local Firebase fallback scoring', async () => {
+test('loadEventForRendering merges donation overlay into local public-data fallback scoring', async () => {
     rosterBackend.isRosterBackendConfigured = () => false;
-    rosterFirebase.readCurrentSeasonEventPointer = async () => ({
+    rosterPublicData.readCurrentSeasonEventPointer = async () => ({
         eventId: 'donation-ranked-legend-i-2026-05-18',
         seasonId: 'ranked-legend-i-2026-05-18'
     });
-    rosterFirebase.readSeasonEventById = async () => ({
+    rosterPublicData.readSeasonEventById = async () => ({
         eventId: 'donation-ranked-legend-i-2026-05-18',
         type: 'donation',
         seasonId: 'ranked-legend-i-2026-05-18',
@@ -239,7 +239,7 @@ test('loadEventForRendering merges donation overlay into local Firebase fallback
             }
         }
     });
-    rosterFirebase.readAllActivePlayerMetricsByTag = async () => ({
+    rosterPublicData.readAllActivePlayerMetricsByTag = async () => ({
         '#AAA111': {
             identity: { tag: '#AAA111', name: 'Alpha' },
             donationCycles: {
@@ -252,7 +252,7 @@ test('loadEventForRendering merges donation overlay into local Firebase fallback
             }
         }
     });
-    rosterFirebase.readDonationRefreshSeasonOverlay = async seasonId => {
+    rosterPublicData.readDonationRefreshSeasonOverlay = async seasonId => {
         assert.equal(seasonId, 'ranked-legend-i-2026-05-18');
 
         return {
@@ -276,7 +276,7 @@ test('loadEventForRendering merges donation overlay into local Firebase fallback
         nowIso: '2026-05-25T12:00:00.000Z'
     });
 
-    assert.equal(result.source, 'firebase');
+    assert.equal(result.source, 'cloudflare-public');
     assert.equal(result.leaderboard.leaderboard[0].displayName, 'Alpha');
     assert.equal(result.leaderboard.leaderboard[0].score, 55);
 });

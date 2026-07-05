@@ -5,7 +5,7 @@ const {
     StringSelectMenuBuilder,
     StringSelectMenuOptionBuilder
 } = require('discord.js');
-const rosterFirebase = require('../rosterFirebase/rosterFirebaseReadClient');
+const rosterPublicData = require('../rosterPublicData/rosterPublicDataReadClient');
 const {
     PLAYER_LIST_MAX_CHARS,
     getOrderedRosters,
@@ -114,7 +114,7 @@ function buildRosterPickerComponents(rosters, userId, page, mode = MODE_PUBLIC_E
 }
 
 async function readOrderedRosters() {
-    const payload = await rosterFirebase.readActiveRosterPayload();
+    const payload = await rosterPublicData.readActiveRosterPayload();
 
     return {
         payload,

@@ -1,7 +1,7 @@
 const { afterEach, test } = require('node:test');
 const assert = require('node:assert/strict');
 const rosterBackend = require('../src/features/rosterBackend/rosterBackendClient');
-const rosterFirebase = require('../src/features/rosterFirebase/rosterFirebaseReadClient');
+const rosterPublicData = require('../src/features/rosterPublicData/rosterPublicDataReadClient');
 const {
     buildCwlLeagueSignupMessagePayload,
     buildCwlLeagueCustomId,
@@ -16,9 +16,9 @@ const originalBackend = {
     clearCwlLeaguePreference: rosterBackend.clearCwlLeaguePreference,
     resetCwlLeaguePreferences: rosterBackend.resetCwlLeaguePreferences
 };
-const originalFirebase = {
-    readLinkedAccountsForDiscordUser: rosterFirebase.readLinkedAccountsForDiscordUser,
-    readCwlLeagueSignups: rosterFirebase.readCwlLeagueSignups
+const originalPublicData = {
+    readLinkedAccountsForDiscordUser: rosterPublicData.readLinkedAccountsForDiscordUser,
+    readCwlLeagueSignups: rosterPublicData.readCwlLeagueSignups
 };
 
 function makeLeagueOption(index) {
@@ -110,7 +110,7 @@ function makeInteraction({
 
 afterEach(() => {
     Object.assign(rosterBackend, originalBackend);
-    Object.assign(rosterFirebase, originalFirebase);
+    Object.assign(rosterPublicData, originalPublicData);
 });
 
 test('CWL signup message reserves a utility row and keeps league buttons within Discord limits', () => {
@@ -437,8 +437,8 @@ test('Choosing a clan option saves the option key while keeping the league key',
         preferencesByTag: {}
     };
     let setPayload = null;
-    rosterFirebase.readLinkedAccountsForDiscordUser = async () => [makeLinkedAccount()];
-    rosterFirebase.readCwlLeagueSignups = async () => signups;
+    rosterPublicData.readLinkedAccountsForDiscordUser = async () => [makeLinkedAccount()];
+    rosterPublicData.readCwlLeagueSignups = async () => signups;
     rosterBackend.setCwlLeaguePreference = async payload => {
         setPayload = payload;
         return {
@@ -471,8 +471,8 @@ test('Choosing a clan option saves the option key while keeping the league key',
 });
 
 test('Choosing a new league for an owned existing preference asks for change confirmation', async () => {
-    rosterFirebase.readLinkedAccountsForDiscordUser = async () => [makeLinkedAccount()];
-    rosterFirebase.readCwlLeagueSignups = async () => ({
+    rosterPublicData.readLinkedAccountsForDiscordUser = async () => [makeLinkedAccount()];
+    rosterPublicData.readCwlLeagueSignups = async () => ({
         signupId: 'signup-1',
         optionsByLeagueKey: {
             'league-2': makeLeagueOption(2)
@@ -509,8 +509,8 @@ test('Confirming an owned preference change sends allowChange and reports old to
         }
     };
     let setPayload = null;
-    rosterFirebase.readLinkedAccountsForDiscordUser = async () => [makeLinkedAccount()];
-    rosterFirebase.readCwlLeagueSignups = async () => signups;
+    rosterPublicData.readLinkedAccountsForDiscordUser = async () => [makeLinkedAccount()];
+    rosterPublicData.readCwlLeagueSignups = async () => signups;
     rosterBackend.setCwlLeaguePreference = async payload => {
         setPayload = payload;
         return {
@@ -549,8 +549,8 @@ test('Confirming an owned preference change sends allowChange and reports old to
 
 test('Choosing a new league cannot change a preference owned by another user', async () => {
     let setCalled = false;
-    rosterFirebase.readLinkedAccountsForDiscordUser = async () => [makeLinkedAccount()];
-    rosterFirebase.readCwlLeagueSignups = async () => ({
+    rosterPublicData.readLinkedAccountsForDiscordUser = async () => [makeLinkedAccount()];
+    rosterPublicData.readCwlLeagueSignups = async () => ({
         signupId: 'signup-1',
         optionsByLeagueKey: {
             'league-2': makeLeagueOption(2)

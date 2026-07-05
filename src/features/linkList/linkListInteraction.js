@@ -5,7 +5,7 @@ const {
     StringSelectMenuBuilder,
     StringSelectMenuOptionBuilder
 } = require('discord.js');
-const rosterFirebase = require('../rosterFirebase/rosterFirebaseReadClient');
+const rosterPublicData = require('../rosterPublicData/rosterPublicDataReadClient');
 const { fetchClanMembers } = require('../clashApi/fetchClanMembers');
 const {
     buildLinkListPlayerRows,
@@ -119,7 +119,7 @@ function buildClanPickerComponents(rosters, userId, page) {
 }
 
 async function readClanRosters() {
-    const payload = await rosterFirebase.readActiveRosterPayload();
+    const payload = await rosterPublicData.readActiveRosterPayload();
 
     return {
         payload,
@@ -353,7 +353,7 @@ async function handleClanPage(interaction, parsed) {
 async function handleViewButton(interaction, parsed) {
     await interaction.deferUpdate();
 
-    const payload = await rosterFirebase.readActiveRosterPayload();
+    const payload = await rosterPublicData.readActiveRosterPayload();
     const clanRosters = getSelectableClanRosters(payload);
     const roster = findRosterByClanTag(payload, parsed.clanTag);
 
@@ -409,7 +409,7 @@ async function handleClanSwitchSelect(interaction, parsed) {
         return;
     }
 
-    const payload = await rosterFirebase.readActiveRosterPayload();
+    const payload = await rosterPublicData.readActiveRosterPayload();
     const clanRosters = getSelectableClanRosters(payload);
     const roster = findRosterByClanTag(payload, selectedClanTag);
 

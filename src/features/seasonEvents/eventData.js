@@ -1,5 +1,5 @@
 const rosterBackend = require('../rosterBackend/rosterBackendClient');
-const rosterFirebase = require('../rosterFirebase/rosterFirebaseReadClient');
+const rosterPublicData = require('../rosterPublicData/rosterPublicDataReadClient');
 const { normalizeEventType } = require('./constants');
 const {
     buildLocalSeasonEventLeaderboard
@@ -96,7 +96,7 @@ async function mergeDonationRefreshOverlayForEvent(event, metricsByTag) {
     }
 
     try {
-        const overlay = await rosterFirebase.readDonationRefreshSeasonOverlay(seasonId);
+        const overlay = await rosterPublicData.readDonationRefreshSeasonOverlay(seasonId);
         return mergeDonationRefreshOverlayIntoMetrics(event, metricsByTag, overlay);
     } catch (error) {
         console.warn('Season event donation overlay unavailable; using active metrics only.', {
@@ -136,18 +136,18 @@ function pointerToEventId(pointer) {
     return pointer.eventId || pointer.currentEventId || pointer.id || null;
 }
 
-async function readCurrentEventFromFirebase(type, options = {}) {
+async function readCurrentEventFromPublicData(type, options = {}) {
     const eventType = normalizeEventType(type);
     const pointer = eventType === 'cwl'
-        ? await rosterFirebase.readCurrentCwlSeasonEventPointer()
-        : await rosterFirebase.readCurrentSeasonEventPointer(eventType);
+        ? await rosterPublicData.readCurrentCwlSeasonEventPointer()
+        : await rosterPublicData.readCurrentSeasonEventPointer(eventType);
     const eventId = pointerToEventId(pointer);
 
     if (!eventId) {
         return null;
     }
 
-    const event = await rosterFirebase.readSeasonEventById(eventId, {
+    const event = await rosterPublicData.readSeasonEventById(eventId, {
         includeParticipantsByDiscordId: options.includeParticipantsByDiscordId === true
     });
 
@@ -225,7 +225,7 @@ async function buildCwlAggregateLeaderboardFallback(event) {
     const state = String(event?.cwlTrackingState || event?.cwlStatus || '').trim().toLowerCase();
     const kind = state === 'completed' ? 'final' : 'live';
     const aggregate = eventId
-        ? await rosterFirebase.readCwlSeasonEventAggregate(eventId, kind)
+        ? await rosterPublicData.readCwlSeasonEventAggregate(eventId, kind)
         : null;
 
     if (!aggregate || typeof aggregate !== 'object') {
@@ -533,7 +533,7 @@ async function readBackendLeaderboardForEvent(event, eventType, options = {}) {
             leaderboard
         };
     } catch (error) {
-        console.warn('Season event backend leaderboard unavailable; falling back to Firebase scoring.', {
+        console.warn('Season event backend leaderboard unavailable; falling back to Cloudflare public-data scoring.', {
             eventId,
             eventType,
             errorName: error?.name || null,
@@ -572,7 +572,7 @@ async function loadEventForRendering(type, options = {}) {
         });
     }
 
-    let event = await readCurrentEventFromFirebase(eventType, {
+    let event = await readCurrentEventFromPublicData(eventType, {
         includeParticipantsByDiscordId: true
     });
     event = mergeEventRefreshResult(
@@ -582,7 +582,7 @@ async function loadEventForRendering(type, options = {}) {
     );
 
     let leaderboard = null;
-    let source = event ? 'firebase' : 'missing';
+    let source = event ? 'cloudflare-public' : 'missing';
 
     if (event) {
         const backendResult = await readBackendLeaderboardForEvent(event, eventType, options);
@@ -593,9 +593,9 @@ async function loadEventForRendering(type, options = {}) {
             source = 'backend';
         } else if (eventType === 'cwl') {
             leaderboard = await buildCwlAggregateLeaderboardFallback(event);
-            source = 'firebase-cwl-aggregate';
+            source = 'cloudflare-cwl-aggregate';
         } else {
-            const metricsByTag = await rosterFirebase.readAllActivePlayerMetricsByTag();
+            const metricsByTag = await rosterPublicData.readAllActivePlayerMetricsByTag();
             const scoringMetricsByTag = await mergeDonationRefreshOverlayForEvent(event, metricsByTag);
             leaderboard = buildLocalSeasonEventLeaderboard(event, scoringMetricsByTag, {
                 type: eventType,
@@ -635,15 +635,15 @@ async function resolveCurrentSeasonEvent(type, options = {}) {
         });
     }
 
-    return readCurrentEventFromFirebase(eventType);
+    return readCurrentEventFromPublicData(eventType);
 }
 
 async function readParticipantByDiscordId(eventId, discordId) {
-    return rosterFirebase.readSeasonEventParticipantByDiscordId(eventId, discordId);
+    return rosterPublicData.readSeasonEventParticipantByDiscordId(eventId, discordId);
 }
 
 async function readLinkedAccountsForDiscordUser(discordUser) {
-    return rosterFirebase.readLinkedAccountsForDiscordUser(discordUser);
+    return rosterPublicData.readLinkedAccountsForDiscordUser(discordUser);
 }
 
 module.exports = {

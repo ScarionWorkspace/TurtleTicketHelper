@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { encodeFirebaseObjectKey } = require('../src/features/rosterFirebase/rosterFirebaseReadClient');
+const { encodePublicDataObjectKey } = require('../src/features/rosterPublicData/rosterPublicDataReadClient');
 const {
     buildLinkListModel,
     buildLinkListPlayerRows,
@@ -47,7 +47,7 @@ test('builds selectable clan rosters from valid unique connected clan tags', () 
 });
 
 test('uses live clan members as the authoritative player list', () => {
-    const linkedMetricKey = encodeFirebaseObjectKey('#LINK1');
+    const linkedMetricKey = encodePublicDataObjectKey('#LINK1');
     const rows = buildLinkListPlayerRows(
         {
             id: 'alpha',

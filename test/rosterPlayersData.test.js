@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { encodeFirebaseObjectKey } = require('../src/features/rosterFirebase/rosterFirebaseReadClient');
+const { encodePublicDataObjectKey } = require('../src/features/rosterPublicData/rosterPublicDataReadClient');
 const {
     getOrderedRosters,
     formatRosterPlayerLines,
@@ -121,8 +121,8 @@ test('formats raw roster output as dash-prefixed plain lines', () => {
     ]);
 });
 
-test('decodes Firebase-safe playerMetrics keys before resolving Discord IDs', () => {
-    const encodedTag = encodeFirebaseObjectKey('#ABC123');
+test('decodes public-data-safe playerMetrics keys before resolving Discord IDs', () => {
+    const encodedTag = encodePublicDataObjectKey('#ABC123');
     const lines = formatRosterPlayerLines(
         {
             main: [{

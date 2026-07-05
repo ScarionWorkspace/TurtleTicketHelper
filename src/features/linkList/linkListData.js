@@ -1,4 +1,4 @@
-const { decodeFirebaseKeys } = require('../rosterFirebase/rosterFirebaseReadClient');
+const { decodePublicDataKeys } = require('../rosterPublicData/rosterPublicDataReadClient');
 const {
     getOrderedRosters,
     normalizePlayerTag
@@ -84,7 +84,7 @@ function getPlayerName(player) {
 }
 
 function buildPlayerMetricsByTag(playerMetrics) {
-    const decodedPlayerMetrics = decodeFirebaseKeys(playerMetrics);
+    const decodedPlayerMetrics = decodePublicDataKeys(playerMetrics);
     const source =
         decodedPlayerMetrics?.byTag && typeof decodedPlayerMetrics.byTag === 'object'
             ? decodedPlayerMetrics.byTag
