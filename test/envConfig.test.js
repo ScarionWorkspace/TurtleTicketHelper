@@ -10,7 +10,8 @@ const ENV_KEYS = [
     'DISCORD_REGISTER_GLOBAL_COMMANDS_ON_STARTUP',
     'COC_API_TOKEN',
     'CLASH_OF_CLANS_API_KEY',
-    'ROSTER_BOT_SECRET'
+    'ROSTER_BOT_SECRET',
+    'ROSTER_PUBLIC_DATA_URL'
 ];
 
 const VALID_TOKEN = 'aaaaaaaaaaaaaaaaaaaaaaaa.bbbbbb.cccccccccccccccccccccccccc';

@@ -1,8 +1,13 @@
-const { ROSTER_FIREBASE_DB_URL } = require('../../config/env');
+const {
+    ROSTER_BOT_SECRET,
+    ROSTER_FIREBASE_DB_URL,
+    ROSTER_PUBLIC_DATA_URL
+} = require('../../config/env');
 
 const DEFAULT_TIMEOUT_MS = 12_000;
 const DEFAULT_READ_CACHE_TTL_MS = 60_000;
 const READ_CACHE_TTL_ENV_NAME = 'ROSTER_FIREBASE_READ_CACHE_TTL_MS';
+const DEFAULT_BOT_DATA_URL = 'https://turtlecoc.4jbf82gng5.workers.dev/api/bot-data';
 const FB64_PREFIX = '__FB64__';
 const SEASON_EVENT_ROOT = 'events/seasonEvents';
 const DONATION_REFRESH_ROOT = 'donationRefresh';
@@ -17,6 +22,16 @@ function normalizeDatabaseUrl(url) {
         .trim()
         .replace(/\/+$/, '')
         .replace(/\.json$/i, '');
+}
+
+function normalizePublicDataUrl(url) {
+    const normalized = normalizeDatabaseUrl(url);
+
+    if (!normalized || !/^https?:\/\//i.test(normalized)) {
+        return '';
+    }
+
+    return normalized;
 }
 
 function normalizePath(path) {
@@ -100,6 +115,45 @@ function buildFirebaseUrl(path) {
         .join('/')}.json`;
 }
 
+function getConfiguredPublicDataUrl() {
+    return normalizePublicDataUrl(ROSTER_PUBLIC_DATA_URL) ||
+        (ROSTER_BOT_SECRET ? DEFAULT_BOT_DATA_URL : '');
+}
+
+function buildPublicDataUrl(path) {
+    const baseUrl = getConfiguredPublicDataUrl();
+    const cleanPath = normalizePath(path);
+
+    if (!baseUrl || !cleanPath) {
+        return null;
+    }
+
+    return `${baseUrl}/${cleanPath
+        .split('/')
+        .map(segment => encodeURIComponent(segment))
+        .join('/')}.json`;
+}
+
+function buildReadRequest(path) {
+    const publicDataUrl = buildPublicDataUrl(path);
+
+    if (publicDataUrl) {
+        return {
+            url: publicDataUrl,
+            source: 'cloudflare',
+            headers: ROSTER_BOT_SECRET
+                ? { Authorization: `Bearer ${ROSTER_BOT_SECRET}` }
+                : {}
+        };
+    }
+
+    return {
+        url: buildFirebaseUrl(path),
+        source: 'firebase',
+        headers: {}
+    };
+}
+
 function parseNonNegativeInteger(value) {
     if (value === null || value === undefined || value === '') {
         return null;
@@ -136,7 +190,7 @@ function cloneJsonValue(value) {
     return JSON.parse(JSON.stringify(value));
 }
 
-async function fetchJsonPathUncached(url, timeoutMs) {
+async function fetchJsonPathUncached(url, timeoutMs, headers = {}) {
     if (!url) {
         return null;
     }
@@ -147,6 +201,7 @@ async function fetchJsonPathUncached(url, timeoutMs) {
     try {
         const response = await fetch(url, {
             method: 'GET',
+            headers,
             signal: controller.signal
         });
 
@@ -174,31 +229,32 @@ async function fetchJsonPathUncached(url, timeoutMs) {
 
 async function readJsonPath(path, options = {}) {
     const cleanPath = normalizePath(path);
-    const url = buildFirebaseUrl(cleanPath);
+    const requestConfig = buildReadRequest(cleanPath);
 
-    if (!url) {
+    if (!requestConfig.url) {
         return null;
     }
 
     const ttlMs = getReadCacheTtlMs(options);
     const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    const cached = readCacheByPath.get(cleanPath);
+    const cacheKey = `${requestConfig.source}:${cleanPath}`;
+    const cached = readCacheByPath.get(cacheKey);
 
     if (cached && cached.expiresAt > Date.now()) {
         return cloneJsonValue(cached.value);
     }
 
     if (cached) {
-        readCacheByPath.delete(cleanPath);
+        readCacheByPath.delete(cacheKey);
     }
 
-    let pending = pendingReadsByPath.get(cleanPath);
+    let pending = pendingReadsByPath.get(cacheKey);
 
     if (!pending) {
-        pending = fetchJsonPathUncached(url, timeoutMs)
+        pending = fetchJsonPathUncached(requestConfig.url, timeoutMs, requestConfig.headers)
             .then(value => {
                 if (ttlMs > 0 && isCacheableReadValue(value)) {
-                    readCacheByPath.set(cleanPath, {
+                    readCacheByPath.set(cacheKey, {
                         value: cloneJsonValue(value),
                         expiresAt: Date.now() + ttlMs
                     });
@@ -207,9 +263,9 @@ async function readJsonPath(path, options = {}) {
                 return value;
             })
             .finally(() => {
-                pendingReadsByPath.delete(cleanPath);
+                pendingReadsByPath.delete(cacheKey);
             });
-        pendingReadsByPath.set(cleanPath, pending);
+        pendingReadsByPath.set(cacheKey, pending);
     }
 
     return cloneJsonValue(await pending);
@@ -233,8 +289,13 @@ function normalizePlayerTag(tag) {
     return cleaned.replace(/O/g, '0');
 }
 
-function readCurrentSeasonEventPointer(type, options = {}) {
-    return readJsonPath(`${SEASON_EVENT_ROOT}/current/${normalizeType(type)}`, options);
+async function readCurrentSeasonEventPointer(type, options = {}) {
+    const current = await readJsonPath(`${SEASON_EVENT_ROOT}/current`, options);
+    const eventType = normalizeType(type);
+
+    return current && typeof current === 'object'
+        ? current[eventType] || null
+        : null;
 }
 
 function readCurrentCwlSeasonEventPointer(options = {}) {
@@ -258,7 +319,7 @@ function readCwlSeasonEventAggregate(eventId, kind = 'live', options = {}) {
     );
 }
 
-function readSeasonEventById(eventId, options = {}) {
+async function readSeasonEventById(eventId, options = {}) {
     if (!eventId) {
         return null;
     }
@@ -290,58 +351,61 @@ function readSeasonEventById(eventId, options = {}) {
         fieldNames.push('participantsByDiscordId');
     }
 
-    return Promise.all(
-        fieldNames.map(fieldName => readJsonPath(`${basePath}/${fieldName}`, options))
-    ).then(values => {
-        if (values.every(value => value === null || value === undefined)) {
-            return null;
+    const event = await readJsonPath(basePath, options);
+
+    if (!event || typeof event !== 'object') {
+        return null;
+    }
+
+    return fieldNames.reduce((projected, fieldName) => {
+        const value = event[fieldName];
+
+        if (value !== null && value !== undefined) {
+            projected[fieldName] = value;
         }
 
-        return fieldNames.reduce((event, fieldName, index) => {
-            const value = values[index];
-
-            if (value !== null && value !== undefined) {
-                event[fieldName] = value;
-            }
-
-            return event;
-        }, {});
-    });
+        return projected;
+    }, {});
 }
 
-function readSeasonEventParticipantByDiscordId(eventId, discordId, options = {}) {
+async function readSeasonEventParticipantByDiscordId(eventId, discordId, options = {}) {
     if (!eventId || !discordId) {
         return null;
     }
 
-    return readJsonPath(
-        `${SEASON_EVENT_ROOT}/byId/${encodeFirebaseObjectKey(eventId)}/participantsByDiscordId/${discordId}`,
-        options
-    );
+    const event = await readJsonPath(`${SEASON_EVENT_ROOT}/byId/${encodeFirebaseObjectKey(eventId)}`, options);
+    const participants = event?.participantsByDiscordId;
+
+    return participants && typeof participants === 'object'
+        ? participants[String(discordId)] || null
+        : null;
 }
 
-function readSeasonEventParticipantsByDiscordId(eventId, options = {}) {
+async function readSeasonEventParticipantsByDiscordId(eventId, options = {}) {
     if (!eventId) {
         return null;
     }
 
-    return readJsonPath(
-        `${SEASON_EVENT_ROOT}/byId/${encodeFirebaseObjectKey(eventId)}/participantsByDiscordId`,
-        options
-    );
+    const event = await readJsonPath(`${SEASON_EVENT_ROOT}/byId/${encodeFirebaseObjectKey(eventId)}`, options);
+
+    return event?.participantsByDiscordId && typeof event.participantsByDiscordId === 'object'
+        ? event.participantsByDiscordId
+        : null;
 }
 
-function readSeasonEventParticipantByTag(eventId, playerTag, options = {}) {
+async function readSeasonEventParticipantByTag(eventId, playerTag, options = {}) {
     const tag = normalizePlayerTag(playerTag);
 
     if (!eventId || !tag) {
         return null;
     }
 
-    return readJsonPath(
-        `${SEASON_EVENT_ROOT}/byId/${encodeFirebaseObjectKey(eventId)}/participantsByTag/${encodeFirebaseObjectKey(tag)}`,
-        options
-    );
+    const event = await readJsonPath(`${SEASON_EVENT_ROOT}/byId/${encodeFirebaseObjectKey(eventId)}`, options);
+    const participants = event?.participantsByTag;
+
+    return participants && typeof participants === 'object'
+        ? participants[tag] || null
+        : null;
 }
 
 function readSeasonEventsBySeason(seasonId, options = {}) {
@@ -355,32 +419,34 @@ function readSeasonEventsBySeason(seasonId, options = {}) {
     );
 }
 
-function readSeasonEventBySeasonAndType(seasonId, type, options = {}) {
+async function readSeasonEventBySeasonAndType(seasonId, type, options = {}) {
     if (!seasonId) {
         return null;
     }
 
-    return readJsonPath(
-        `${SEASON_EVENT_ROOT}/bySeason/${encodeFirebaseObjectKey(seasonId)}/${normalizeType(type)}`,
-        options
-    );
+    const bySeason = await readSeasonEventsBySeason(seasonId, options);
+
+    return bySeason && typeof bySeason === 'object'
+        ? bySeason[normalizeType(type)] || null
+        : null;
 }
 
 function readCurrentSeasonState(options = {}) {
     return readJsonPath(`${SEASON_EVENT_ROOT}/seasonState/current`, options);
 }
 
-function readActivePlayerMetricsByTag(playerTag, options = {}) {
+async function readActivePlayerMetricsByTag(playerTag, options = {}) {
     const tag = normalizePlayerTag(playerTag);
 
     if (!tag) {
         return null;
     }
 
-    return readJsonPath(
-        `${PLAYER_METRICS_BY_TAG_PATH}/${encodeFirebaseObjectKey(tag)}`,
-        options
-    );
+    const byTag = await readAllActivePlayerMetricsByTag(options);
+
+    return byTag && typeof byTag === 'object'
+        ? byTag[tag] || null
+        : null;
 }
 
 function readAllActivePlayerMetricsByTag(options = {}) {
@@ -438,6 +504,37 @@ async function readLinkedAccountsForDiscordUser(discordUser, options = {}) {
         discordUser?.discordUsername ||
         ''
     ).trim();
+    const [byDiscordId, byDiscordUsername] = await Promise.all([
+        discordId ? readJsonPath('indexes/linkedAccountsByDiscordId', options) : null,
+        discordUsername ? readJsonPath('indexes/linkedAccountsByDiscordUsername', options) : null
+    ]);
+
+    const indexedIdMatches = byDiscordId && typeof byDiscordId === 'object'
+        ? byDiscordId[discordId]
+        : null;
+
+    if (Array.isArray(indexedIdMatches) && indexedIdMatches.length > 0) {
+        return indexedIdMatches.map(account => ({
+            ...account,
+            tag: normalizePlayerTag(account?.tag || account?.playerTag),
+            playerTag: normalizePlayerTag(account?.playerTag || account?.tag),
+            matchType: 'discordId'
+        })).filter(account => account.tag);
+    }
+
+    const indexedUsernameMatches = byDiscordUsername && typeof byDiscordUsername === 'object'
+        ? byDiscordUsername[discordUsername]
+        : null;
+
+    if (Array.isArray(indexedUsernameMatches) && indexedUsernameMatches.length === 1) {
+        return indexedUsernameMatches.map(account => ({
+            ...account,
+            tag: normalizePlayerTag(account?.tag || account?.playerTag),
+            playerTag: normalizePlayerTag(account?.playerTag || account?.tag),
+            matchType: 'discordUsername'
+        })).filter(account => account.tag);
+    }
+
     const metricsByTag = await readAllActivePlayerMetricsByTag(options);
 
     if (!metricsByTag || typeof metricsByTag !== 'object') {

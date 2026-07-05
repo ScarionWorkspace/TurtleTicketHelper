@@ -6,7 +6,9 @@ const CLIENT_MODULE_PATH = '../src/features/rosterFirebase/rosterFirebaseReadCli
 const ENV_MODULE_PATH = '../src/config/env';
 const ENV_KEYS = [
     'TURTLE_HELPER_SKIP_DOTENV',
+    'ROSTER_BOT_SECRET',
     'ROSTER_FIREBASE_DB_URL',
+    'ROSTER_PUBLIC_DATA_URL',
     'ROSTER_FIREBASE_READ_CACHE_TTL_MS'
 ];
 const originalEnv = Object.fromEntries(ENV_KEYS.map(key => [key, process.env[key]]));
@@ -30,6 +32,8 @@ function clearClientModules() {
 function loadClient(env = {}) {
     clearClientModules();
     process.env.TURTLE_HELPER_SKIP_DOTENV = '1';
+    delete process.env.ROSTER_BOT_SECRET;
+    delete process.env.ROSTER_PUBLIC_DATA_URL;
     process.env.ROSTER_FIREBASE_DB_URL = 'https://example.firebaseio.com';
     process.env.ROSTER_FIREBASE_READ_CACHE_TTL_MS = '60000';
 
@@ -77,6 +81,34 @@ test('readJsonPath caches successful JSON reads by normalized Firebase path', as
             name: 'Alpha'
         }
     });
+});
+
+test('readJsonPath prefers protected Cloudflare bot data when configured', async () => {
+    const requested = [];
+    const client = loadClient({
+        ROSTER_BOT_SECRET: 'bot-secret',
+        ROSTER_PUBLIC_DATA_URL: 'https://worker.example/api/bot-data'
+    });
+
+    global.fetch = async (url, options) => {
+        requested.push({ url, options });
+        return makeJsonResponse({
+            roster: {
+                name: 'Cloudflare'
+            }
+        });
+    };
+
+    const payload = await client.readJsonPath('active');
+
+    assert.deepEqual(payload, {
+        roster: {
+            name: 'Cloudflare'
+        }
+    });
+    assert.equal(requested.length, 1);
+    assert.equal(requested[0].url, 'https://worker.example/api/bot-data/active.json');
+    assert.equal(requested[0].options.headers.Authorization, 'Bearer bot-secret');
 });
 
 test('readJsonPath refreshes the cached value after the TTL expires', async () => {
