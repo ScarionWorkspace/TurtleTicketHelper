@@ -557,6 +557,11 @@ function formatPushTable(rows) {
 
 function getCwlStatValue(row, key) {
     const stats = row?.cwlStats && typeof row.cwlStats === 'object' ? row.cwlStats : {};
+    if (key === 'defenseStarsConceded') {
+        const value = Number(stats.defenseStarsConceded ?? stats.bestStarsConceded);
+
+        return Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
+    }
     const value = Number(stats[key]);
 
     return Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
@@ -564,17 +569,16 @@ function getCwlStatValue(row, key) {
 
 function formatCwlTable(rows) {
     const lines = [
-        '#  Stars Holds Def Player'
+        '#  Stars DStars Player'
     ];
 
     rows.forEach((row, index) => {
         const stars = truncate(String(getCwlStatValue(row, 'starsTotal')), 5).padEnd(5, ' ');
-        const holds = truncate(String(getCwlStatValue(row, 'defenseHolds')), 5).padEnd(5, ' ');
-        const defenses = truncate(String(getCwlStatValue(row, 'successfulDefensiveAttacks')), 3).padEnd(3, ' ');
+        const defenseStars = truncate(String(getCwlStatValue(row, 'defenseStarsConceded')), 6).padEnd(6, ' ');
         const name = truncate(row.name || row.tag || 'Unknown', 22);
         const rank = row.rank || index + 1;
 
-        lines.push(`${String(rank).padEnd(2, ' ')} ${stars} ${holds} ${defenses} ${name}`);
+        lines.push(`${String(rank).padEnd(2, ' ')} ${stars} ${defenseStars} ${name}`);
     });
 
     return lines;

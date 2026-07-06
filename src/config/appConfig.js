@@ -246,7 +246,7 @@ const appConfig = {
                 'Leaving a clan before the event ends does not disqualify your donation result.',
             cwl:
                 'Sign up for the next Clan War League event. ' +
-                'Standings are based on backend CWL offense and defense results once the event is active.'
+                'Standings are ranked by offensive stars, then defensive stars conceded once the event is active.'
         }
     },
 

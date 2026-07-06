@@ -220,6 +220,36 @@ async function refreshCurrentCwlEventForRendering(options = {}) {
     }
 }
 
+function getCwlDefenseStarsConceded(stats) {
+    const value = Number(stats?.defenseStarsConceded ?? stats?.bestStarsConceded ?? 0);
+
+    return Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
+}
+
+function getCwlOffenseStars(stats) {
+    const value = Number(stats?.starsTotal ?? 0);
+
+    return Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
+}
+
+function compareCwlAggregateTags(byTag, leftTag, rightTag) {
+    const leftStats = byTag[leftTag] && typeof byTag[leftTag] === 'object' ? byTag[leftTag] : {};
+    const rightStats = byTag[rightTag] && typeof byTag[rightTag] === 'object' ? byTag[rightTag] : {};
+    const starDiff = getCwlOffenseStars(rightStats) - getCwlOffenseStars(leftStats);
+
+    if (starDiff !== 0) {
+        return starDiff;
+    }
+
+    const defenseStarDiff = getCwlDefenseStarsConceded(leftStats) - getCwlDefenseStarsConceded(rightStats);
+
+    if (defenseStarDiff !== 0) {
+        return defenseStarDiff;
+    }
+
+    return leftTag.localeCompare(rightTag);
+}
+
 async function buildCwlAggregateLeaderboardFallback(event) {
     const eventId = getEventId(event);
     const state = String(event?.cwlTrackingState || event?.cwlStatus || '').trim().toLowerCase();
@@ -238,22 +268,29 @@ async function buildCwlAggregateLeaderboardFallback(event) {
     }
 
     const byTag = aggregate.byTag && typeof aggregate.byTag === 'object' ? aggregate.byTag : {};
-    const rankedTags = Array.isArray(aggregate.rankedTags)
+    const aggregateTags = Object.keys(byTag).map(normalizePlayerTag).filter(Boolean);
+    const rankedTags = Array.isArray(aggregate.rankedTags) && aggregate.rankedTags.length > 0
         ? aggregate.rankedTags.map(normalizePlayerTag).filter(Boolean)
-        : Object.keys(byTag).map(normalizePlayerTag).filter(Boolean).sort();
+        : aggregateTags.sort((leftTag, rightTag) => compareCwlAggregateTags(byTag, leftTag, rightTag));
     const rows = rankedTags.map((tag, index) => {
         const stats = byTag[tag] && typeof byTag[tag] === 'object' ? byTag[tag] : {};
+        const offenseStars = getCwlOffenseStars(stats);
+        const defenseStarsConceded = getCwlDefenseStarsConceded(stats);
         return {
             rank: index + 1,
             tag,
             playerTag: tag,
             displayName: tag,
             accounts: [{ tag, name: tag, cwlStats: stats }],
-            score: Number(stats.starsTotal) || 0,
-            scoreLabel: `${Number(stats.starsTotal) || 0} stars, ${Number(stats.defenseHolds) || 0} holds`,
+            score: offenseStars,
+            scoreLabel: `${offenseStars} stars, ${defenseStarsConceded} defense stars`,
             metric: 'cwl',
             coverage: byTag[tag] ? 'full' : 'no-cwl-participation',
-            cwlStats: stats
+            cwlStats: {
+                ...stats,
+                defenseStarsConceded,
+                bestStarsConceded: defenseStarsConceded
+            }
         };
     });
 

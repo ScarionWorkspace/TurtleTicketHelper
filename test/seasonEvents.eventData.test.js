@@ -156,7 +156,7 @@ test('loadEventForRendering refreshes ensured CWL event before rendering signup 
                 rank: 1,
                 displayName: 'Alpha',
                 score: 15,
-                scoreLabel: '15 stars, 2 holds',
+                scoreLabel: '15 stars, 4 defense stars',
                 accounts: [{ tag: '#AAA111', name: 'Alpha' }]
             }]
         };
@@ -179,7 +179,7 @@ test('loadEventForRendering refreshes ensured CWL event before rendering signup 
     assert.equal(result.event.cwlTrackingState, 'active');
     assert.equal(result.event.startsAt, activeEvent.startsAt);
     assert.equal(result.event.participantsByDiscordId.user1.accounts[0].tag, '#AAA111');
-    assert.equal(result.leaderboard.leaderboard[0].scoreLabel, '15 stars, 2 holds');
+    assert.equal(result.leaderboard.leaderboard[0].scoreLabel, '15 stars, 4 defense stars');
 });
 
 test('loadEventForRendering keeps CWL signup usable when immediate refresh fails', async () => {

@@ -275,6 +275,38 @@ test('push signup table uses emoji columns and compact league labels', () => {
     assert.doesNotMatch(table, /\btrophies\b/i);
 });
 
+test('CWL signup table shows offensive stars and defensive stars conceded', () => {
+    const table = getConfirmedTable(buildSignupMessage(
+        'cwl',
+        {
+            eventId: 'cwl-2026-07',
+            type: 'cwl',
+            title: 'CWL Event',
+            status: 'open',
+            signupsOpen: true,
+            cwlTrackingState: 'active'
+        },
+        {
+            leaderboard: [{
+                rank: 1,
+                displayName: 'Alpha',
+                cwlStats: {
+                    starsTotal: 15,
+                    defenseStarsConceded: 4
+                },
+                accounts: [{
+                    tag: '#AAA111',
+                    name: 'Alpha'
+                }]
+            }]
+        }
+    ));
+
+    assert.match(table, /#  Stars DStars Player/);
+    assert.match(table, /1  15\s+4\s+Alpha/);
+    assert.doesNotMatch(table, /Holds|Def\b|holds|defenses/i);
+});
+
 test('signup embed hides roster identity and promotes event timestamps', () => {
     const embed = getEmbed(buildSignupMessage(
         'push',
