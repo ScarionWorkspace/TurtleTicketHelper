@@ -250,6 +250,86 @@ function compareCwlAggregateTags(byTag, leftTag, rightTag) {
     return leftTag.localeCompare(rightTag);
 }
 
+function hasCwlAggregateParticipation(stats) {
+    return getCwlOffenseStars(stats) > 0 ||
+        Number(stats?.attacksMade || 0) > 0 ||
+        Number(stats?.missedAttacks || 0) > 0 ||
+        Number(stats?.currentWarAttackPending || 0) > 0 ||
+        Number(stats?.defenseAttacksReceived || 0) > 0 ||
+        Number(stats?.attackedDefenseDays || 0) > 0 ||
+        Number(stats?.unattackedDefenseDays || 0) > 0;
+}
+
+function compareCwlLeaderboardRows(left, right) {
+    const leftStats = left?.cwlStats && typeof left.cwlStats === 'object' ? left.cwlStats : {};
+    const rightStats = right?.cwlStats && typeof right.cwlStats === 'object' ? right.cwlStats : {};
+    const leftParticipated = hasCwlAggregateParticipation(leftStats);
+    const rightParticipated = hasCwlAggregateParticipation(rightStats);
+
+    if (leftParticipated !== rightParticipated) {
+        return leftParticipated ? -1 : 1;
+    }
+
+    const starDiff = getCwlOffenseStars(rightStats) - getCwlOffenseStars(leftStats);
+
+    if (starDiff !== 0) {
+        return starDiff;
+    }
+
+    const defenseStarDiff = getCwlDefenseStarsConceded(leftStats) - getCwlDefenseStarsConceded(rightStats);
+
+    if (defenseStarDiff !== 0) {
+        return defenseStarDiff;
+    }
+
+    const leftName = String(left?.displayName || '').trim().toLowerCase();
+    const rightName = String(right?.displayName || '').trim().toLowerCase();
+
+    if (leftName !== rightName) {
+        return leftName < rightName ? -1 : 1;
+    }
+
+    return String(left?.tag || '').localeCompare(String(right?.tag || ''));
+}
+
+function getRegisteredCwlAccountRows(event) {
+    const rows = [];
+    const seen = new Set();
+
+    for (const participant of getActiveParticipants(event)) {
+        for (const account of getAccountRowsForParticipant(participant)) {
+            const tag = normalizePlayerTag(account?.tag || account?.playerTag);
+
+            if (!tag || seen.has(tag)) {
+                continue;
+            }
+
+            seen.add(tag);
+            rows.push({
+                participant,
+                account: {
+                    ...account,
+                    tag,
+                    playerTag: tag
+                },
+                tag
+            });
+        }
+    }
+
+    return rows;
+}
+
+function shouldUseCwlAggregateRankedTags(rankedTags, registeredTags) {
+    if (!Array.isArray(rankedTags) || rankedTags.length === 0 || !registeredTags.length) {
+        return false;
+    }
+
+    const rankedSet = new Set(rankedTags.map(normalizePlayerTag).filter(Boolean));
+
+    return registeredTags.every(tag => rankedSet.has(tag));
+}
+
 async function buildCwlAggregateLeaderboardFallback(event) {
     const eventId = getEventId(event);
     const state = String(event?.cwlTrackingState || event?.cwlStatus || '').trim().toLowerCase();
@@ -269,19 +349,29 @@ async function buildCwlAggregateLeaderboardFallback(event) {
 
     const byTag = aggregate.byTag && typeof aggregate.byTag === 'object' ? aggregate.byTag : {};
     const aggregateTags = Object.keys(byTag).map(normalizePlayerTag).filter(Boolean);
-    const rankedTags = Array.isArray(aggregate.rankedTags) && aggregate.rankedTags.length > 0
+    const registeredAccounts = getRegisteredCwlAccountRows(event);
+    const rankedTags = Array.isArray(aggregate.rankedTags)
         ? aggregate.rankedTags.map(normalizePlayerTag).filter(Boolean)
-        : aggregateTags.sort((leftTag, rightTag) => compareCwlAggregateTags(byTag, leftTag, rightTag));
-    const rows = rankedTags.map((tag, index) => {
+        : [];
+    const sourceRows = registeredAccounts.length > 0
+        ? registeredAccounts
+        : aggregateTags.sort((leftTag, rightTag) => compareCwlAggregateTags(byTag, leftTag, rightTag)).map(tag => ({
+            participant: {},
+            account: { tag, playerTag: tag, name: tag },
+            tag
+        }));
+    const rows = sourceRows.map(({ participant, account, tag }) => {
         const stats = byTag[tag] && typeof byTag[tag] === 'object' ? byTag[tag] : {};
         const offenseStars = getCwlOffenseStars(stats);
         const defenseStarsConceded = getCwlDefenseStarsConceded(stats);
+        const displayName = account?.name || getParticipantDisplayName(participant) || tag;
+
         return {
-            rank: index + 1,
+            rank: 0,
             tag,
             playerTag: tag,
-            displayName: tag,
-            accounts: [{ tag, name: tag, cwlStats: stats }],
+            displayName,
+            accounts: [{ ...account, tag, name: displayName, cwlStats: stats }],
             score: offenseStars,
             scoreLabel: `${offenseStars} stars, ${defenseStarsConceded} defense stars`,
             metric: 'cwl',
@@ -292,6 +382,20 @@ async function buildCwlAggregateLeaderboardFallback(event) {
                 bestStarsConceded: defenseStarsConceded
             }
         };
+    });
+    if (registeredAccounts.length > 0 && shouldUseCwlAggregateRankedTags(rankedTags, registeredAccounts.map(row => row.tag))) {
+        const rankIndex = new Map();
+        rankedTags.forEach((tag, index) => {
+            if (!rankIndex.has(tag)) {
+                rankIndex.set(tag, index);
+            }
+        });
+        rows.sort((left, right) => (rankIndex.get(left.tag) ?? Number.MAX_SAFE_INTEGER) - (rankIndex.get(right.tag) ?? Number.MAX_SAFE_INTEGER));
+    } else if (registeredAccounts.length > 0) {
+        rows.sort(compareCwlLeaderboardRows);
+    }
+    rows.forEach((row, index) => {
+        row.rank = index + 1;
     });
 
     return {

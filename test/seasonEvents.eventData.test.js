@@ -215,6 +215,56 @@ test('loadEventForRendering keeps CWL signup usable when immediate refresh fails
     assert.deepEqual(result.leaderboard.leaderboard, []);
 });
 
+test('loadEventForRendering recomputes CWL fallback rows from current registrations when ranked tags are stale', async () => {
+    rosterBackend.isRosterBackendConfigured = () => false;
+    rosterBackend.getSeasonEventLeaderboard = async () => {
+        throw new Error('backend leaderboard should not be requested when backend is disabled');
+    };
+    rosterPublicData.readCurrentCwlSeasonEventPointer = async () => ({
+        eventId: 'cwl-active'
+    });
+    rosterPublicData.readSeasonEventById = async () => ({
+        eventId: 'cwl-active',
+        type: 'cwl',
+        status: 'open',
+        signupsOpen: true,
+        cwlTrackingState: 'active',
+        participantsByDiscordId: {
+            user1: {
+                discordId: 'user1',
+                discordDisplayName: 'Old Signup',
+                status: 'signed_up',
+                accounts: [{ tag: '#AAA', name: 'Old Account' }]
+            },
+            user2: {
+                discordId: 'user2',
+                discordDisplayName: 'New Signup',
+                status: 'signed_up',
+                accounts: [{ tag: '#BBB', name: 'New Account' }]
+            }
+        }
+    });
+    rosterPublicData.readCwlSeasonEventAggregate = async () => ({
+        eventId: 'cwl-active',
+        kind: 'live',
+        rankedTags: ['#AAA'],
+        byTag: {
+            '#AAA': { starsTotal: 1, attacksMade: 1, defenseStarsConceded: 2 },
+            '#BBB': { starsTotal: 3, attacksMade: 1, defenseStarsConceded: 1 }
+        }
+    });
+
+    const result = await loadEventForRendering('cwl', {
+        source: { type: 'test-cwl-fallback' }
+    });
+
+    assert.equal(result.source, 'cloudflare-cwl-aggregate');
+    assert.deepEqual(result.leaderboard.leaderboard.map(row => row.tag), ['#BBB', '#AAA']);
+    assert.equal(result.leaderboard.leaderboard[0].rank, 1);
+    assert.equal(result.leaderboard.leaderboard[0].displayName, 'New Account');
+    assert.equal(result.leaderboard.leaderboard[0].scoreLabel, '3 stars, 1 defense stars');
+});
+
 test('loadEventForRendering merges donation overlay into local public-data fallback scoring', async () => {
     rosterBackend.isRosterBackendConfigured = () => false;
     rosterPublicData.readCurrentSeasonEventPointer = async () => ({
