@@ -31,6 +31,57 @@ function getEventType(event) {
     return normalizeEventType(event?.type || event?.eventType || event?.kind);
 }
 
+function getCwlEventTarget(event) {
+    const target = event?.cwl?.target && typeof event.cwl.target === 'object'
+        ? event.cwl.target
+        : {};
+    const status = String(target.status || '').trim().toLowerCase();
+
+    return target.resolved === true || status === 'resolved' ? target : null;
+}
+
+function isCwlEventTargetResolved(event) {
+    return !!getCwlEventTarget(event);
+}
+
+function isLegacyCompletedTargetlessCwlEvent(event) {
+    const state = String(event?.cwlTrackingState || event?.cwlStatus || '').trim().toLowerCase();
+    return getEventType(event) === 'cwl' && state === 'completed' && !isCwlEventTargetResolved(event);
+}
+
+function getCwlEventEligibleTagSet(event) {
+    const target = getCwlEventTarget(event);
+
+    if (!target) {
+        return null;
+    }
+
+    return new Set(
+        (Array.isArray(target.eligibleAccountTags) ? target.eligibleAccountTags : [])
+            .map(normalizePlayerTag)
+            .filter(Boolean)
+    );
+}
+
+function filterAccountsForCwlEventTarget(event, accounts) {
+    const rows = Array.isArray(accounts) ? accounts : [];
+    const eligibleTags = getCwlEventEligibleTagSet(event);
+
+    if (!eligibleTags) {
+        return isLegacyCompletedTargetlessCwlEvent(event) ? rows : [];
+    }
+
+    return rows.filter(account => eligibleTags.has(normalizePlayerTag(account?.tag || account?.playerTag)));
+}
+
+function filterLinkedAccountsForEvent(event, linkedAccounts) {
+    if (getEventType(event) !== 'cwl') {
+        return Array.isArray(linkedAccounts) ? linkedAccounts : [];
+    }
+
+    return filterAccountsForCwlEventTarget(event, linkedAccounts);
+}
+
 function getDonationLedgerLastSeenMs(ledger) {
     const lastSeenMs = Date.parse(ledger?.lastSeenAt || '');
     if (Number.isFinite(lastSeenMs)) {
@@ -295,12 +346,17 @@ function compareCwlLeaderboardRows(left, right) {
 function getRegisteredCwlAccountRows(event) {
     const rows = [];
     const seen = new Set();
+    const eligibleTags = getCwlEventEligibleTagSet(event);
+
+    if (!eligibleTags && !isLegacyCompletedTargetlessCwlEvent(event)) {
+        return rows;
+    }
 
     for (const participant of getActiveParticipants(event)) {
         for (const account of getAccountRowsForParticipant(participant)) {
             const tag = normalizePlayerTag(account?.tag || account?.playerTag);
 
-            if (!tag || seen.has(tag)) {
+            if (!tag || seen.has(tag) || (eligibleTags && !eligibleTags.has(tag))) {
                 continue;
             }
 
@@ -334,6 +390,17 @@ async function buildCwlAggregateLeaderboardFallback(event) {
     const eventId = getEventId(event);
     const state = String(event?.cwlTrackingState || event?.cwlStatus || '').trim().toLowerCase();
     const kind = state === 'completed' ? 'final' : 'live';
+    const eligibleTags = getCwlEventEligibleTagSet(event);
+
+    if (!eligibleTags && !isLegacyCompletedTargetlessCwlEvent(event)) {
+        return {
+            ok: true,
+            status: 'cwl-target-unresolved',
+            event,
+            leaderboard: [],
+            aggregate: null
+        };
+    }
     const aggregate = eventId
         ? await rosterPublicData.readCwlSeasonEventAggregate(eventId, kind)
         : null;
@@ -348,7 +415,9 @@ async function buildCwlAggregateLeaderboardFallback(event) {
     }
 
     const byTag = aggregate.byTag && typeof aggregate.byTag === 'object' ? aggregate.byTag : {};
-    const aggregateTags = Object.keys(byTag).map(normalizePlayerTag).filter(Boolean);
+    const aggregateTags = Object.keys(byTag)
+        .map(normalizePlayerTag)
+        .filter(tag => tag && (!eligibleTags || eligibleTags.has(tag)));
     const registeredAccounts = getRegisteredCwlAccountRows(event);
     const rankedTags = Array.isArray(aggregate.rankedTags)
         ? aggregate.rankedTags.map(normalizePlayerTag).filter(Boolean)
@@ -434,6 +503,19 @@ function getParticipants(event) {
 
 function getActiveParticipants(event) {
     return getParticipants(event).filter(isActiveParticipant);
+}
+
+function getCwlEligibleActiveParticipants(event) {
+    if (getEventType(event) !== 'cwl' || isLegacyCompletedTargetlessCwlEvent(event)) {
+        return getActiveParticipants(event);
+    }
+
+    return getActiveParticipants(event)
+        .map(participant => ({
+            ...participant,
+            accounts: filterAccountsForCwlEventTarget(event, getAccountRowsForParticipant(participant))
+        }))
+        .filter(participant => participant.accounts.length > 0);
 }
 
 function getParticipantDisplayName(participant) {
@@ -792,8 +874,15 @@ module.exports = {
     getEventId,
     getEventSeasonId,
     getEventType,
+    getCwlEventTarget,
+    isCwlEventTargetResolved,
+    isLegacyCompletedTargetlessCwlEvent,
+    getCwlEventEligibleTagSet,
+    filterAccountsForCwlEventTarget,
+    filterLinkedAccountsForEvent,
     asArray,
     getActiveParticipants,
+    getCwlEligibleActiveParticipants,
     normalizeAccount,
     getAccountRowsForParticipant,
     getLeaderboardRowsByTag,

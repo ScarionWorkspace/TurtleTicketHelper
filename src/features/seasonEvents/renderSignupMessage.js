@@ -12,6 +12,10 @@ const {
 const {
     extractLeaderboardRows,
     getActiveParticipants,
+    getCwlEligibleActiveParticipants,
+    getCwlEventTarget,
+    isCwlEventTargetResolved,
+    filterAccountsForCwlEventTarget,
     getAccountRowsForParticipant,
     getLeaderboardRowsByTag,
     normalizePlayerTag
@@ -135,6 +139,19 @@ function getStatusDescription(event) {
         else if (cwlState === 'active') lines.push('CWL status: active provisional standings.');
         else if (cwlState === 'finalizing') lines.push('CWL status: finalizing; standings await confirmation.');
         else if (cwlState === 'completed') lines.push('CWL status: completed standings.');
+    }
+
+    if (event?.type === 'cwl' || event?.eventType === 'cwl') {
+        const target = getCwlEventTarget(event);
+
+        if (target) {
+            const rosterTitle = String(target.rosterTitle || target.rosterId || '').trim();
+            const clanName = String(target.clanName || target.clanTag || '').trim();
+            const leagueName = String(target.leagueName || '').trim();
+            lines.push(`CWL roster: ${[rosterTitle, clanName, leagueName].filter(Boolean).join(' | ')}`);
+        } else if (!isCwlEventTargetResolved(event)) {
+            lines.push('CWL roster: waiting for roster resolution.');
+        }
     }
 
     if (event?.cwl?.stale) {
@@ -463,11 +480,13 @@ function buildAllConfirmedRows(event, leaderboard, type) {
     }
 
     const rowsByTag = getLeaderboardRowsByTag(leaderboard);
-    const activeParticipants = getActiveParticipants(event);
+    const activeParticipants = type === 'cwl' ? getCwlEligibleActiveParticipants(event) : getActiveParticipants(event);
     const rows = [];
 
     for (const participant of activeParticipants) {
-        const accountRows = getAccountRowsForParticipant(participant);
+        const accountRows = type === 'cwl'
+            ? filterAccountsForCwlEventTarget(event, getAccountRowsForParticipant(participant))
+            : getAccountRowsForParticipant(participant);
         const mappedRows = accountRows.map(account => ({
             account,
             leaderboardRow: account.tag ? rowsByTag.get(account.tag) : null
@@ -623,14 +642,15 @@ function getTownHallRange(rows, event) {
 }
 
 function getFooterText(event, rows, type) {
-    const activeParticipants = getActiveParticipants(event);
-    const participantCount =
-        activeParticipants.length ||
-        event?.activeParticipantCount ||
-        event?.confirmedCount ||
-        event?.participantCount ||
-        event?.signupCount ||
-        0;
+    const activeParticipants = type === 'cwl' ? getCwlEligibleActiveParticipants(event) : getActiveParticipants(event);
+    const participantCount = type === 'cwl'
+        ? activeParticipants.length
+        : activeParticipants.length ||
+            event?.activeParticipantCount ||
+            event?.confirmedCount ||
+            event?.participantCount ||
+            event?.signupCount ||
+            0;
 
     if (type === 'donation') {
         const accountCount =
@@ -658,7 +678,11 @@ function getFooterText(event, rows, type) {
 }
 
 function getConfirmedCount(event, rows) {
-    const activeParticipants = getActiveParticipants(event);
+    const isCwl = String(event?.type || event?.eventType || '').trim().toLowerCase() === 'cwl';
+    const activeParticipants = isCwl ? getCwlEligibleActiveParticipants(event) : getActiveParticipants(event);
+    if (isCwl) {
+        return activeParticipants.length || rows.length || 0;
+    }
     return activeParticipants.length ||
         event?.activeParticipantCount ||
         event?.confirmedCount ||

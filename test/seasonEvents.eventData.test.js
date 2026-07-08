@@ -229,6 +229,16 @@ test('loadEventForRendering recomputes CWL fallback rows from current registrati
         status: 'open',
         signupsOpen: true,
         cwlTrackingState: 'active',
+        cwl: {
+            target: {
+                resolved: true,
+                status: 'resolved',
+                rosterId: 'main',
+                clanTag: '#CLAN',
+                leagueName: 'Champion I',
+                eligibleAccountTags: ['#AAA', '#BBB']
+            }
+        },
         participantsByDiscordId: {
             user1: {
                 discordId: 'user1',
@@ -263,6 +273,60 @@ test('loadEventForRendering recomputes CWL fallback rows from current registrati
     assert.equal(result.leaderboard.leaderboard[0].rank, 1);
     assert.equal(result.leaderboard.leaderboard[0].displayName, 'New Account');
     assert.equal(result.leaderboard.leaderboard[0].scoreLabel, '3 stars, 1 defense stars');
+});
+
+test('loadEventForRendering scopes CWL fallback rows to the resolved event roster', async () => {
+    rosterBackend.isRosterBackendConfigured = () => false;
+    rosterBackend.getSeasonEventLeaderboard = async () => null;
+    rosterPublicData.readCurrentCwlSeasonEventPointer = async () => ({
+        eventId: 'cwl-targeted'
+    });
+    rosterPublicData.readSeasonEventById = async () => ({
+        eventId: 'cwl-targeted',
+        type: 'cwl',
+        status: 'open',
+        signupsOpen: true,
+        cwlTrackingState: 'active',
+        cwl: {
+            target: {
+                resolved: true,
+                status: 'resolved',
+                rosterId: 'main',
+                clanTag: '#CLAN',
+                leagueName: 'Champion I',
+                eligibleAccountTags: ['#AAA']
+            }
+        },
+        participantsByDiscordId: {
+            mixed: {
+                discordId: 'mixed',
+                discordDisplayName: 'Mixed',
+                status: 'signed_up',
+                accounts: [{ tag: '#AAA', name: 'Target' }, { tag: '#BBB', name: 'Dormant' }]
+            },
+            dormant: {
+                discordId: 'dormant',
+                discordDisplayName: 'Dormant',
+                status: 'signed_up',
+                accounts: [{ tag: '#BBB', name: 'Wrong Clan' }]
+            }
+        }
+    });
+    rosterPublicData.readCwlSeasonEventAggregate = async () => ({
+        eventId: 'cwl-targeted',
+        kind: 'live',
+        rankedTags: ['#BBB', '#AAA'],
+        byTag: {
+            '#AAA': { starsTotal: 3, attacksMade: 1, defenseStarsConceded: 2 },
+            '#BBB': { starsTotal: 9, attacksMade: 3, defenseStarsConceded: 1 }
+        }
+    });
+
+    const result = await loadEventForRendering('cwl');
+
+    assert.equal(result.source, 'cloudflare-cwl-aggregate');
+    assert.deepEqual(result.leaderboard.leaderboard.map(row => row.tag), ['#AAA']);
+    assert.equal(result.leaderboard.leaderboard[0].displayName, 'Target');
 });
 
 test('loadEventForRendering merges donation overlay into local public-data fallback scoring', async () => {

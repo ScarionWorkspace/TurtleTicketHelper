@@ -307,6 +307,54 @@ test('CWL signup table shows offensive stars and defensive stars conceded', () =
     assert.doesNotMatch(table, /Holds|Def\b|holds|defenses/i);
 });
 
+test('CWL signup table and footer exclude dormant wrong-roster accounts', () => {
+    const message = buildSignupMessage(
+        'cwl',
+        {
+            eventId: 'cwl-2026-07',
+            type: 'cwl',
+            title: 'CWL Event',
+            status: 'open',
+            signupsOpen: true,
+            cwlTrackingState: 'active',
+            cwl: {
+                target: {
+                    resolved: true,
+                    status: 'resolved',
+                    rosterId: 'main',
+                    rosterTitle: 'Main',
+                    clanTag: '#CLAN',
+                    clanName: 'Target Clan',
+                    leagueName: 'Champion I',
+                    eligibleAccountTags: ['#AAA111']
+                }
+            },
+            participantsByDiscordId: {
+                mixed: {
+                    discordId: 'mixed',
+                    discordDisplayName: 'Mixed',
+                    status: 'signed_up',
+                    accounts: [{ tag: '#AAA111', name: 'Target' }, { tag: '#BBB222', name: 'Dormant' }]
+                },
+                dormant: {
+                    discordId: 'dormant',
+                    discordDisplayName: 'Dormant',
+                    status: 'signed_up',
+                    accounts: [{ tag: '#BBB222', name: 'Wrong Clan' }]
+                }
+            }
+        },
+        { leaderboard: [] }
+    );
+    const table = getConfirmedTable(message);
+    const embed = getEmbed(message);
+
+    assert.match(table, /Target/);
+    assert.doesNotMatch(table, /Dormant|Wrong Clan/);
+    assert.match(embed.footer.text, /Confirmed 1\/50/);
+    assert.match(embed.description, /CWL roster: Main \| Target Clan \| Champion I/);
+});
+
 test('signup embed hides roster identity and promotes event timestamps', () => {
     const embed = getEmbed(buildSignupMessage(
         'push',

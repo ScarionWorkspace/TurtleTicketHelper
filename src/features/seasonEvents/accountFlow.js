@@ -15,6 +15,8 @@ const {
     getEventAvailabilityStatus,
     readLinkedAccountsForDiscordUser,
     readParticipantByDiscordId,
+    filterLinkedAccountsForEvent,
+    isCwlEventTargetResolved,
     normalizeAccount,
     normalizePlayerTag
 } = require('./eventData');
@@ -166,6 +168,11 @@ async function handleSignupButton(interaction, parsed) {
         return;
     }
 
+    if (parsed.type === 'cwl' && !isCwlEventTargetResolved(event)) {
+        await interaction.editReply({ content: getStatusMessage('cwl-target-unresolved') });
+        return;
+    }
+
     const discordUser = buildDiscordUser(interaction);
     const participant = await readParticipantByDiscordId(eventId, discordUser.id);
 
@@ -180,6 +187,7 @@ async function handleSignupButton(interaction, parsed) {
     }
 
     const linkedAccounts = await readLinkedAccountsForDiscordUser(discordUser);
+    const eligibleAccounts = filterLinkedAccountsForEvent(event, linkedAccounts);
 
     if (linkedAccounts.length === 0) {
         await interaction.editReply({
@@ -189,15 +197,23 @@ async function handleSignupButton(interaction, parsed) {
         return;
     }
 
-    if (linkedAccounts.length > 1) {
-        await showAccountPicker(interaction, parsed.type, linkedAccounts, messageId, 'signup');
+    if (eligibleAccounts.length === 0) {
+        await interaction.editReply({
+            content: getStatusMessage('accounts-outside-event-roster'),
+            components: []
+        });
+        return;
+    }
+
+    if (eligibleAccounts.length > 1) {
+        await showAccountPicker(interaction, parsed.type, eligibleAccounts, messageId, 'signup');
         return;
     }
 
     const result = await rosterBackend.registerSeasonEventSignup({
         eventId,
         discordUser,
-        playerTags: [linkedAccounts[0].playerTag],
+        playerTags: [normalizeAccount(eligibleAccounts[0]).tag],
         source
     });
     const status = getResultStatus(result, 'signed-up');
@@ -326,11 +342,36 @@ async function handleUpdateButton(interaction, parsed) {
     }
 
     const linkedAccounts = await readLinkedAccountsForDiscordUser(discordUser);
+    const eligibleAccounts = filterLinkedAccountsForEvent(event, linkedAccounts);
+
+    if (parsed.type === 'cwl' && !isCwlEventTargetResolved(event)) {
+        await interaction.editReply({
+            content: getStatusMessage('cwl-target-unresolved'),
+            components: buildManageComponents(parsed.type, interaction.user.id, messageId)
+        });
+        return;
+    }
+
+    if (linkedAccounts.length === 0) {
+        await interaction.editReply({
+            content: getStatusMessage('not-linked'),
+            components: buildManageComponents(parsed.type, interaction.user.id, messageId)
+        });
+        return;
+    }
+
+    if (linkedAccounts.length > 0 && eligibleAccounts.length === 0) {
+        await interaction.editReply({
+            content: getStatusMessage('accounts-outside-event-roster'),
+            components: buildManageComponents(parsed.type, interaction.user.id, messageId)
+        });
+        return;
+    }
 
     await showAccountPicker(
         interaction,
         parsed.type,
-        linkedAccounts,
+        eligibleAccounts,
         messageId,
         'update',
         `Choose the account${getMaxAccountsForType(parsed.type) === 1 ? '' : 's'} to use for this event.`
@@ -390,13 +431,32 @@ async function handleAccountSelect(interaction, parsed) {
     const linkedAccounts = normalizeLinkedAccounts(
         await readLinkedAccountsForDiscordUser(discordUser)
     );
+    const eligibleAccounts = normalizeLinkedAccounts(filterLinkedAccountsForEvent(event, linkedAccounts));
     const linkedTags = new Set(linkedAccounts.map(account => account.playerTag));
+    const eligibleTags = new Set(eligibleAccounts.map(account => account.playerTag));
     const hasUnlinkedTag = validation.playerTags.some(tag => !linkedTags.has(tag));
+    const hasOutsideRosterTag = validation.playerTags.some(tag => linkedTags.has(tag) && !eligibleTags.has(tag));
 
     if (hasUnlinkedTag) {
         await interaction.editReply({
             content: getStatusMessage('player-tag-not-linked'),
             components: []
+        });
+        return;
+    }
+
+    if (parsed.type === 'cwl' && !isCwlEventTargetResolved(event)) {
+        await interaction.editReply({
+            content: getStatusMessage('cwl-target-unresolved'),
+            components: parsed.mode === 'update' ? buildManageComponents(parsed.type, interaction.user.id, messageId) : []
+        });
+        return;
+    }
+
+    if (hasOutsideRosterTag) {
+        await interaction.editReply({
+            content: getStatusMessage('player-tag-outside-event-roster'),
+            components: parsed.mode === 'update' ? buildManageComponents(parsed.type, interaction.user.id, messageId) : []
         });
         return;
     }
