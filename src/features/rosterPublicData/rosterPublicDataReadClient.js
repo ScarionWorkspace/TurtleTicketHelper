@@ -243,12 +243,37 @@ async function readJsonPath(path, options = {}) {
                 return value;
             })
             .finally(() => {
-                pendingReadsByPath.delete(cacheKey);
+                if (pendingReadsByPath.get(cacheKey) === pending) {
+                    pendingReadsByPath.delete(cacheKey);
+                }
             });
         pendingReadsByPath.set(cacheKey, pending);
     }
 
     return cloneJsonValue(await pending);
+}
+
+function invalidateReadCachePath(path) {
+    const cleanPath = normalizePath(path);
+    if (!cleanPath) return;
+    for (const key of [...readCacheByPath.keys()]) {
+        if (key.endsWith(`:${cleanPath}`)) readCacheByPath.delete(key);
+    }
+    for (const key of [...pendingReadsByPath.keys()]) {
+        if (key.endsWith(`:${cleanPath}`)) pendingReadsByPath.delete(key);
+    }
+}
+
+function invalidateReadCachePrefix(prefix) {
+    const cleanPrefix = normalizePath(prefix);
+    if (!cleanPrefix) return;
+    const marker = `:${cleanPrefix}`;
+    for (const key of [...readCacheByPath.keys()]) {
+        if (key.includes(marker) || key.startsWith(`${key.split(':')[0]}:${cleanPrefix}/`)) readCacheByPath.delete(key);
+    }
+    for (const key of [...pendingReadsByPath.keys()]) {
+        if (key.includes(marker) || key.startsWith(`${key.split(':')[0]}:${cleanPrefix}/`)) pendingReadsByPath.delete(key);
+    }
 }
 
 function normalizeType(type) {
@@ -570,5 +595,7 @@ module.exports = {
     readActivePlayerMetricsByTag,
     readAllActivePlayerMetricsByTag,
     readDonationRefreshSeasonOverlay,
-    readLinkedAccountsForDiscordUser
+    readLinkedAccountsForDiscordUser,
+    invalidateReadCachePath,
+    invalidateReadCachePrefix
 };

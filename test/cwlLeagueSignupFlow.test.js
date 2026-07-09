@@ -13,6 +13,7 @@ const {
 const originalBackend = {
     setCwlLeaguePreference: rosterBackend.setCwlLeaguePreference,
     getCwlLeaguePreferencesForDiscordUser: rosterBackend.getCwlLeaguePreferencesForDiscordUser,
+    getCwlLeagueSignupContextForDiscordUser: rosterBackend.getCwlLeagueSignupContextForDiscordUser,
     clearCwlLeaguePreference: rosterBackend.clearCwlLeaguePreference,
     resetCwlLeaguePreferences: rosterBackend.resetCwlLeaguePreferences
 };
@@ -49,6 +50,22 @@ function makeLinkedAccount(overrides = {}) {
         townHallLevel: 16,
         ...overrides
     };
+}
+
+function mockAuthoritativeSignupContext(linkedAccounts, signups) {
+    const options = [
+        ...Object.values(signups?.optionsByKey || {}),
+        ...Object.values(signups?.optionsByLeagueKey || {})
+    ].filter((option, index, all) => all.findIndex(item =>
+        String(item?.optionKey || item?.leagueKey || '') === String(option?.optionKey || option?.leagueKey || '')
+    ) === index);
+
+    rosterBackend.getCwlLeagueSignupContextForDiscordUser = async () => ({
+        signupId: signups?.signupId || '',
+        options,
+        linkedAccounts,
+        preferences: Object.values(signups?.preferencesByTag || {})
+    });
 }
 
 function makeInteraction({
@@ -437,8 +454,7 @@ test('Choosing a clan option saves the option key while keeping the league key',
         preferencesByTag: {}
     };
     let setPayload = null;
-    rosterPublicData.readLinkedAccountsForDiscordUser = async () => [makeLinkedAccount()];
-    rosterPublicData.readCwlLeagueSignups = async () => signups;
+    mockAuthoritativeSignupContext([makeLinkedAccount()], signups);
     rosterBackend.setCwlLeaguePreference = async payload => {
         setPayload = payload;
         return {
@@ -471,8 +487,7 @@ test('Choosing a clan option saves the option key while keeping the league key',
 });
 
 test('Choosing a new league for an owned existing preference asks for change confirmation', async () => {
-    rosterPublicData.readLinkedAccountsForDiscordUser = async () => [makeLinkedAccount()];
-    rosterPublicData.readCwlLeagueSignups = async () => ({
+    mockAuthoritativeSignupContext([makeLinkedAccount()], {
         signupId: 'signup-1',
         optionsByLeagueKey: {
             'league-2': makeLeagueOption(2)
@@ -509,8 +524,7 @@ test('Confirming an owned preference change sends allowChange and reports old to
         }
     };
     let setPayload = null;
-    rosterPublicData.readLinkedAccountsForDiscordUser = async () => [makeLinkedAccount()];
-    rosterPublicData.readCwlLeagueSignups = async () => signups;
+    mockAuthoritativeSignupContext([makeLinkedAccount()], signups);
     rosterBackend.setCwlLeaguePreference = async payload => {
         setPayload = payload;
         return {
@@ -549,8 +563,7 @@ test('Confirming an owned preference change sends allowChange and reports old to
 
 test('Choosing a new league cannot change a preference owned by another user', async () => {
     let setCalled = false;
-    rosterPublicData.readLinkedAccountsForDiscordUser = async () => [makeLinkedAccount()];
-    rosterPublicData.readCwlLeagueSignups = async () => ({
+    mockAuthoritativeSignupContext([makeLinkedAccount()], {
         signupId: 'signup-1',
         optionsByLeagueKey: {
             'league-2': makeLeagueOption(2)

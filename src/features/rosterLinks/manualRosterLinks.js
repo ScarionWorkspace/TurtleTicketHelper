@@ -1,7 +1,16 @@
 const rosterBackend = require('../rosterBackend/rosterBackendClient');
+const rosterPublicData = require('../rosterPublicData/rosterPublicDataReadClient');
 const { isStaffMember } = require('../permissions/staffPermissions');
 
 const EPHEMERAL_FLAGS = 64;
+
+function invalidateLinkedAccountReads() {
+    rosterPublicData.invalidateReadCachePrefix('indexes/linkedAccountsByDiscordId');
+    rosterPublicData.invalidateReadCachePrefix('indexes/linkedAccountsByDiscordUsername');
+    rosterPublicData.invalidateReadCachePrefix('active/playerMetrics/byTag');
+    rosterPublicData.invalidateReadCachePath('active');
+    rosterPublicData.invalidateReadCachePath('bootstrap/current');
+}
 
 function normalizePlayerTag(tag) {
     let cleaned = String(tag || '').trim().toUpperCase().replace(/\s+/g, '');
@@ -208,6 +217,7 @@ async function handleLinkCommand(interaction, options = {}) {
             force
         });
 
+        invalidateLinkedAccountReads();
         await interaction.editReply({
             content: buildLinkSuccessMessage(result, user, playerTag)
         });
@@ -252,6 +262,7 @@ async function handleLinkDeleteCommand(interaction, options = {}) {
             discordUsername: hasUser ? getDiscordUsername(user) : ''
         });
 
+        invalidateLinkedAccountReads();
         await interaction.editReply({
             content: buildDeleteSuccessMessage(result, user, playerTag)
         });

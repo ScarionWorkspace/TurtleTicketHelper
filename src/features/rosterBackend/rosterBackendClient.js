@@ -277,6 +277,10 @@ function getSeasonEvent(payload = {}, options = {}) {
     return callSeasonEventMethod('getSeasonEvent', payload, options);
 }
 
+function getSeasonEventMutationContext(payload = {}, options = {}) {
+    return callSeasonEventMethod('getSeasonEventMutationContext', payload, options);
+}
+
 function registerSeasonEventSignup(payload = {}, options = {}) {
     return callSeasonEventMethod('registerSeasonEventSignup', payload, options);
 }
@@ -321,6 +325,10 @@ function getCwlLeaguePreferencesForDiscordUser(payload = {}, options = {}) {
     return callSeasonEventMethod('getCwlLeaguePreferencesForDiscordUser', payload, options);
 }
 
+function getCwlLeagueSignupContextForDiscordUser(payload = {}, options = {}) {
+    return callSeasonEventMethod('getCwlLeagueSignupContextForDiscordUser', payload, options);
+}
+
 function clearCwlLeaguePreference(payload = {}, options = {}) {
     return callSeasonEventMethod('clearCwlLeaguePreference', payload, options);
 }
@@ -342,6 +350,7 @@ module.exports = {
     refreshCurrentCwlSeasonEvent,
     getCurrentCwlSeasonEvent,
     getSeasonEvent,
+    getSeasonEventMutationContext,
     registerSeasonEventSignup,
     updateSeasonEventParticipantAccounts,
     cancelSeasonEventSignup,
@@ -351,6 +360,7 @@ module.exports = {
     getCwlLeagueSignupOptions,
     setCwlLeaguePreference,
     getCwlLeaguePreferencesForDiscordUser,
+    getCwlLeagueSignupContextForDiscordUser,
     clearCwlLeaguePreference,
     resetCwlLeaguePreferences
 };

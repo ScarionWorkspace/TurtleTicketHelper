@@ -795,9 +795,10 @@ async function loadEventForRendering(type, options = {}) {
         });
     }
 
-    let event = await readCurrentEventFromPublicData(eventType, {
-        includeParticipantsByDiscordId: true
-    });
+    let event = options.seedEvent && typeof options.seedEvent === 'object'
+        ? options.seedEvent
+        : await readCurrentEventFromPublicData(eventType, { includeParticipantsByDiscordId: true });
+    const initialSource = options.seedEvent ? 'mutation-result' : (event ? 'cloudflare-public' : 'missing');
     event = mergeEventRefreshResult(
         event,
         refreshedCwlEvent || (event ? null : ensuredCwlEvent),
@@ -805,7 +806,7 @@ async function loadEventForRendering(type, options = {}) {
     );
 
     let leaderboard = null;
-    let source = event ? 'cloudflare-public' : 'missing';
+    let source = event ? initialSource : 'missing';
 
     if (event) {
         const backendResult = await readBackendLeaderboardForEvent(event, eventType, options);
@@ -832,6 +833,23 @@ async function loadEventForRendering(type, options = {}) {
         event,
         leaderboard,
         source
+    };
+}
+
+async function loadSeasonEventMutationContext(type, discordUser, options = {}) {
+    const eventType = normalizeEventType(type);
+    if (!eventType) return { event: null, participant: null, linkedAccounts: [], eligibleAccounts: [] };
+    const result = await rosterBackend.getSeasonEventMutationContext({
+        eventType,
+        eventId: options.eventId || null,
+        discordUser: discordUser || {},
+        source: options.source || {}
+    });
+    return {
+        event: result?.event || null,
+        participant: result?.participant || null,
+        linkedAccounts: Array.isArray(result?.linkedAccounts) ? result.linkedAccounts : [],
+        eligibleAccounts: Array.isArray(result?.eligibleAccounts) ? result.eligibleAccounts : []
     };
 }
 
@@ -889,6 +907,7 @@ module.exports = {
     extractLeaderboardRows,
     getEventAvailabilityStatus,
     loadEventForRendering,
+    loadSeasonEventMutationContext,
     resolveCurrentSeasonEvent,
     readParticipantByDiscordId,
     readLinkedAccountsForDiscordUser

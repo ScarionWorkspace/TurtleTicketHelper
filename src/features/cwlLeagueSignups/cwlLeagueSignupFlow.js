@@ -870,6 +870,7 @@ async function savePreference(interaction, signupId, leagueKey, account, sourceM
     }
 
     const preference = result?.preference || {};
+    invalidateCwlSignupReads();
     let content = `${accountLabel(account)} is signed up for ${preferenceLeagueLabel(preference) || 'that CWL league'}.`;
 
     if (options.allowChange === true) {
@@ -949,6 +950,56 @@ async function showChangePreferenceConfirmation(interaction, signupId, optionKey
     });
 }
 
+function buildAuthoritativeCwlSignupState(context) {
+    const options = Array.isArray(context?.options) ? context.options.map(normalizeSignupOption) : [];
+    const optionsByKey = {};
+    const optionsByLeagueKey = {};
+    for (const option of options) {
+        if (option.optionKey) optionsByKey[option.optionKey] = option;
+        if (option.leagueKey) optionsByLeagueKey[option.leagueKey] = option;
+    }
+    const preferencesByTag = {};
+    for (const preference of normalizeCwlLeaguePreferenceList(context?.preferences)) {
+        if (preference.playerTag) preferencesByTag[preference.playerTag] = preference;
+    }
+    return { signupId: String(context?.signupId || '').trim(), optionsByKey, optionsByLeagueKey, preferencesByTag };
+}
+
+async function loadAuthoritativeCwlSignupContext(interaction, signupId) {
+    const discordUser = buildDiscordUser(interaction);
+    let context;
+    if (typeof rosterBackend.isRosterBackendConfigured !== 'function' || rosterBackend.isRosterBackendConfigured()) {
+        context = await rosterBackend.getCwlLeagueSignupContextForDiscordUser({
+            signupId,
+            discordId: discordUser.id,
+            discordUsername: discordUser.username,
+            discordGlobalName: discordUser.globalName,
+            discordDisplayName: discordUser.displayName
+        });
+    } else {
+        const [linkedAccounts, publicSignups] = await Promise.all([
+            rosterPublicData.readLinkedAccountsForDiscordUser(discordUser),
+            rosterPublicData.readCwlLeagueSignups()
+        ]);
+        context = {
+            signupId: publicSignups?.signupId || signupId,
+            linkedAccounts,
+            options: Object.values(publicSignups?.optionsByKey || {}),
+            preferences: Object.values(publicSignups?.preferencesByTag || {})
+        };
+    }
+    return {
+        discordUser,
+        linkedAccounts: Array.isArray(context?.linkedAccounts) ? context.linkedAccounts : [],
+        signups: buildAuthoritativeCwlSignupState(context)
+    };
+}
+
+function invalidateCwlSignupReads() {
+    rosterPublicData.invalidateReadCachePath('active/cwlLeagueSignups');
+    rosterPublicData.invalidateReadCachePath('bootstrap/current');
+}
+
 function buildSelectableCwlAccounts(linkedAccounts, signups, discordId) {
     return linkedAccounts
         .map(account => ({
@@ -974,11 +1025,15 @@ async function handleChooseButton(interaction, parsed) {
 
     await interaction.deferReply({ flags: 64 });
 
-    const discordUser = buildDiscordUser(interaction);
-    const [linkedAccounts, signups] = await Promise.all([
-        rosterPublicData.readLinkedAccountsForDiscordUser(discordUser),
-        rosterPublicData.readCwlLeagueSignups()
-    ]);
+    let discordUser;
+    let linkedAccounts;
+    let signups;
+    try {
+        ({ discordUser, linkedAccounts, signups } = await loadAuthoritativeCwlSignupContext(interaction, signupId));
+    } catch (error) {
+        await interaction.editReply({ content: isStaleSignupError(error) ? staleSignupMessage() : 'Unable to load your linked accounts right now.', components: [] });
+        return;
+    }
     const selectableAccounts = buildSelectableCwlAccounts(linkedAccounts, signups, discordUser.id);
 
     if (!selectableAccounts.length) {
@@ -1059,17 +1114,14 @@ async function handleAccountSelect(interaction, parsed) {
 
     const selected = parseAccountSelectValue(interaction.values?.[0]);
     const selectedTag = selected.playerTag;
-    const discordUser = buildDiscordUser(interaction);
+    let discordUser;
     let linkedAccounts;
     let signups;
     try {
-        [linkedAccounts, signups] = await Promise.all([
-            rosterPublicData.readLinkedAccountsForDiscordUser(discordUser),
-            rosterPublicData.readCwlLeagueSignups()
-        ]);
-    } catch {
+        ({ discordUser, linkedAccounts, signups } = await loadAuthoritativeCwlSignupContext(interaction, signupId));
+    } catch (error) {
         await interaction.reply({
-            content: 'Unable to load your CWL league preferences right now.',
+            content: isStaleSignupError(error) ? staleSignupMessage() : 'Unable to load your CWL league preferences right now.',
             flags: 64
         });
         return;
@@ -1185,6 +1237,7 @@ async function handleClearVoteButton(interaction, parsed) {
 
         try {
             const result = await clearUserCwlLeaguePreference(interaction, signupId, preference);
+            invalidateCwlSignupReads();
             const message = buildClearPreferenceResultMessage(preference, result);
             await interaction.editReply({
                 content: message.content,
@@ -1269,6 +1322,7 @@ async function handleClearVoteSelect(interaction, parsed) {
 
     try {
         const result = await clearUserCwlLeaguePreference(interaction, signupId, preference);
+        invalidateCwlSignupReads();
         const message = buildClearPreferenceResultMessage(preference, result);
         await interaction.editReply({
             content: message.content,
@@ -1300,17 +1354,14 @@ async function handleChangePreferenceConfirm(interaction, parsed) {
 
     await interaction.deferUpdate();
 
-    const discordUser = buildDiscordUser(interaction);
+    let discordUser;
     let linkedAccounts;
     let signups;
     try {
-        [linkedAccounts, signups] = await Promise.all([
-            rosterPublicData.readLinkedAccountsForDiscordUser(discordUser),
-            rosterPublicData.readCwlLeagueSignups()
-        ]);
-    } catch {
+        ({ discordUser, linkedAccounts, signups } = await loadAuthoritativeCwlSignupContext(interaction, signupId));
+    } catch (error) {
         await interaction.editReply({
-            content: 'Unable to load your CWL league preferences right now.',
+            content: isStaleSignupError(error) ? staleSignupMessage() : 'Unable to load your CWL league preferences right now.',
             components: []
         });
         return;

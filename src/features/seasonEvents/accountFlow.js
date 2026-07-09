@@ -6,6 +6,7 @@ const {
     StringSelectMenuOptionBuilder
 } = require('discord.js');
 const rosterBackend = require('../rosterBackend/rosterBackendClient');
+const rosterPublicData = require('../rosterPublicData/rosterPublicDataReadClient');
 const {
     buildCustomId,
     getEventTypeConfig,
@@ -13,9 +14,6 @@ const {
 } = require('./constants');
 const {
     getEventAvailabilityStatus,
-    readLinkedAccountsForDiscordUser,
-    readParticipantByDiscordId,
-    filterLinkedAccountsForEvent,
     isCwlEventTargetResolved,
     normalizeAccount,
     normalizePlayerTag
@@ -29,6 +27,30 @@ const {
     resolveEventForMutation
 } = require('./flowUtils');
 const { getStatusMessage } = require('./statusMessages');
+
+async function refreshSignupMessageAfterMutationBestEffort(interaction, type, options) {
+    try {
+        return await refreshSignupMessage(interaction, type, options);
+    } catch (error) {
+        console.warn('Season event mutation succeeded but signup message refresh failed.', {
+            eventType: type,
+            eventId: options?.seedEvent?.eventId || options?.seedEvent?.id || null,
+            errorName: error?.name || null,
+            errorMessage: error?.message || null
+        });
+        return false;
+    }
+}
+
+function invalidateSeasonEventReads(eventId, type) {
+    if (eventId) {
+        const encoded = rosterPublicData.encodePublicDataObjectKey(eventId);
+        rosterPublicData.invalidateReadCachePrefix(`events/seasonEvents/byId/${encoded}`);
+        rosterPublicData.invalidateReadCachePrefix(`events/seasonEvents/cwlAggregates/byEvent/${encoded}`);
+    }
+    rosterPublicData.invalidateReadCachePath(type === 'cwl' ? 'events/seasonEvents/currentCwl' : 'events/seasonEvents/current');
+    rosterPublicData.invalidateReadCachePath('bootstrap/current');
+}
 
 function normalizeLinkedAccounts(accounts) {
     const seen = new Set();
@@ -149,7 +171,7 @@ async function handleSignupButton(interaction, parsed) {
 
     await interaction.deferReply({ flags: EPHEMERAL });
 
-    const { event, eventId, source } = await resolveEventForMutation(
+    const { event, eventId, source, context } = await resolveEventForMutation(
         interaction,
         parsed.type,
         messageId,
@@ -174,7 +196,7 @@ async function handleSignupButton(interaction, parsed) {
     }
 
     const discordUser = buildDiscordUser(interaction);
-    const participant = await readParticipantByDiscordId(eventId, discordUser.id);
+    const participant = context.participant;
 
     if (getParticipantStatus(participant) === 'signed_up') {
         await showManageResponse(
@@ -186,8 +208,8 @@ async function handleSignupButton(interaction, parsed) {
         return;
     }
 
-    const linkedAccounts = await readLinkedAccountsForDiscordUser(discordUser);
-    const eligibleAccounts = filterLinkedAccountsForEvent(event, linkedAccounts);
+    const linkedAccounts = context.linkedAccounts;
+    const eligibleAccounts = context.eligibleAccounts;
 
     if (linkedAccounts.length === 0) {
         await interaction.editReply({
@@ -230,7 +252,8 @@ async function handleSignupButton(interaction, parsed) {
         return;
     }
 
-    await refreshSignupMessage(interaction, parsed.type, { messageId });
+    invalidateSeasonEventReads(eventId, parsed.type);
+    await refreshSignupMessageAfterMutationBestEffort(interaction, parsed.type, { messageId, seedEvent: result?.event || event });
     await interaction.editReply({
         content: getStatusMessage(status),
         components: []
@@ -249,24 +272,14 @@ async function cancelSignup(interaction, parsed, messageId) {
         return 'event-not-found';
     }
 
-    const participant = await readParticipantByDiscordId(eventId, interaction.user.id);
-    const participantStatus = getParticipantStatus(participant);
-
-    if (participantStatus === 'cancelled') {
-        return 'already-cancelled';
-    }
-
-    if (participantStatus !== 'signed_up') {
-        return 'not-signed-up';
-    }
-
     const result = await rosterBackend.cancelSeasonEventSignup({
         eventId,
         discordUser: buildDiscordUser(interaction),
         source
     });
 
-    await refreshSignupMessage(interaction, parsed.type, { messageId });
+    invalidateSeasonEventReads(eventId, parsed.type);
+    await refreshSignupMessageAfterMutationBestEffort(interaction, parsed.type, { messageId, seedEvent: result?.event || event });
     return getResultStatus(result, 'cancelled');
 }
 
@@ -315,7 +328,7 @@ async function handleUpdateButton(interaction, parsed) {
     await interaction.deferUpdate();
 
     const messageId = getSourceMessageId(interaction, parsed);
-    const { event, eventId, source } = await resolveEventForMutation(
+    const { event, eventId, source, context } = await resolveEventForMutation(
         interaction,
         parsed.type,
         messageId,
@@ -331,7 +344,7 @@ async function handleUpdateButton(interaction, parsed) {
     }
 
     const discordUser = buildDiscordUser(interaction);
-    const participant = await readParticipantByDiscordId(eventId, discordUser.id);
+    const participant = context.participant;
 
     if (getParticipantStatus(participant) !== 'signed_up') {
         await interaction.editReply({
@@ -341,8 +354,8 @@ async function handleUpdateButton(interaction, parsed) {
         return;
     }
 
-    const linkedAccounts = await readLinkedAccountsForDiscordUser(discordUser);
-    const eligibleAccounts = filterLinkedAccountsForEvent(event, linkedAccounts);
+    const linkedAccounts = context.linkedAccounts;
+    const eligibleAccounts = context.eligibleAccounts;
 
     if (parsed.type === 'cwl' && !isCwlEventTargetResolved(event)) {
         await interaction.editReply({
@@ -400,7 +413,7 @@ async function handleAccountSelect(interaction, parsed) {
     await interaction.deferUpdate();
 
     const messageId = getSourceMessageId(interaction, parsed);
-    const { event, eventId, source } = await resolveEventForMutation(
+    const { event, eventId, source, context } = await resolveEventForMutation(
         interaction,
         parsed.type,
         messageId,
@@ -428,10 +441,8 @@ async function handleAccountSelect(interaction, parsed) {
     }
 
     const discordUser = buildDiscordUser(interaction);
-    const linkedAccounts = normalizeLinkedAccounts(
-        await readLinkedAccountsForDiscordUser(discordUser)
-    );
-    const eligibleAccounts = normalizeLinkedAccounts(filterLinkedAccountsForEvent(event, linkedAccounts));
+    const linkedAccounts = normalizeLinkedAccounts(context.linkedAccounts);
+    const eligibleAccounts = normalizeLinkedAccounts(context.eligibleAccounts);
     const linkedTags = new Set(linkedAccounts.map(account => account.playerTag));
     const eligibleTags = new Set(eligibleAccounts.map(account => account.playerTag));
     const hasUnlinkedTag = validation.playerTags.some(tag => !linkedTags.has(tag));
@@ -462,7 +473,7 @@ async function handleAccountSelect(interaction, parsed) {
     }
 
     if (parsed.mode === 'update') {
-        const participant = await readParticipantByDiscordId(eventId, discordUser.id);
+        const participant = context.participant;
 
         if (getParticipantStatus(participant) !== 'signed_up') {
             await interaction.editReply({
@@ -492,7 +503,8 @@ async function handleAccountSelect(interaction, parsed) {
         return;
     }
 
-    await refreshSignupMessage(interaction, parsed.type, { messageId });
+    invalidateSeasonEventReads(eventId, parsed.type);
+    await refreshSignupMessageAfterMutationBestEffort(interaction, parsed.type, { messageId, seedEvent: result?.event || event });
     await interaction.editReply({
         content: getStatusMessage(status),
         components: []

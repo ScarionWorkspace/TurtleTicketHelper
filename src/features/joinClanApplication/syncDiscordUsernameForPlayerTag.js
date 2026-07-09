@@ -1,4 +1,13 @@
 const rosterBackend = require('../rosterBackend/rosterBackendClient');
+const rosterPublicData = require('../rosterPublicData/rosterPublicDataReadClient');
+
+function invalidateLinkedAccountReads() {
+    rosterPublicData.invalidateReadCachePrefix('indexes/linkedAccountsByDiscordId');
+    rosterPublicData.invalidateReadCachePrefix('indexes/linkedAccountsByDiscordUsername');
+    rosterPublicData.invalidateReadCachePrefix('active/playerMetrics/byTag');
+    rosterPublicData.invalidateReadCachePath('active');
+    rosterPublicData.invalidateReadCachePath('bootstrap/current');
+}
 
 function warnSync(message, playerTag, discordUsername, extra = {}) {
     console.warn(message, {
@@ -68,6 +77,7 @@ async function syncDiscordIdentityForPlayerTag(playerTag, discordId, discordUser
             );
         }
 
+        invalidateLinkedAccountReads();
         logSyncSuccess(result, playerTag, discordUsername);
         return result;
     } catch (error) {
@@ -126,6 +136,7 @@ async function deleteDiscordIdentityForPlayerTag(playerTag) {
             );
         }
 
+        invalidateLinkedAccountReads();
         logDeleteSuccess(result, playerTag);
         return result;
     } catch (error) {

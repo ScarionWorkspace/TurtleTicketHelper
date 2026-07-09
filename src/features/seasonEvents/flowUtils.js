@@ -2,7 +2,7 @@ const { buildInteractionSource } = require('./interactionSource');
 const {
     getEventId,
     loadEventForRendering,
-    resolveCurrentSeasonEvent
+    loadSeasonEventMutationContext
 } = require('./eventData');
 const { buildSignupMessage } = require('./renderSignupMessage');
 const { normalizeResponseStatus } = require('./statusMessages');
@@ -61,6 +61,7 @@ async function refreshSignupMessage(interaction, type, options = {}) {
     const { event, leaderboard } = await loadEventForRendering(type, {
         reconcile: options.reconcile === true && type !== 'cwl',
         ensureCurrent: type === 'cwl' && options.ensureCurrent === true,
+        seedEvent: options.seedEvent || null,
         source
     });
     const message = await getSourceMessage(interaction, messageId);
@@ -80,12 +81,16 @@ async function resolveEventForMutation(
     sourceType = 'discord-button'
 ) {
     const source = buildInteractionSource(interaction, type, messageId, sourceType);
-    const event = await resolveCurrentSeasonEvent(type, { source });
+    const context = await loadSeasonEventMutationContext(type, buildDiscordUser(interaction), {
+        source
+    });
+    const event = context.event;
 
     return {
         event,
         eventId: getEventId(event),
-        source
+        source,
+        context
     };
 }
 
