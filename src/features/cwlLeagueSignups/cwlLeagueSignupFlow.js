@@ -1535,6 +1535,7 @@ async function handleResetConfirm(interaction, parsed) {
             source: 'discord-manual-reset',
             reason: 'manual-reset'
         });
+        invalidateCwlSignupReads();
         const count = Number(result?.count) || 0;
         const archivedText = result?.archived
             ? `Archived and cleared ${count} saved preference${count === 1 ? '' : 's'}.`

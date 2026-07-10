@@ -15,6 +15,7 @@ const ACTIVE_ROSTER_PATH = 'active';
 const CWL_LEAGUE_SIGNUPS_PATH = 'active/cwlLeagueSignups';
 const readCacheByPath = new Map();
 const pendingReadsByPath = new Map();
+const readInvalidationGenerationByPath = new Map();
 
 function normalizePublicDataBaseUrl(url) {
     return String(url || '')
@@ -158,6 +159,22 @@ function isCacheableReadValue(value) {
     return value !== null && value !== undefined;
 }
 
+function getReadCacheGeneration(cacheKey) {
+    return readInvalidationGenerationByPath.get(cacheKey) || 0;
+}
+
+function bumpReadCacheGeneration(cacheKey) {
+    readInvalidationGenerationByPath.set(cacheKey, getReadCacheGeneration(cacheKey) + 1);
+}
+
+function getKnownReadCacheKeys() {
+    return new Set([
+        ...readCacheByPath.keys(),
+        ...pendingReadsByPath.keys(),
+        ...readInvalidationGenerationByPath.keys()
+    ]);
+}
+
 function cloneJsonValue(value) {
     if (!value || typeof value !== 'object') {
         return value;
@@ -231,9 +248,13 @@ async function readJsonPath(path, options = {}) {
     let pending = pendingReadsByPath.get(cacheKey);
 
     if (!pending) {
+        const requestGeneration = getReadCacheGeneration(cacheKey);
         pending = fetchJsonPathUncached(requestConfig.url, timeoutMs, requestConfig.headers)
             .then(value => {
-                if (ttlMs > 0 && isCacheableReadValue(value)) {
+                const requestIsCurrent = pendingReadsByPath.get(cacheKey) === pending &&
+                    getReadCacheGeneration(cacheKey) === requestGeneration;
+
+                if (requestIsCurrent && ttlMs > 0 && isCacheableReadValue(value)) {
                     readCacheByPath.set(cacheKey, {
                         value: cloneJsonValue(value),
                         expiresAt: Date.now() + ttlMs
@@ -256,11 +277,11 @@ async function readJsonPath(path, options = {}) {
 function invalidateReadCachePath(path) {
     const cleanPath = normalizePath(path);
     if (!cleanPath) return;
-    for (const key of [...readCacheByPath.keys()]) {
-        if (key.endsWith(`:${cleanPath}`)) readCacheByPath.delete(key);
-    }
-    for (const key of [...pendingReadsByPath.keys()]) {
-        if (key.endsWith(`:${cleanPath}`)) pendingReadsByPath.delete(key);
+    for (const key of getKnownReadCacheKeys()) {
+        if (!key.endsWith(`:${cleanPath}`)) continue;
+        bumpReadCacheGeneration(key);
+        readCacheByPath.delete(key);
+        pendingReadsByPath.delete(key);
     }
 }
 
@@ -268,11 +289,11 @@ function invalidateReadCachePrefix(prefix) {
     const cleanPrefix = normalizePath(prefix);
     if (!cleanPrefix) return;
     const marker = `:${cleanPrefix}`;
-    for (const key of [...readCacheByPath.keys()]) {
-        if (key.includes(marker) || key.startsWith(`${key.split(':')[0]}:${cleanPrefix}/`)) readCacheByPath.delete(key);
-    }
-    for (const key of [...pendingReadsByPath.keys()]) {
-        if (key.includes(marker) || key.startsWith(`${key.split(':')[0]}:${cleanPrefix}/`)) pendingReadsByPath.delete(key);
+    for (const key of getKnownReadCacheKeys()) {
+        if (!key.includes(marker) && !key.startsWith(`${key.split(':')[0]}:${cleanPrefix}/`)) continue;
+        bumpReadCacheGeneration(key);
+        readCacheByPath.delete(key);
+        pendingReadsByPath.delete(key);
     }
 }
 

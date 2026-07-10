@@ -19,7 +19,8 @@ const originalBackend = {
 };
 const originalPublicData = {
     readLinkedAccountsForDiscordUser: rosterPublicData.readLinkedAccountsForDiscordUser,
-    readCwlLeagueSignups: rosterPublicData.readCwlLeagueSignups
+    readCwlLeagueSignups: rosterPublicData.readCwlLeagueSignups,
+    invalidateReadCachePath: rosterPublicData.invalidateReadCachePath
 };
 
 function makeLeagueOption(index) {
@@ -559,6 +560,30 @@ test('Confirming an owned preference change sends allowChange and reports old to
     assert.equal(setPayload.allowChange, true);
     assert.match(confirmInteraction.editReplyPayload.content, /League 1 -> League 2/);
     assert.deepEqual(confirmInteraction.editReplyPayload.components, []);
+});
+
+test('staff reset invalidates signup and bootstrap reads after backend success', async () => {
+    const invalidatedPaths = [];
+    rosterBackend.resetCwlLeaguePreferences = async () => ({
+        ok: true,
+        archived: true,
+        count: 2
+    });
+    rosterPublicData.invalidateReadCachePath = path => invalidatedPaths.push(path);
+
+    const interaction = makeInteraction({
+        customId: buildCwlLeagueCustomId('reset_confirm', 'user-1')
+    });
+    interaction.member.roles = {
+        cache: new Map([['1444000343431053332', {}]])
+    };
+
+    assert.equal(await handleCwlLeagueSignupInteraction(interaction), true);
+    assert.deepEqual(invalidatedPaths, [
+        'active/cwlLeagueSignups',
+        'bootstrap/current'
+    ]);
+    assert.match(interaction.editReplyPayload.content, /Archived and cleared 2/);
 });
 
 test('Choosing a new league cannot change a preference owned by another user', async () => {

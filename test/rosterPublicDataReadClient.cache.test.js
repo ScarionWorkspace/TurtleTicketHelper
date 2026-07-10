@@ -230,6 +230,46 @@ test('completion of an invalidated old read does not remove a newer pending read
     assert.equal(requestCount, 2);
 });
 
+test('an invalidated old read cannot overwrite a newer positive-TTL cache entry', async () => {
+    let requestCount = 0;
+    let releaseOld;
+    let releaseFresh;
+    const oldGate = new Promise(resolve => {
+        releaseOld = resolve;
+    });
+    const freshGate = new Promise(resolve => {
+        releaseFresh = resolve;
+    });
+    const client = loadClient({
+        ROSTER_PUBLIC_DATA_READ_CACHE_TTL_MS: '60000'
+    });
+
+    global.fetch = async () => {
+        requestCount += 1;
+
+        if (requestCount === 1) {
+            await oldGate;
+            return makeJsonResponse({ version: 'old' });
+        }
+
+        await freshGate;
+        return makeJsonResponse({ version: 'fresh' });
+    };
+
+    const oldRead = client.readJsonPath('active');
+    await Promise.resolve();
+    client.invalidateReadCachePath('active');
+    const freshRead = client.readJsonPath('active');
+    await Promise.resolve();
+
+    releaseFresh();
+    assert.deepEqual(await freshRead, { version: 'fresh' });
+    releaseOld();
+    assert.deepEqual(await oldRead, { version: 'old' });
+    assert.deepEqual(await client.readJsonPath('active'), { version: 'fresh' });
+    assert.equal(requestCount, 2);
+});
+
 test('readDonationRefreshSeasonOverlay reads encoded season path and decodes tag keys', async () => {
     const requestedUrls = [];
     const client = loadClient();
