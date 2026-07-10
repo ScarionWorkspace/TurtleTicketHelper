@@ -192,6 +192,44 @@ test('readJsonPath de-duplicates concurrent reads for the same normalized path',
     assert.equal(requestCount, 1);
 });
 
+test('completion of an invalidated old read does not remove a newer pending read', async () => {
+    let requestCount = 0;
+    let releaseFirst;
+    let releaseSecond;
+    const firstGate = new Promise(resolve => {
+        releaseFirst = resolve;
+    });
+    const secondGate = new Promise(resolve => {
+        releaseSecond = resolve;
+    });
+    const client = loadClient();
+
+    global.fetch = async () => {
+        requestCount += 1;
+        if (requestCount === 1) {
+            await firstGate;
+            return makeJsonResponse({ version: 'old' });
+        }
+        await secondGate;
+        return makeJsonResponse({ version: 'new' });
+    };
+
+    const oldRead = client.readJsonPath('active', { cacheTtlMs: 0 });
+    await Promise.resolve();
+    client.invalidateReadCachePath('active');
+    const newRead = client.readJsonPath('active', { cacheTtlMs: 0 });
+    await Promise.resolve();
+    releaseFirst();
+    assert.deepEqual(await oldRead, { version: 'old' });
+
+    const readAfterOldCompletion = client.readJsonPath('active', { cacheTtlMs: 0 });
+    assert.equal(requestCount, 2);
+    releaseSecond();
+    assert.deepEqual(await newRead, { version: 'new' });
+    assert.deepEqual(await readAfterOldCompletion, { version: 'new' });
+    assert.equal(requestCount, 2);
+});
+
 test('readDonationRefreshSeasonOverlay reads encoded season path and decodes tag keys', async () => {
     const requestedUrls = [];
     const client = loadClient();
