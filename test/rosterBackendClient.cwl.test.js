@@ -57,6 +57,17 @@ function makeTextResponse(text, contentType = 'text/plain') {
     };
 }
 
+function makeErrorResponse(status, text, contentType = 'text/html; charset=utf-8') {
+    return {
+        ok: false,
+        status,
+        headers: {
+            get: () => contentType
+        },
+        text: async () => text
+    };
+}
+
 afterEach(() => {
     global.fetch = originalFetch;
     clearClientModules();
@@ -134,4 +145,66 @@ test('backend client reports HTML responses without exposing raw markup', async 
             return true;
         }
     );
+});
+
+test('season event calls retry a transient Apps Script HTML error', async () => {
+    const client = loadClient();
+    let attempts = 0;
+
+    global.fetch = async () => {
+        attempts += 1;
+
+        if (attempts === 1) {
+            return makeErrorResponse(
+                403,
+                '<!doctype html><html><body>Temporary Apps Script error</body></html>'
+            );
+        }
+
+        return makeJsonResponse({
+            ok: true,
+            result: {
+                status: 'ok',
+                event: { eventId: 'donation-current' }
+            }
+        });
+    };
+
+    const result = await client.getSeasonEventMutationContext({
+        eventType: 'donation',
+        discordUser: { id: 'user-1' }
+    });
+
+    assert.equal(attempts, 2);
+    assert.equal(result.status, 'ok');
+    assert.equal(result.event.eventId, 'donation-current');
+});
+
+test('season event calls expose the method and attempt count after retries are exhausted', async () => {
+    const client = loadClient();
+    let attempts = 0;
+
+    global.fetch = async () => {
+        attempts += 1;
+        return makeErrorResponse(
+            503,
+            '<!doctype html><html><body>Apps Script unavailable</body></html>'
+        );
+    };
+
+    await assert.rejects(
+        () => client.registerSeasonEventSignup({
+            eventId: 'donation-current',
+            discordUser: { id: 'user-1' },
+            playerTags: ['#PLAYER']
+        }),
+        error => {
+            assert.equal(error.code, 'INVALID_JSON');
+            assert.equal(error.status, 503);
+            assert.equal(error.method, 'registerSeasonEventSignup');
+            assert.equal(error.attempts, 2);
+            return true;
+        }
+    );
+    assert.equal(attempts, 2);
 });

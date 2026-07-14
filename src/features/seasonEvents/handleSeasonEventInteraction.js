@@ -107,7 +107,9 @@ async function handleSeasonEventInteraction(interaction) {
             errorName: error?.name || null,
             errorMessage: error?.message || null,
             errorCode: error?.code || null,
-            status: error?.status || null
+            status: error?.status || null,
+            backendMethod: error?.method || null,
+            attempts: error?.attempts || null
         });
 
         const response = {

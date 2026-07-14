@@ -6,6 +6,9 @@ const {
 const DEFAULT_TIMEOUT_MS = 60_000;
 const DISCORD_IDENTITY_SYNC_TIMEOUT_MS = 180_000;
 const CWL_EVENT_REFRESH_TIMEOUT_MS = 180_000;
+const SEASON_EVENT_TIMEOUT_MS = 45_000;
+const SEASON_EVENT_MAX_ATTEMPTS = 2;
+const SEASON_EVENT_RETRY_DELAY_MS = 250;
 
 function normalizeBackendUrl(value) {
     const raw = String(value || '').trim();
@@ -48,6 +51,8 @@ class RosterBackendError extends Error {
         this.name = 'RosterBackendError';
         this.status = details.status ?? null;
         this.code = details.code ?? null;
+        this.method = details.method ?? null;
+        this.attempts = details.attempts ?? null;
     }
 }
 
@@ -175,12 +180,55 @@ async function callRosterBackendMethod(methodName, args, options = {}) {
     }
 }
 
-function callSeasonEventMethod(methodName, payload = {}, options = {}) {
-    return callRosterBackendMethod(
-        methodName,
-        [payload || {}, ROSTER_BOT_SECRET],
-        options
-    );
+function isTransientSeasonEventError(error) {
+    const code = String(error?.code || '').trim().toUpperCase();
+    const status = Number(error?.status);
+
+    return code === 'TIMEOUT' ||
+        code === 'REQUEST_FAILED' ||
+        (code === 'INVALID_JSON' && (status === 403 || status === 429 || status >= 500)) ||
+        status === 408 ||
+        status === 425 ||
+        status === 429 ||
+        status >= 500;
+}
+
+function wait(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function callSeasonEventMethod(methodName, payload = {}, options = {}) {
+    const maxAttempts = Math.max(1, Number(options.maxAttempts) || SEASON_EVENT_MAX_ATTEMPTS);
+    const requestOptions = {
+        ...options,
+        timeoutMs: options.timeoutMs ?? SEASON_EVENT_TIMEOUT_MS
+    };
+    delete requestOptions.maxAttempts;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        try {
+            return await callRosterBackendMethod(
+                methodName,
+                [payload || {}, ROSTER_BOT_SECRET],
+                requestOptions
+            );
+        } catch (error) {
+            error.method = error.method || methodName;
+            error.attempts = attempt;
+
+            if (attempt >= maxAttempts || !isTransientSeasonEventError(error)) {
+                throw error;
+            }
+
+            await wait(SEASON_EVENT_RETRY_DELAY_MS);
+        }
+    }
+
+    throw new RosterBackendError('Roster backend request failed.', {
+        code: 'REQUEST_FAILED',
+        method: methodName,
+        attempts: maxAttempts
+    });
 }
 
 function syncDiscordIdentityForPlayerTag(payload = {}, options = {}) {
