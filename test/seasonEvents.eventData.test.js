@@ -5,11 +5,14 @@ const rosterPublicData = require('../src/features/rosterPublicData/rosterPublicD
 const {
     loadEventForRendering
 } = require('../src/features/seasonEvents/eventData');
+const { buildSignupMessage } = require('../src/features/seasonEvents/renderSignupMessage');
 
 const originalBackend = {
     isRosterBackendConfigured: rosterBackend.isRosterBackendConfigured,
     getSeasonEventLeaderboard: rosterBackend.getSeasonEventLeaderboard,
     reconcileCurrentSeasonEvents: rosterBackend.reconcileCurrentSeasonEvents,
+    getCurrentSeasonEvents: rosterBackend.getCurrentSeasonEvents,
+    getCurrentCwlSeasonEvent: rosterBackend.getCurrentCwlSeasonEvent,
     ensureCurrentCwlSeasonEvent: rosterBackend.ensureCurrentCwlSeasonEvent,
     refreshCurrentCwlSeasonEvent: rosterBackend.refreshCurrentCwlSeasonEvent
 };
@@ -30,8 +33,26 @@ afterEach(() => {
 test('loadEventForRendering uses backend leaderboard before local Cloudflare public-data scoring', async () => {
     let backendPayload = null;
     let metricsRead = false;
+    let publicPointerRead = false;
+    let publicEventRead = false;
 
     rosterBackend.isRosterBackendConfigured = () => true;
+    rosterBackend.getCurrentSeasonEvents = async () => ({
+        events: {
+            push: {
+                eventId: 'push-ranked-legend-i-2026-05-18',
+                type: 'push',
+                seasonId: 'ranked-legend-i-2026-05-18',
+                status: 'open',
+                signupsOpen: true,
+                startsAt: '2026-05-18T05:00:00.000Z',
+                endsAt: '2026-06-15T05:00:00.000Z',
+                participantCount: 2,
+                activeParticipantCount: 1,
+                accountCount: 1
+            }
+        }
+    });
     rosterBackend.getSeasonEventLeaderboard = async payload => {
         backendPayload = payload;
 
@@ -62,27 +83,14 @@ test('loadEventForRendering uses backend leaderboard before local Cloudflare pub
             }]
         };
     };
-    rosterPublicData.readCurrentSeasonEventPointer = async () => ({
-        eventId: 'push-ranked-legend-i-2026-05-18',
-        seasonId: 'ranked-legend-i-2026-05-18'
-    });
-    rosterPublicData.readSeasonEventById = async () => ({
-        eventId: 'push-ranked-legend-i-2026-05-18',
-        type: 'push',
-        seasonId: 'ranked-legend-i-2026-05-18',
-        status: 'open',
-        signupsOpen: true,
-        startsAt: '2026-05-18T05:00:00.000Z',
-        endsAt: '2026-06-15T05:00:00.000Z',
-        participantsByDiscordId: {
-            user1: {
-                discordId: 'user1',
-                discordUsername: 'demoted',
-                status: 'signed_up',
-                accounts: [{ tag: '#AAA111', name: 'Demoted Player' }]
-            }
-        }
-    });
+    rosterPublicData.readCurrentSeasonEventPointer = async () => {
+        publicPointerRead = true;
+        throw new Error('Cloudflare current pointer should not be required');
+    };
+    rosterPublicData.readSeasonEventById = async () => {
+        publicEventRead = true;
+        throw new Error('Cloudflare event should not be required');
+    };
     rosterPublicData.readAllActivePlayerMetricsByTag = async () => {
         metricsRead = true;
         throw new Error('local metrics should not be read when backend leaderboard succeeds');
@@ -96,13 +104,200 @@ test('loadEventForRendering uses backend leaderboard before local Cloudflare pub
 
     assert.equal(result.source, 'backend');
     assert.equal(metricsRead, false);
+    assert.equal(publicPointerRead, false);
+    assert.equal(publicEventRead, false);
     assert.equal(backendPayload.eventId, 'push-ranked-legend-i-2026-05-18');
     assert.equal(backendPayload.limit, 10);
     assert.equal(backendPayload.nowIso, '2026-05-20T12:00:00.000Z');
     assert.deepEqual(backendPayload.source, { type: 'test' });
     assert.equal(result.event.activeParticipantCount, 1);
-    assert.equal(result.event.participantsByDiscordId.user1.accounts[0].tag, '#AAA111');
     assert.equal(result.leaderboard.leaderboard[0].scoreLabel, 'Legends II - 5800 trophies');
+});
+
+test('loadEventForRendering uses the reconciled donation event before queued Cloudflare publication', async () => {
+    let requestedEventId = null;
+    let currentBackendRead = false;
+    let publicPointerRead = false;
+
+    rosterBackend.isRosterBackendConfigured = () => true;
+    rosterBackend.reconcileCurrentSeasonEvents = async () => ({
+        events: {
+            donation: {
+                eventId: 'donation-current-season',
+                type: 'donation',
+                seasonId: 'current-season',
+                status: 'open',
+                signupsOpen: true,
+                participantCount: 1,
+                activeParticipantCount: 1,
+                accountCount: 1
+            }
+        },
+        cloudflarePublish: {
+            ok: true,
+            pending: true
+        }
+    });
+    rosterBackend.getCurrentSeasonEvents = async () => {
+        currentBackendRead = true;
+        throw new Error('reconciliation result should already be authoritative');
+    };
+    rosterBackend.getSeasonEventLeaderboard = async payload => {
+        requestedEventId = payload.eventId;
+        return {
+            event: {
+                eventId: 'donation-current-season',
+                type: 'donation',
+                seasonId: 'current-season',
+                status: 'open',
+                signupsOpen: true,
+                participantCount: 1,
+                activeParticipantCount: 1,
+                accountCount: 1
+            },
+            leaderboard: [{
+                rank: 1,
+                displayName: 'Current Player',
+                score: 120,
+                accounts: [{ tag: '#CURRENT', name: 'Current Player', score: 120 }]
+            }]
+        };
+    };
+    rosterPublicData.readCurrentSeasonEventPointer = async () => {
+        publicPointerRead = true;
+        return { eventId: 'donation-old-season' };
+    };
+
+    const result = await loadEventForRendering('donation', {
+        reconcile: true,
+        source: { type: 'test-reconcile' }
+    });
+
+    assert.equal(requestedEventId, 'donation-current-season');
+    assert.equal(currentBackendRead, false);
+    assert.equal(publicPointerRead, false);
+    assert.equal(result.source, 'backend');
+    assert.equal(result.event.eventId, 'donation-current-season');
+    assert.equal(result.leaderboard.leaderboard[0].displayName, 'Current Player');
+
+    const message = buildSignupMessage('donation', result.event, result.leaderboard);
+    const confirmedField = message.embeds[0].toJSON().fields.find(field => field.name.startsWith('Confirmed Signups'));
+    assert.match(confirmedField.value, /Current Player/);
+    assert.match(confirmedField.value, /120/);
+});
+
+test('loadEventForRendering prefers the authoritative backend current event over a stale Cloudflare pointer', async () => {
+    let requestedEventId = null;
+    let publicPointerRead = false;
+
+    rosterBackend.isRosterBackendConfigured = () => true;
+    rosterBackend.getCurrentSeasonEvents = async () => ({
+        events: {
+            donation: {
+                eventId: 'donation-new-season',
+                type: 'donation',
+                seasonId: 'new-season',
+                status: 'open',
+                signupsOpen: true,
+                participantCount: 2,
+                activeParticipantCount: 2,
+                accountCount: 2
+            }
+        }
+    });
+    rosterBackend.getSeasonEventLeaderboard = async payload => {
+        requestedEventId = payload.eventId;
+        return {
+            event: {
+                eventId: payload.eventId,
+                type: 'donation',
+                activeParticipantCount: 2,
+                accountCount: 2
+            },
+            leaderboard: [{
+                rank: 1,
+                displayName: 'Fresh Player',
+                score: 80,
+                accounts: [{ tag: '#FRESH', name: 'Fresh Player', score: 80 }]
+            }]
+        };
+    };
+    rosterPublicData.readCurrentSeasonEventPointer = async () => {
+        publicPointerRead = true;
+        return { eventId: 'donation-old-season' };
+    };
+
+    const result = await loadEventForRendering('donation');
+
+    assert.equal(requestedEventId, 'donation-new-season');
+    assert.equal(publicPointerRead, false);
+    assert.equal(result.event.eventId, 'donation-new-season');
+    assert.equal(result.leaderboard.leaderboard.length, 1);
+});
+
+test('loadEventForRendering falls back to Cloudflare scoring without retrying a failed backend read', async () => {
+    let leaderboardBackendRead = false;
+    const originalWarn = console.warn;
+
+    rosterBackend.isRosterBackendConfigured = () => true;
+    rosterBackend.getCurrentSeasonEvents = async () => {
+        throw new Error('temporary backend read failure');
+    };
+    rosterBackend.getSeasonEventLeaderboard = async () => {
+        leaderboardBackendRead = true;
+        throw new Error('the failed backend should not be retried during the same render');
+    };
+    rosterPublicData.readCurrentSeasonEventPointer = async () => ({
+        eventId: 'donation-cloudflare-fallback'
+    });
+    rosterPublicData.readSeasonEventById = async () => ({
+        eventId: 'donation-cloudflare-fallback',
+        type: 'donation',
+        seasonId: 'fallback-season',
+        status: 'open',
+        signupsOpen: true,
+        startsAt: '2026-07-01T00:00:00.000Z',
+        endsAt: '2026-08-01T00:00:00.000Z',
+        participantsByDiscordId: {
+            fallbackUser: {
+                discordId: 'fallbackUser',
+                discordUsername: 'fallback-player',
+                status: 'signed_up',
+                accounts: [{ tag: '#FALLBACK', name: 'Fallback Player' }]
+            }
+        }
+    });
+    rosterPublicData.readAllActivePlayerMetricsByTag = async () => ({
+        '#FALLBACK': {
+            identity: {
+                tag: '#FALLBACK',
+                name: 'Fallback Player'
+            },
+            donationCycles: {
+                'fallback-season': {
+                    startsAt: '2026-07-01T00:00:00.000Z',
+                    endsAt: '2026-08-01T00:00:00.000Z',
+                    cycleTotalDonations: 44
+                }
+            }
+        }
+    });
+    rosterPublicData.readDonationRefreshSeasonOverlay = async () => null;
+
+    console.warn = () => {};
+    try {
+        const result = await loadEventForRendering('donation', {
+            nowIso: '2026-07-12T12:00:00.000Z'
+        });
+
+        assert.equal(leaderboardBackendRead, false);
+        assert.equal(result.source, 'cloudflare-public');
+        assert.equal(result.event.eventId, 'donation-cloudflare-fallback');
+        assert.equal(result.leaderboard.leaderboard.length, 1);
+        assert.equal(result.leaderboard.leaderboard[0].score, 44);
+    } finally {
+        console.warn = originalWarn;
+    }
 });
 
 test('loadEventForRendering refreshes ensured CWL event before rendering signup message', async () => {

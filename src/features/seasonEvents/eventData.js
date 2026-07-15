@@ -5,6 +5,8 @@ const {
     buildLocalSeasonEventLeaderboard
 } = require('./leaderboardScoring');
 
+const CURRENT_EVENT_BACKEND_TIMEOUT_MS = 15_000;
+
 function normalizePlayerTag(tag) {
     let cleaned = String(tag || '').trim().toUpperCase().replace(/\s+/g, '');
 
@@ -139,7 +141,7 @@ function mergeDonationRefreshOverlayIntoMetrics(event, metricsByTag, overlay) {
     return merged;
 }
 
-async function mergeDonationRefreshOverlayForEvent(event, metricsByTag) {
+async function mergeDonationRefreshOverlayForEvent(event, metricsByTag, options = {}) {
     const seasonId = String(getEventSeasonId(event) || '').trim();
 
     if (getEventType(event) !== 'donation' || !seasonId) {
@@ -147,7 +149,7 @@ async function mergeDonationRefreshOverlayForEvent(event, metricsByTag) {
     }
 
     try {
-        const overlay = await rosterPublicData.readDonationRefreshSeasonOverlay(seasonId);
+        const overlay = await rosterPublicData.readDonationRefreshSeasonOverlay(seasonId, options);
         return mergeDonationRefreshOverlayIntoMetrics(event, metricsByTag, overlay);
     } catch (error) {
         console.warn('Season event donation overlay unavailable; using active metrics only.', {
@@ -189,9 +191,13 @@ function pointerToEventId(pointer) {
 
 async function readCurrentEventFromPublicData(type, options = {}) {
     const eventType = normalizeEventType(type);
+    const readOptions = {
+        cacheTtlMs: options.cacheTtlMs,
+        timeoutMs: options.timeoutMs
+    };
     const pointer = eventType === 'cwl'
-        ? await rosterPublicData.readCurrentCwlSeasonEventPointer()
-        : await rosterPublicData.readCurrentSeasonEventPointer(eventType);
+        ? await rosterPublicData.readCurrentCwlSeasonEventPointer(readOptions)
+        : await rosterPublicData.readCurrentSeasonEventPointer(eventType, readOptions);
     const eventId = pointerToEventId(pointer);
 
     if (!eventId) {
@@ -199,6 +205,7 @@ async function readCurrentEventFromPublicData(type, options = {}) {
     }
 
     const event = await rosterPublicData.readSeasonEventById(eventId, {
+        ...readOptions,
         includeParticipantsByDiscordId: options.includeParticipantsByDiscordId === true
     });
 
@@ -211,6 +218,103 @@ async function readCurrentEventFromPublicData(type, options = {}) {
         ...event,
         eventId: getEventId(event) || eventId,
         type: getEventType(event) || eventType
+    };
+}
+
+function normalizeBackendEvent(event, eventType) {
+    if (!event || typeof event !== 'object') {
+        return null;
+    }
+
+    return {
+        ...event,
+        eventId: getEventId(event),
+        type: getEventType(event) || eventType
+    };
+}
+
+function getEventFromCurrentBackendResult(result, eventType) {
+    if (!result || typeof result !== 'object') {
+        return null;
+    }
+
+    const event = result.events && typeof result.events === 'object'
+        ? result.events[eventType]
+        : eventType === 'cwl'
+            ? result.event
+            : null;
+
+    return normalizeBackendEvent(event, eventType);
+}
+
+async function readCurrentEventFromBackend(type, options = {}) {
+    const eventType = normalizeEventType(type);
+
+    if (!eventType || !rosterBackend.isRosterBackendConfigured?.()) {
+        return {
+            event: null,
+            attempted: false,
+            failed: false
+        };
+    }
+
+    try {
+        const requestOptions = {
+            timeoutMs: options.currentEventTimeoutMs ?? CURRENT_EVENT_BACKEND_TIMEOUT_MS
+        };
+        const result = eventType === 'cwl' && typeof rosterBackend.getCurrentCwlSeasonEvent === 'function'
+            ? await rosterBackend.getCurrentCwlSeasonEvent({
+                source: options.source || {}
+            }, requestOptions)
+            : await rosterBackend.getCurrentSeasonEvents({
+                now: options.nowIso,
+                nowIso: options.nowIso,
+                source: options.source || {}
+            }, requestOptions);
+
+        return {
+            event: getEventFromCurrentBackendResult(result, eventType),
+            attempted: true,
+            failed: false
+        };
+    } catch (error) {
+        console.warn('Current season event backend read unavailable; falling back to Cloudflare public data.', {
+            eventType,
+            errorName: error?.name || null,
+            errorMessage: error?.message || null,
+            errorCode: error?.code || null,
+            status: error?.status || null
+        });
+
+        return {
+            event: null,
+            attempted: true,
+            failed: true
+        };
+    }
+}
+
+async function readPublicEventByKnownId(event, eventType, options = {}) {
+    const eventId = getEventId(event);
+
+    if (!eventId) {
+        return null;
+    }
+
+    const publicEvent = await rosterPublicData.readSeasonEventById(eventId, {
+        cacheTtlMs: options.cacheTtlMs,
+        timeoutMs: options.timeoutMs,
+        includeParticipantsByDiscordId: options.includeParticipantsByDiscordId === true
+    });
+
+    if (!publicEvent || typeof publicEvent !== 'object') {
+        return null;
+    }
+
+    return {
+        ...publicEvent,
+        eventId: getEventId(publicEvent) || eventId,
+        type: getEventType(publicEvent) || eventType
     };
 }
 
@@ -780,6 +884,10 @@ async function loadEventForRendering(type, options = {}) {
         };
     }
 
+    let authoritativeEvent = options.seedEvent && typeof options.seedEvent === 'object'
+        ? normalizeBackendEvent(options.seedEvent, eventType)
+        : null;
+    let authoritativeSource = authoritativeEvent ? 'mutation-result' : 'missing';
     let ensuredCwlEvent = null;
     let refreshedCwlEvent = null;
     if (eventType === 'cwl' && options.ensureCurrent) {
@@ -788,44 +896,80 @@ async function loadEventForRendering(type, options = {}) {
         });
         ensuredCwlEvent = ensured?.event && typeof ensured.event === 'object' ? ensured.event : null;
         refreshedCwlEvent = await refreshCurrentCwlEventForRendering(options);
+        authoritativeEvent = mergeEventRefreshResult(
+            authoritativeEvent || ensuredCwlEvent,
+            refreshedCwlEvent || (authoritativeEvent ? null : ensuredCwlEvent),
+            eventType
+        );
+        if (authoritativeEvent) {
+            authoritativeSource = 'backend';
+        }
     } else if (options.reconcile && eventType !== 'cwl') {
-        await rosterBackend.reconcileCurrentSeasonEvents({
+        const reconciled = await rosterBackend.reconcileCurrentSeasonEvents({
             forceRefresh: false,
             source: options.source || {}
         });
+        const reconciledEvent = getEventFromCurrentBackendResult(reconciled, eventType);
+
+        if (reconciledEvent) {
+            authoritativeEvent = mergeEventRefreshResult(authoritativeEvent, reconciledEvent, eventType);
+            authoritativeSource = 'backend-reconcile';
+        }
     }
 
-    let event = options.seedEvent && typeof options.seedEvent === 'object'
-        ? options.seedEvent
-        : await readCurrentEventFromPublicData(eventType, { includeParticipantsByDiscordId: true });
-    const initialSource = options.seedEvent ? 'mutation-result' : (event ? 'cloudflare-public' : 'missing');
-    event = mergeEventRefreshResult(
-        event,
-        refreshedCwlEvent || (event ? null : ensuredCwlEvent),
-        eventType
-    );
+    let backendCurrentReadFailed = false;
+    if (!authoritativeEvent) {
+        const backendCurrentRead = await readCurrentEventFromBackend(eventType, options);
+        authoritativeEvent = backendCurrentRead.event;
+        backendCurrentReadFailed = backendCurrentRead.failed;
+        if (authoritativeEvent) {
+            authoritativeSource = 'backend-current';
+        }
+    }
+
+    const publicReadOptions = {
+        includeParticipantsByDiscordId: true,
+        cacheTtlMs: options.reconcile || options.ensureCurrent ? 0 : options.cacheTtlMs,
+        timeoutMs: options.timeoutMs
+    };
+    let event = authoritativeEvent;
+
+    if (!event) {
+        event = await readCurrentEventFromPublicData(eventType, publicReadOptions);
+    }
 
     let leaderboard = null;
-    let source = event ? initialSource : 'missing';
+    let source = event
+        ? (authoritativeEvent ? authoritativeSource : 'cloudflare-public')
+        : 'missing';
 
     if (event) {
-        const backendResult = await readBackendLeaderboardForEvent(event, eventType, options);
+        const backendResult = backendCurrentReadFailed
+            ? null
+            : await readBackendLeaderboardForEvent(event, eventType, options);
 
         if (backendResult) {
             event = backendResult.event;
             leaderboard = backendResult.leaderboard;
             source = 'backend';
-        } else if (eventType === 'cwl') {
-            leaderboard = await buildCwlAggregateLeaderboardFallback(event);
-            source = 'cloudflare-cwl-aggregate';
         } else {
-            const metricsByTag = await rosterPublicData.readAllActivePlayerMetricsByTag();
-            const scoringMetricsByTag = await mergeDonationRefreshOverlayForEvent(event, metricsByTag);
-            leaderboard = buildLocalSeasonEventLeaderboard(event, scoringMetricsByTag, {
-                type: eventType,
-                limit: options.limit,
-                nowIso: options.nowIso
-            });
+            if (authoritativeEvent && !options.seedEvent) {
+                const publicEvent = await readPublicEventByKnownId(authoritativeEvent, eventType, publicReadOptions);
+                event = mergeEventRefreshResult(publicEvent, authoritativeEvent, eventType);
+            }
+
+            if (eventType === 'cwl') {
+                leaderboard = await buildCwlAggregateLeaderboardFallback(event);
+                source = 'cloudflare-cwl-aggregate';
+            } else {
+                const metricsByTag = await rosterPublicData.readAllActivePlayerMetricsByTag(publicReadOptions);
+                const scoringMetricsByTag = await mergeDonationRefreshOverlayForEvent(event, metricsByTag, publicReadOptions);
+                leaderboard = buildLocalSeasonEventLeaderboard(event, scoringMetricsByTag, {
+                    type: eventType,
+                    limit: options.limit,
+                    nowIso: options.nowIso
+                });
+            }
         }
     }
 
@@ -870,13 +1014,28 @@ async function resolveCurrentSeasonEvent(type, options = {}) {
             return mergeEventRefreshResult(ensuredEvent, refreshedEvent, eventType);
         }
     } else if (options.reconcile && eventType !== 'cwl') {
-        await rosterBackend.reconcileCurrentSeasonEvents({
+        const reconciled = await rosterBackend.reconcileCurrentSeasonEvents({
             forceRefresh: false,
             source: options.source || {}
         });
+        const reconciledEvent = getEventFromCurrentBackendResult(reconciled, eventType);
+
+        if (reconciledEvent) {
+            return reconciledEvent;
+        }
     }
 
-    return readCurrentEventFromPublicData(eventType);
+    const backendCurrentRead = await readCurrentEventFromBackend(eventType, options);
+    const backendEvent = backendCurrentRead.event;
+
+    if (backendEvent) {
+        return backendEvent;
+    }
+
+    return readCurrentEventFromPublicData(eventType, {
+        cacheTtlMs: options.reconcile || options.ensureCurrent ? 0 : options.cacheTtlMs,
+        timeoutMs: options.timeoutMs
+    });
 }
 
 async function readParticipantByDiscordId(eventId, discordId) {
