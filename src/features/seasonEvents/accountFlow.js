@@ -14,10 +14,12 @@ const {
 } = require('./constants');
 const {
     getEventAvailabilityStatus,
+    getEventId,
     isCwlEventTargetResolved,
     normalizeAccount,
     normalizePlayerTag
 } = require('./eventData');
+const { buildInteractionSource } = require('./interactionSource');
 const {
     EPHEMERAL,
     buildDiscordUser,
@@ -170,78 +172,34 @@ async function handleSignupButton(interaction, parsed) {
     const messageId = interaction.message?.id || null;
 
     await interaction.deferReply({ flags: EPHEMERAL });
-
-    const { event, eventId, source, context } = await resolveEventForMutation(
-        interaction,
-        parsed.type,
-        messageId,
-        'discord-button'
-    );
-
-    if (!event || !eventId) {
-        await interaction.editReply({ content: getStatusMessage('event-not-found') });
-        return;
-    }
-
-    const unavailableStatus = getEventAvailabilityStatus(event);
-
-    if (unavailableStatus) {
-        await interaction.editReply({ content: getStatusMessage(unavailableStatus) });
-        return;
-    }
-
-    if (parsed.type === 'cwl' && !isCwlEventTargetResolved(event)) {
-        await interaction.editReply({ content: getStatusMessage('cwl-target-unresolved') });
-        return;
-    }
-
     const discordUser = buildDiscordUser(interaction);
-    const participant = context.participant;
-
-    if (getParticipantStatus(participant) === 'signed_up') {
-        await showManageResponse(
+    const result = await rosterBackend.registerSeasonEventSignup({
+        eventType: parsed.type,
+        discordUser,
+        source: buildInteractionSource(
             interaction,
             parsed.type,
             messageId,
-            { status: 'already-signed-up' }
-        );
-        return;
-    }
-
-    const linkedAccounts = context.linkedAccounts;
-    const eligibleAccounts = context.eligibleAccounts;
-
-    if (linkedAccounts.length === 0) {
-        await interaction.editReply({
-            content: getStatusMessage('not-linked'),
-            components: []
-        });
-        return;
-    }
-
-    if (eligibleAccounts.length === 0) {
-        await interaction.editReply({
-            content: getStatusMessage('accounts-outside-event-roster'),
-            components: []
-        });
-        return;
-    }
-
-    if (eligibleAccounts.length > 1) {
-        await showAccountPicker(interaction, parsed.type, eligibleAccounts, messageId, 'signup');
-        return;
-    }
-
-    const result = await rosterBackend.registerSeasonEventSignup({
-        eventId,
-        discordUser,
-        playerTags: [normalizeAccount(eligibleAccounts[0]).tag],
-        source
+            'discord-button'
+        )
     });
     const status = getResultStatus(result, 'signed-up');
+    const event = result?.event || null;
+    const eventId = getEventId(event);
 
     if (status === 'already-signed-up' || status === 'accounts-differ-use-update-endpoint') {
         await showManageResponse(interaction, parsed.type, messageId, result);
+        return;
+    }
+
+    if (status === 'multiple-linked-accounts') {
+        await showAccountPicker(
+            interaction,
+            parsed.type,
+            Array.isArray(result?.linkedAccounts) ? result.linkedAccounts : [],
+            messageId,
+            'signup'
+        );
         return;
     }
 
@@ -253,11 +211,11 @@ async function handleSignupButton(interaction, parsed) {
     }
 
     invalidateSeasonEventReads(eventId, parsed.type);
-    await refreshSignupMessageAfterMutationBestEffort(interaction, parsed.type, { messageId, seedEvent: result?.event || event });
     await interaction.editReply({
         content: getStatusMessage(status),
         components: []
     });
+    await refreshSignupMessageAfterMutationBestEffort(interaction, parsed.type, { messageId, seedEvent: event });
 }
 
 async function cancelSignup(interaction, parsed, messageId) {
@@ -413,6 +371,44 @@ async function handleAccountSelect(interaction, parsed) {
     await interaction.deferUpdate();
 
     const messageId = getSourceMessageId(interaction, parsed);
+    if (parsed.mode !== 'update') {
+        const result = await rosterBackend.registerSeasonEventSignup({
+            eventType: parsed.type,
+            discordUser: buildDiscordUser(interaction),
+            playerTags: validation.playerTags,
+            source: buildInteractionSource(
+                interaction,
+                parsed.type,
+                messageId,
+                'discord-button'
+            )
+        });
+        const status = getResultStatus(result, 'signed-up');
+        const event = result?.event || null;
+        const eventId = getEventId(event);
+
+        if (status === 'already-signed-up' || status === 'accounts-differ-use-update-endpoint') {
+            await showManageResponse(interaction, parsed.type, messageId, result);
+            return;
+        }
+
+        if (status !== 'signed-up' && status !== 'updated') {
+            await interaction.editReply({
+                content: getStatusMessage(status, 'Unable to complete signup.'),
+                components: []
+            });
+            return;
+        }
+
+        invalidateSeasonEventReads(eventId, parsed.type);
+        await interaction.editReply({
+            content: getStatusMessage(status),
+            components: []
+        });
+        await refreshSignupMessageAfterMutationBestEffort(interaction, parsed.type, { messageId, seedEvent: event });
+        return;
+    }
+
     const { event, eventId, source, context } = await resolveEventForMutation(
         interaction,
         parsed.type,
@@ -504,11 +500,11 @@ async function handleAccountSelect(interaction, parsed) {
     }
 
     invalidateSeasonEventReads(eventId, parsed.type);
-    await refreshSignupMessageAfterMutationBestEffort(interaction, parsed.type, { messageId, seedEvent: result?.event || event });
     await interaction.editReply({
         content: getStatusMessage(status),
         components: []
     });
+    await refreshSignupMessageAfterMutationBestEffort(interaction, parsed.type, { messageId, seedEvent: result?.event || event });
 }
 
 module.exports = {

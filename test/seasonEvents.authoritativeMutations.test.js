@@ -2,7 +2,9 @@ const { afterEach, test } = require('node:test');
 const assert = require('node:assert/strict');
 const rosterBackend = require('../src/features/rosterBackend/rosterBackendClient');
 const rosterPublicData = require('../src/features/rosterPublicData/rosterPublicDataReadClient');
+const { getStatusMessage } = require('../src/features/seasonEvents/statusMessages');
 const {
+    handleAccountSelect,
     handleSignupButton,
     handleOptOutButton,
     handleUpdateButton
@@ -146,8 +148,7 @@ afterEach(() => {
     Object.assign(rosterPublicData, originalPublicData);
 });
 
-test('signup uses authoritative participant and newly linked account state despite stale Cloudflare cache', async () => {
-    const initialEvent = makeEvent();
+test('signup uses one authoritative mutation call despite stale Cloudflare cache', async () => {
     const mutationEvent = makeEvent({
         activeParticipantCount: 1,
         participantsByDiscordId: {
@@ -161,14 +162,8 @@ test('signup uses authoritative participant and newly linked account state despi
     const cacheCalls = installNoCloudflareMutationReads();
     let signupPayload = null;
 
-    rosterBackend.getSeasonEventMutationContext = async payload => {
-        assert.equal(payload.discordUser.id, 'discord-user-1');
-        return {
-            event: initialEvent,
-            participant: null,
-            linkedAccounts: [{ tag: '#NEW123', name: 'Fresh Link', townHall: 18 }],
-            eligibleAccounts: [{ tag: '#NEW123', name: 'Fresh Link', townHall: 18 }]
-        };
+    rosterBackend.getSeasonEventMutationContext = async () => {
+        assert.fail('signup must not make a separate mutation-context request');
     };
     rosterBackend.registerSeasonEventSignup = async payload => {
         signupPayload = payload;
@@ -179,7 +174,9 @@ test('signup uses authoritative participant and newly linked account state despi
     const { interaction, state } = makeInteraction();
     await handleSignupButton(interaction, { type: 'donation' });
 
-    assert.deepEqual(signupPayload.playerTags, ['#NEW123']);
+    assert.equal(signupPayload.eventType, 'donation');
+    assert.equal(signupPayload.discordUser.id, 'discord-user-1');
+    assert.equal(signupPayload.playerTags, undefined);
     assert.equal(cacheCalls.participant, 0);
     assert.equal(cacheCalls.links, 0);
     assert.equal(cacheCalls.pointer, 0);
@@ -188,6 +185,138 @@ test('signup uses authoritative participant and newly linked account state despi
     assert.match(state.edits.at(-1).content, /signed up/i);
     assert.ok(cacheCalls.invalidatedPrefixes.some(path => path.includes('donation-current')));
     assert.ok(cacheCalls.invalidatedPaths.includes('bootstrap/current'));
+});
+
+test('signup account selection calls registration directly without repeating mutation context', async () => {
+    const mutationEvent = makeEvent({ activeParticipantCount: 1 });
+    let signupCalls = 0;
+    let signupPayload = null;
+
+    rosterBackend.getSeasonEventMutationContext = async () => {
+        assert.fail('account selection must not repeat mutation context');
+    };
+    rosterBackend.registerSeasonEventSignup = async payload => {
+        signupCalls += 1;
+        signupPayload = payload;
+        return { status: 'signed-up', event: mutationEvent };
+    };
+    installBackendLeaderboard(mutationEvent);
+
+    const { interaction, state } = makeInteraction();
+    interaction.values = ['#NEW123'];
+    await handleAccountSelect(interaction, {
+        type: 'donation',
+        mode: 'signup',
+        userId: 'discord-user-1',
+        messageId: 'signup-message-1'
+    });
+
+    assert.equal(signupCalls, 1);
+    assert.equal(signupPayload.eventType, 'donation');
+    assert.deepEqual(signupPayload.playerTags, ['#NEW123']);
+    assert.match(state.edits[0].content, /signed up/i);
+    assert.equal(state.messageEdits.length, 1);
+});
+
+test('direct signup opens the account picker from the authoritative registration response', async () => {
+    rosterBackend.getSeasonEventMutationContext = async () => {
+        assert.fail('direct signup must not make a separate mutation-context request');
+    };
+    rosterBackend.registerSeasonEventSignup = async () => ({
+        status: 'multiple-linked-accounts',
+        event: makeEvent(),
+        linkedAccounts: [
+            { tag: '#9PYLQG', name: 'Bravo', townHallLevel: 15 },
+            { tag: '#8CCVV', name: 'Charlie', townHallLevel: 14 }
+        ]
+    });
+
+    const { interaction, state } = makeInteraction();
+    await handleSignupButton(interaction, { type: 'donation' });
+
+    assert.equal(state.edits.length, 1);
+    const response = state.edits[0];
+    assert.equal(response.components.length, 1);
+    const select = response.components[0].toJSON().components[0];
+    assert.deepEqual(select.options.map(option => option.value), ['#9PYLQG', '#8CCVV']);
+    assert.equal(state.messageEdits.length, 0);
+});
+
+test('direct signup preserves the existing participant management response', async () => {
+    rosterBackend.registerSeasonEventSignup = async () => ({
+        status: 'already-signed-up',
+        event: makeEvent(),
+        participant: {
+            discordId: 'discord-user-1',
+            status: 'signed_up',
+            accounts: [{ tag: '#9PYLQG', name: 'Bravo' }]
+        }
+    });
+
+    const { interaction, state } = makeInteraction();
+    await handleSignupButton(interaction, { type: 'donation' });
+
+    assert.match(state.edits[0].content, /already signed up/i);
+    assert.ok(state.edits[0].components.length > 0);
+    assert.equal(state.messageEdits.length, 0);
+});
+
+for (const [status, type] of [
+    ['event-not-found', 'donation'],
+    ['not-linked', 'donation'],
+    ['accounts-outside-event-roster', 'cwl'],
+    ['cwl-target-unresolved', 'cwl'],
+    ['signups-closed', 'donation']
+]) {
+    test(`direct signup surfaces ${status} without refreshing the public message`, async () => {
+        rosterBackend.registerSeasonEventSignup = async () => ({
+            status,
+            event: status === 'event-not-found' ? null : makeEvent({ type })
+        });
+        rosterBackend.getSeasonEventLeaderboard = async () => {
+            assert.fail('a failed signup must not refresh the leaderboard');
+        };
+
+        const { interaction, state } = makeInteraction();
+        await handleSignupButton(interaction, { type });
+
+        assert.equal(state.edits[0].content, getStatusMessage(status, 'Unable to complete signup.'));
+        assert.deepEqual(state.edits[0].components || [], []);
+        assert.equal(state.messageEdits.length, 0);
+    });
+}
+
+test('successful signup is acknowledged before the public signup message refresh finishes', async () => {
+    const mutationEvent = makeEvent({ activeParticipantCount: 1 });
+    rosterBackend.registerSeasonEventSignup = async () => ({
+        status: 'signed-up',
+        event: mutationEvent
+    });
+    rosterBackend.isRosterBackendConfigured = () => true;
+    let signalLeaderboardStarted = null;
+    let finishLeaderboard = null;
+    const leaderboardStarted = new Promise(resolve => {
+        signalLeaderboardStarted = resolve;
+    });
+    rosterBackend.getSeasonEventLeaderboard = async payload => {
+        signalLeaderboardStarted();
+        return new Promise(resolve => {
+            finishLeaderboard = () => resolve({
+                event: { ...mutationEvent, eventId: payload.eventId },
+                leaderboard: []
+            });
+        });
+    };
+
+    const { interaction, state } = makeInteraction();
+    const pending = handleSignupButton(interaction, { type: 'donation' });
+    await leaderboardStarted;
+
+    assert.match(state.edits[0].content, /signed up/i);
+    assert.equal(state.messageEdits.length, 0);
+    finishLeaderboard();
+    await pending;
+    assert.equal(state.messageEdits.length, 1);
 });
 
 test('cancellation reaches the authoritative backend even when stale cache says no participant exists', async () => {
@@ -303,4 +432,3 @@ test('successful signup remains successful when post-mutation rendering cannot r
         console.warn = originalWarn;
     }
 });
-
