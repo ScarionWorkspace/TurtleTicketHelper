@@ -187,6 +187,42 @@ test('signup uses one authoritative mutation call despite stale Cloudflare cache
     assert.ok(cacheCalls.invalidatedPaths.includes('bootstrap/current'));
 });
 
+for (const eventType of ['push', 'cwl']) {
+    test(`${eventType} seasonal signup uses the same one-call authoritative flow`, async () => {
+        const event = makeEvent({
+            eventId: `${eventType}-current`,
+            type: eventType,
+            cwlTrackingState: eventType === 'cwl' ? 'active' : undefined,
+            cwl: eventType === 'cwl'
+                ? {
+                    target: {
+                        resolved: true,
+                        status: 'resolved',
+                        eligibleAccountTags: ['#9PYLQG']
+                    }
+                }
+                : undefined
+        });
+        let signupPayload = null;
+        rosterBackend.getSeasonEventMutationContext = async () => {
+            assert.fail('seasonal signup must not make a separate mutation-context request');
+        };
+        rosterBackend.registerSeasonEventSignup = async payload => {
+            signupPayload = payload;
+            return { status: 'signed-up', event };
+        };
+        installBackendLeaderboard(event);
+
+        const { interaction, state } = makeInteraction();
+        await handleSignupButton(interaction, { type: eventType });
+
+        assert.equal(signupPayload.eventType, eventType);
+        assert.equal(signupPayload.playerTags, undefined);
+        assert.match(state.edits[0].content, /signed up/i);
+        assert.equal(state.messageEdits.length, 1);
+    });
+}
+
 test('signup account selection calls registration directly without repeating mutation context', async () => {
     const mutationEvent = makeEvent({ activeParticipantCount: 1 });
     let signupCalls = 0;
