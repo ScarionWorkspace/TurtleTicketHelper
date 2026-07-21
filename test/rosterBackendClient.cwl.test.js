@@ -180,6 +180,69 @@ test('season event calls retry a transient Apps Script HTML error', async () => 
     assert.equal(result.event.eventId, 'donation-current');
 });
 
+test('season event calls identify Apps Script authorization HTML and do not retry it', async () => {
+    const client = loadClient();
+    let attempts = 0;
+
+    global.fetch = async () => {
+        attempts += 1;
+        return makeErrorResponse(
+            403,
+            '<!doctype html><html lang="de"><head><title>Zugriff verweigert</title></head><body>Sie benötigen Zugriff.</body></html>'
+        );
+    };
+
+    await assert.rejects(
+        () => client.getSeasonEventMutationContext({
+            eventType: 'donation',
+            discordUser: { id: 'user-1' }
+        }),
+        error => {
+            assert.equal(error.code, 'BACKEND_AUTHORIZATION_REQUIRED');
+            assert.equal(error.status, 403);
+            assert.equal(error.method, 'getSeasonEventMutationContext');
+            assert.equal(error.attempts, 1);
+            assert.match(error.message, /owner must reauthorize/i);
+            assert.doesNotMatch(error.message, /<html/i);
+            return true;
+        }
+    );
+    assert.equal(attempts, 1);
+});
+
+test('season event calls do not retry a Worker JSON authorization error', async () => {
+    const client = loadClient();
+    let attempts = 0;
+
+    global.fetch = async () => {
+        attempts += 1;
+        return makeErrorResponse(
+            503,
+            JSON.stringify({
+                ok: false,
+                code: 'APPS_SCRIPT_AUTHORIZATION_REQUIRED',
+                error: 'Apps Script authorization is required.'
+            }),
+            'application/json; charset=utf-8'
+        );
+    };
+
+    await assert.rejects(
+        () => client.getSeasonEventMutationContext({
+            eventType: 'push',
+            discordUser: { id: 'user-1' }
+        }),
+        error => {
+            assert.equal(error.code, 'APPS_SCRIPT_AUTHORIZATION_REQUIRED');
+            assert.equal(error.status, 503);
+            assert.equal(error.method, 'getSeasonEventMutationContext');
+            assert.equal(error.attempts, 1);
+            return true;
+        }
+    );
+    assert.equal(attempts, 1);
+});
+
 test('season event calls expose the method and attempt count after retries are exhausted', async () => {
     const client = loadClient();
     let attempts = 0;

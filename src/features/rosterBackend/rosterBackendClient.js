@@ -56,6 +56,30 @@ class RosterBackendError extends Error {
     }
 }
 
+function isAppsScriptAuthorizationRequiredHtml(response, text) {
+    const status = Number(response?.status);
+
+    if (status !== 401 && status !== 403) {
+        return false;
+    }
+
+    const normalized = String(text || '')
+        .replace(/<[^>]*>/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toLowerCase();
+
+    return normalized.includes('authorization is required') ||
+        normalized.includes('authorization required') ||
+        normalized.includes('authorization needed') ||
+        normalized.includes('access denied') ||
+        normalized.includes('you need access') ||
+        normalized.includes('zugriff verweigert') ||
+        normalized.includes('sie benötigen zugriff') ||
+        normalized.includes('autorisierung erforderlich') ||
+        normalized.includes('berechtigung erforderlich');
+}
+
 function isRosterBackendConfigured() {
     return Boolean(ROSTER_BACKEND_REQUEST_URL && ROSTER_BOT_SECRET);
 }
@@ -87,6 +111,15 @@ async function parseJsonResponse(response, context = {}) {
             requestUrl ? `Request URL: ${requestUrl}.` : '',
             responseUrl && responseUrl !== requestUrl ? `Final URL: ${responseUrl}.` : ''
         ].filter(Boolean);
+        if (htmlResponse && isAppsScriptAuthorizationRequiredHtml(response, text)) {
+            throw new RosterBackendError(
+                'Roster backend authorization is required. The Apps Script owner must reauthorize the production deployment.',
+                {
+                    status: response.status,
+                    code: 'BACKEND_AUTHORIZATION_REQUIRED'
+                }
+            );
+        }
         const detail = htmlResponse
             ? [
                 'Roster backend returned an HTML response instead of JSON.',
@@ -183,6 +216,10 @@ async function callRosterBackendMethod(methodName, args, options = {}) {
 function isTransientSeasonEventError(error) {
     const code = String(error?.code || '').trim().toUpperCase();
     const status = Number(error?.status);
+
+    if (code === 'APPS_SCRIPT_AUTHORIZATION_REQUIRED' || code === 'BACKEND_AUTHORIZATION_REQUIRED') {
+        return false;
+    }
 
     return code === 'TIMEOUT' ||
         code === 'REQUEST_FAILED' ||

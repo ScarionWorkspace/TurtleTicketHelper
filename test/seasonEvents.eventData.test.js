@@ -3,7 +3,8 @@ const assert = require('node:assert/strict');
 const rosterBackend = require('../src/features/rosterBackend/rosterBackendClient');
 const rosterPublicData = require('../src/features/rosterPublicData/rosterPublicDataReadClient');
 const {
-    loadEventForRendering
+    loadEventForRendering,
+    resolveCurrentSeasonEvent
 } = require('../src/features/seasonEvents/eventData');
 const { buildSignupMessage } = require('../src/features/seasonEvents/renderSignupMessage');
 
@@ -185,6 +186,59 @@ test('loadEventForRendering uses the reconciled donation event before queued Clo
     assert.match(confirmedField.value, /Current Player/);
     assert.match(confirmedField.value, /120/);
 });
+
+for (const eventType of ['push', 'donation']) {
+    test(`loadEventForRendering falls back to Cloudflare when ${eventType} reconciliation needs backend reauthorization`, async () => {
+        let backendCurrentRead = false;
+        let backendLeaderboardRead = false;
+        const originalWarn = console.warn;
+
+        rosterBackend.isRosterBackendConfigured = () => true;
+        rosterBackend.reconcileCurrentSeasonEvents = async () => {
+            const error = new Error('Apps Script owner authorization is required');
+            error.code = 'BACKEND_AUTHORIZATION_REQUIRED';
+            error.status = 403;
+            throw error;
+        };
+        rosterBackend.getCurrentSeasonEvents = async () => {
+            backendCurrentRead = true;
+            throw new Error('failed reconciliation must suppress another backend current-event call');
+        };
+        rosterBackend.getSeasonEventLeaderboard = async () => {
+            backendLeaderboardRead = true;
+            throw new Error('failed reconciliation must suppress another backend leaderboard call');
+        };
+        rosterPublicData.readCurrentSeasonEventPointer = async type => {
+            assert.equal(type, eventType);
+            return { eventId: `${eventType}-cloudflare-current` };
+        };
+        rosterPublicData.readSeasonEventById = async eventId => ({
+            eventId,
+            type: eventType,
+            seasonId: 'fallback-season',
+            status: 'open',
+            signupsOpen: true,
+            participantsByDiscordId: {}
+        });
+        rosterPublicData.readAllActivePlayerMetricsByTag = async () => ({});
+        rosterPublicData.readDonationRefreshSeasonOverlay = async () => null;
+
+        console.warn = () => {};
+        try {
+            const result = await loadEventForRendering(eventType, {
+                reconcile: true,
+                source: { type: 'discord-admin' }
+            });
+
+            assert.equal(result.event.eventId, `${eventType}-cloudflare-current`);
+            assert.equal(result.source, 'cloudflare-public');
+            assert.equal(backendCurrentRead, false);
+            assert.equal(backendLeaderboardRead, false);
+        } finally {
+            console.warn = originalWarn;
+        }
+    });
+}
 
 test('loadEventForRendering prefers the authoritative backend current event over a stale Cloudflare pointer', async () => {
     let requestedEventId = null;
@@ -408,6 +462,188 @@ test('loadEventForRendering keeps CWL signup usable when immediate refresh fails
     assert.equal(result.event.cwlTrackingState, 'waiting');
     assert.equal(result.source, 'cloudflare-cwl-aggregate');
     assert.deepEqual(result.leaderboard.leaderboard, []);
+});
+
+test('loadEventForRendering still reads a healthy backend leaderboard after a Clash-only CWL refresh failure', async () => {
+    const originalWarn = console.warn;
+    let leaderboardReads = 0;
+    const waitingEvent = {
+        eventId: 'cwl-waiting-with-stored-scores',
+        type: 'cwl',
+        status: 'open',
+        signupsOpen: true,
+        cwlTrackingState: 'waiting',
+        participantsByDiscordId: {}
+    };
+
+    rosterBackend.isRosterBackendConfigured = () => true;
+    rosterBackend.ensureCurrentCwlSeasonEvent = async () => ({ event: waitingEvent });
+    rosterBackend.refreshCurrentCwlSeasonEvent = async () => {
+        const error = new Error('temporary Clash API failure');
+        error.code = 'CLASH_API_UNAVAILABLE';
+        throw error;
+    };
+    rosterBackend.getSeasonEventLeaderboard = async payload => {
+        leaderboardReads += 1;
+        assert.equal(payload.eventId, waitingEvent.eventId);
+        return {
+            event: waitingEvent,
+            leaderboard: [{
+                rank: 1,
+                displayName: 'Stored player',
+                score: 12,
+                accounts: []
+            }]
+        };
+    };
+
+    console.warn = () => {};
+    try {
+        const result = await loadEventForRendering('cwl', {
+            ensureCurrent: true,
+            source: { type: 'test-cwl-signup' }
+        });
+
+        assert.equal(leaderboardReads, 1);
+        assert.equal(result.source, 'backend');
+        assert.equal(result.event.eventId, waitingEvent.eventId);
+        assert.equal(result.leaderboard.leaderboard[0].score, 12);
+    } finally {
+        console.warn = originalWarn;
+    }
+});
+
+test('loadEventForRendering falls back to Cloudflare when CWL ensure needs backend reauthorization', async () => {
+    let refreshAttempted = false;
+    let backendCurrentRead = false;
+    let backendLeaderboardRead = false;
+    const originalWarn = console.warn;
+
+    rosterBackend.isRosterBackendConfigured = () => true;
+    rosterBackend.ensureCurrentCwlSeasonEvent = async () => {
+        const error = new Error('Apps Script owner authorization is required');
+        error.code = 'BACKEND_AUTHORIZATION_REQUIRED';
+        error.status = 403;
+        throw error;
+    };
+    rosterBackend.refreshCurrentCwlSeasonEvent = async () => {
+        refreshAttempted = true;
+        throw new Error('ensure failure must suppress the dependent refresh call');
+    };
+    rosterBackend.getCurrentCwlSeasonEvent = async () => {
+        backendCurrentRead = true;
+        throw new Error('ensure failure must suppress another backend current-event call');
+    };
+    rosterBackend.getSeasonEventLeaderboard = async () => {
+        backendLeaderboardRead = true;
+        throw new Error('ensure failure must suppress another backend leaderboard call');
+    };
+    rosterPublicData.readCurrentCwlSeasonEventPointer = async () => ({ eventId: 'cwl-cloudflare-current' });
+    rosterPublicData.readSeasonEventById = async () => ({
+        eventId: 'cwl-cloudflare-current',
+        type: 'cwl',
+        status: 'open',
+        signupsOpen: true,
+        cwlTrackingState: 'waiting',
+        participantsByDiscordId: {}
+    });
+    rosterPublicData.readCwlSeasonEventAggregate = async () => null;
+
+    console.warn = () => {};
+    try {
+        const result = await loadEventForRendering('cwl', {
+            ensureCurrent: true,
+            source: { type: 'discord-admin' }
+        });
+
+        assert.equal(result.event.eventId, 'cwl-cloudflare-current');
+        assert.equal(result.source, 'cloudflare-cwl-aggregate');
+        assert.equal(refreshAttempted, false);
+        assert.equal(backendCurrentRead, false);
+        assert.equal(backendLeaderboardRead, false);
+    } finally {
+        console.warn = originalWarn;
+    }
+});
+
+test('resolveCurrentSeasonEvent falls back directly to Cloudflare after reconciliation authorization failure', async () => {
+    let backendCurrentRead = false;
+    const originalWarn = console.warn;
+
+    rosterBackend.isRosterBackendConfigured = () => true;
+    rosterBackend.reconcileCurrentSeasonEvents = async () => {
+        const error = new Error('Apps Script owner authorization is required');
+        error.code = 'BACKEND_AUTHORIZATION_REQUIRED';
+        error.status = 403;
+        throw error;
+    };
+    rosterBackend.getCurrentSeasonEvents = async () => {
+        backendCurrentRead = true;
+        throw new Error('failed reconciliation must suppress another backend read');
+    };
+    rosterPublicData.readCurrentSeasonEventPointer = async () => ({ eventId: 'push-cloudflare-current' });
+    rosterPublicData.readSeasonEventById = async () => ({
+        eventId: 'push-cloudflare-current',
+        type: 'push',
+        status: 'open',
+        signupsOpen: true
+    });
+
+    console.warn = () => {};
+    try {
+        const event = await resolveCurrentSeasonEvent('push', {
+            reconcile: true,
+            source: { type: 'discord-admin' }
+        });
+
+        assert.equal(event.eventId, 'push-cloudflare-current');
+        assert.equal(backendCurrentRead, false);
+    } finally {
+        console.warn = originalWarn;
+    }
+});
+
+test('resolveCurrentSeasonEvent falls back directly to Cloudflare after CWL ensure authorization failure', async () => {
+    let refreshAttempted = false;
+    let backendCurrentRead = false;
+    const originalWarn = console.warn;
+
+    rosterBackend.isRosterBackendConfigured = () => true;
+    rosterBackend.ensureCurrentCwlSeasonEvent = async () => {
+        const error = new Error('Apps Script owner authorization is required');
+        error.code = 'BACKEND_AUTHORIZATION_REQUIRED';
+        error.status = 403;
+        throw error;
+    };
+    rosterBackend.refreshCurrentCwlSeasonEvent = async () => {
+        refreshAttempted = true;
+        throw new Error('ensure failure must suppress the dependent refresh call');
+    };
+    rosterBackend.getCurrentCwlSeasonEvent = async () => {
+        backendCurrentRead = true;
+        throw new Error('failed ensure must suppress another backend read');
+    };
+    rosterPublicData.readCurrentCwlSeasonEventPointer = async () => ({ eventId: 'cwl-cloudflare-current' });
+    rosterPublicData.readSeasonEventById = async () => ({
+        eventId: 'cwl-cloudflare-current',
+        type: 'cwl',
+        status: 'open',
+        signupsOpen: true
+    });
+
+    console.warn = () => {};
+    try {
+        const event = await resolveCurrentSeasonEvent('cwl', {
+            ensureCurrent: true,
+            source: { type: 'discord-admin' }
+        });
+
+        assert.equal(event.eventId, 'cwl-cloudflare-current');
+        assert.equal(refreshAttempted, false);
+        assert.equal(backendCurrentRead, false);
+    } finally {
+        console.warn = originalWarn;
+    }
 });
 
 test('loadEventForRendering recomputes CWL fallback rows from current registrations when ranked tags are stale', async () => {

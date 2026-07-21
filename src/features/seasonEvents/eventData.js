@@ -350,9 +350,25 @@ function mergeEventRefreshResult(storedEvent, refreshedEvent, eventType) {
     };
 }
 
+function isBackendReadUnavailableError(error) {
+    const code = String(error?.code || '').trim().toUpperCase();
+    const status = Number(error?.status);
+
+    return code === 'BACKEND_AUTHORIZATION_REQUIRED' ||
+        code === 'ROSTER_BACKEND_CONFIG_MISSING' ||
+        code === 'TIMEOUT' ||
+        code === 'REQUEST_FAILED' ||
+        code === 'INVALID_JSON' ||
+        [401, 403, 404, 405].includes(status) ||
+        status >= 500;
+}
+
 async function refreshCurrentCwlEventForRendering(options = {}) {
     if (typeof rosterBackend.refreshCurrentCwlSeasonEvent !== 'function') {
-        return null;
+        return {
+            event: null,
+            backendUnavailable: false
+        };
     }
 
     try {
@@ -360,9 +376,12 @@ async function refreshCurrentCwlEventForRendering(options = {}) {
             source: options.source || {}
         });
 
-        return refreshed?.event && typeof refreshed.event === 'object'
-            ? refreshed.event
-            : null;
+        return {
+            event: refreshed?.event && typeof refreshed.event === 'object'
+                ? refreshed.event
+                : null,
+            backendUnavailable: false
+        };
     } catch (error) {
         console.warn('CWL season event refresh unavailable; using current stored event.', {
             errorName: error?.name || null,
@@ -371,7 +390,10 @@ async function refreshCurrentCwlEventForRendering(options = {}) {
             status: error?.status || null
         });
 
-        return null;
+        return {
+            event: null,
+            backendUnavailable: isBackendReadUnavailableError(error)
+        };
     }
 }
 
@@ -888,37 +910,61 @@ async function loadEventForRendering(type, options = {}) {
         ? normalizeBackendEvent(options.seedEvent, eventType)
         : null;
     let authoritativeSource = authoritativeEvent ? 'mutation-result' : 'missing';
+    let backendCurrentReadFailed = false;
     let ensuredCwlEvent = null;
     let refreshedCwlEvent = null;
     if (eventType === 'cwl' && options.ensureCurrent) {
-        const ensured = await rosterBackend.ensureCurrentCwlSeasonEvent({
-            source: options.source || {}
-        });
-        ensuredCwlEvent = ensured?.event && typeof ensured.event === 'object' ? ensured.event : null;
-        refreshedCwlEvent = await refreshCurrentCwlEventForRendering(options);
-        authoritativeEvent = mergeEventRefreshResult(
-            authoritativeEvent || ensuredCwlEvent,
-            refreshedCwlEvent || (authoritativeEvent ? null : ensuredCwlEvent),
-            eventType
-        );
-        if (authoritativeEvent) {
-            authoritativeSource = 'backend';
+        try {
+            const ensured = await rosterBackend.ensureCurrentCwlSeasonEvent({
+                source: options.source || {}
+            });
+            ensuredCwlEvent = ensured?.event && typeof ensured.event === 'object' ? ensured.event : null;
+            const refreshResult = await refreshCurrentCwlEventForRendering(options);
+            refreshedCwlEvent = refreshResult.event;
+            backendCurrentReadFailed = refreshResult.backendUnavailable;
+            authoritativeEvent = mergeEventRefreshResult(
+                authoritativeEvent || ensuredCwlEvent,
+                refreshedCwlEvent || (authoritativeEvent ? null : ensuredCwlEvent),
+                eventType
+            );
+            if (authoritativeEvent) {
+                authoritativeSource = 'backend';
+            }
+        } catch (error) {
+            backendCurrentReadFailed = isBackendReadUnavailableError(error);
+            console.warn('CWL season event ensure unavailable; falling back to Cloudflare public data.', {
+                eventType,
+                errorName: error?.name || null,
+                errorMessage: error?.message || null,
+                errorCode: error?.code || null,
+                status: error?.status || null
+            });
         }
     } else if (options.reconcile && eventType !== 'cwl') {
-        const reconciled = await rosterBackend.reconcileCurrentSeasonEvents({
-            forceRefresh: false,
-            source: options.source || {}
-        });
-        const reconciledEvent = getEventFromCurrentBackendResult(reconciled, eventType);
+        try {
+            const reconciled = await rosterBackend.reconcileCurrentSeasonEvents({
+                forceRefresh: false,
+                source: options.source || {}
+            });
+            const reconciledEvent = getEventFromCurrentBackendResult(reconciled, eventType);
 
-        if (reconciledEvent) {
-            authoritativeEvent = mergeEventRefreshResult(authoritativeEvent, reconciledEvent, eventType);
-            authoritativeSource = 'backend-reconcile';
+            if (reconciledEvent) {
+                authoritativeEvent = mergeEventRefreshResult(authoritativeEvent, reconciledEvent, eventType);
+                authoritativeSource = 'backend-reconcile';
+            }
+        } catch (error) {
+            backendCurrentReadFailed = isBackendReadUnavailableError(error);
+            console.warn('Season event reconciliation unavailable; falling back to Cloudflare public data.', {
+                eventType,
+                errorName: error?.name || null,
+                errorMessage: error?.message || null,
+                errorCode: error?.code || null,
+                status: error?.status || null
+            });
         }
     }
 
-    let backendCurrentReadFailed = false;
-    if (!authoritativeEvent) {
+    if (!authoritativeEvent && !backendCurrentReadFailed) {
         const backendCurrentRead = await readCurrentEventFromBackend(eventType, options);
         authoritativeEvent = backendCurrentRead.event;
         backendCurrentReadFailed = backendCurrentRead.failed;
@@ -1004,32 +1050,59 @@ async function resolveCurrentSeasonEvent(type, options = {}) {
         return null;
     }
 
+    let backendCurrentReadFailed = false;
     if (eventType === 'cwl' && options.ensureCurrent) {
-        const ensured = await rosterBackend.ensureCurrentCwlSeasonEvent({
-            source: options.source || {}
-        });
-        const refreshedEvent = await refreshCurrentCwlEventForRendering(options);
-        const ensuredEvent = ensured?.event && typeof ensured.event === 'object' ? ensured.event : null;
-        if (refreshedEvent || ensuredEvent) {
-            return mergeEventRefreshResult(ensuredEvent, refreshedEvent, eventType);
+        try {
+            const ensured = await rosterBackend.ensureCurrentCwlSeasonEvent({
+                source: options.source || {}
+            });
+            const refreshResult = await refreshCurrentCwlEventForRendering(options);
+            const refreshedEvent = refreshResult.event;
+            const ensuredEvent = ensured?.event && typeof ensured.event === 'object' ? ensured.event : null;
+            backendCurrentReadFailed = refreshResult.backendUnavailable;
+            if (refreshedEvent || ensuredEvent) {
+                return mergeEventRefreshResult(ensuredEvent, refreshedEvent, eventType);
+            }
+        } catch (error) {
+            backendCurrentReadFailed = isBackendReadUnavailableError(error);
+            console.warn('Current CWL season event ensure unavailable; falling back to Cloudflare public data.', {
+                eventType,
+                errorName: error?.name || null,
+                errorMessage: error?.message || null,
+                errorCode: error?.code || null,
+                status: error?.status || null
+            });
         }
     } else if (options.reconcile && eventType !== 'cwl') {
-        const reconciled = await rosterBackend.reconcileCurrentSeasonEvents({
-            forceRefresh: false,
-            source: options.source || {}
-        });
-        const reconciledEvent = getEventFromCurrentBackendResult(reconciled, eventType);
+        try {
+            const reconciled = await rosterBackend.reconcileCurrentSeasonEvents({
+                forceRefresh: false,
+                source: options.source || {}
+            });
+            const reconciledEvent = getEventFromCurrentBackendResult(reconciled, eventType);
 
-        if (reconciledEvent) {
-            return reconciledEvent;
+            if (reconciledEvent) {
+                return reconciledEvent;
+            }
+        } catch (error) {
+            backendCurrentReadFailed = isBackendReadUnavailableError(error);
+            console.warn('Current season event reconciliation unavailable; falling back to Cloudflare public data.', {
+                eventType,
+                errorName: error?.name || null,
+                errorMessage: error?.message || null,
+                errorCode: error?.code || null,
+                status: error?.status || null
+            });
         }
     }
 
-    const backendCurrentRead = await readCurrentEventFromBackend(eventType, options);
-    const backendEvent = backendCurrentRead.event;
+    if (!backendCurrentReadFailed) {
+        const backendCurrentRead = await readCurrentEventFromBackend(eventType, options);
+        const backendEvent = backendCurrentRead.event;
 
-    if (backendEvent) {
-        return backendEvent;
+        if (backendEvent) {
+            return backendEvent;
+        }
     }
 
     return readCurrentEventFromPublicData(eventType, {
