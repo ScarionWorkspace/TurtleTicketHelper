@@ -1114,29 +1114,29 @@ async function handleAccountSelect(interaction, parsed) {
 
     const selected = parseAccountSelectValue(interaction.values?.[0]);
     const selectedTag = selected.playerTag;
+    await interaction.deferUpdate();
+
     let discordUser;
     let linkedAccounts;
     let signups;
     try {
         ({ discordUser, linkedAccounts, signups } = await loadAuthoritativeCwlSignupContext(interaction, signupId));
     } catch (error) {
-        await interaction.reply({
+        await interaction.editReply({
             content: isStaleSignupError(error) ? staleSignupMessage() : 'Unable to load your CWL league preferences right now.',
-            flags: 64
+            components: []
         });
         return;
     }
     const account = linkedAccounts.find(item => normalizePlayerTag(item?.playerTag || item?.tag) === selectedTag);
 
     if (!account) {
-        await interaction.reply({
+        await interaction.editReply({
             content: 'That account is no longer linked to your Discord user.',
-            flags: 64
+            components: []
         });
         return;
     }
-
-    await interaction.deferUpdate();
 
     const selectedOption = getSignupOption(signups, optionKey);
     if (!selectedOption) {

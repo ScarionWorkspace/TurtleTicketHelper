@@ -487,6 +487,55 @@ test('Choosing a clan option saves the option key while keeping the league key',
     assert.deepEqual(interaction.editReplyPayload.components, []);
 });
 
+test('Choosing a linked account acknowledges Discord before loading authoritative CWL data', async () => {
+    const interaction = makeInteraction({
+        componentType: 'select',
+        customId: buildCwlLeagueCustomId('account', 'signup-1', 'turtle-second', 0),
+        values: ['#MAIN1|source-message-1']
+    });
+    let backendReadWasAcknowledged = false;
+    let setPayload = null;
+
+    rosterBackend.getCwlLeagueSignupContextForDiscordUser = async () => {
+        backendReadWasAcknowledged = interaction.deferUpdateCalled === true;
+        return {
+            signupId: 'signup-1',
+            options: [{
+                optionKey: 'turtle-second',
+                leagueKey: 'champion-i',
+                leagueName: 'Champion I',
+                targetRosterId: 'second',
+                targetClanName: 'Turtle Second'
+            }],
+            linkedAccounts: [makeLinkedAccount()],
+            preferences: []
+        };
+    };
+    rosterBackend.setCwlLeaguePreference = async payload => {
+        setPayload = payload;
+        return {
+            ok: true,
+            status: 'created',
+            preference: {
+                playerTag: '#MAIN1',
+                playerName: 'Main',
+                optionKey: 'turtle-second',
+                leagueKey: 'champion-i',
+                leagueName: 'Champion I',
+                targetRosterId: 'second',
+                targetClanName: 'Turtle Second'
+            }
+        };
+    };
+
+    assert.equal(await handleCwlLeagueSignupInteraction(interaction), true);
+    assert.equal(interaction.calls[0][0], 'deferUpdate');
+    assert.equal(backendReadWasAcknowledged, true);
+    assert.equal(setPayload.playerTag, '#MAIN1');
+    assert.equal(setPayload.optionKey, 'turtle-second');
+    assert.match(interaction.editReplyPayload.content, /Champion I - Turtle Second/);
+});
+
 test('Choosing a new league for an owned existing preference asks for change confirmation', async () => {
     mockAuthoritativeSignupContext([makeLinkedAccount()], {
         signupId: 'signup-1',
