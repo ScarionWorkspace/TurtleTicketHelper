@@ -1,6 +1,6 @@
 const { decodePublicDataKeys } = require('../rosterPublicData/rosterPublicDataReadClient');
 
-const ROSTER_SECTIONS = ['main', 'subs', 'missing'];
+const VISIBLE_ROSTER_SECTIONS = ['main', 'subs'];
 const PLAYER_LIST_MAX_CHARS = 1900;
 
 function normalizeClashTag(tag) {
@@ -116,7 +116,7 @@ function getRosterPlayers(roster) {
         return [];
     }
 
-    return ROSTER_SECTIONS.flatMap(sectionName => asArray(roster[sectionName]));
+    return VISIBLE_ROSTER_SECTIONS.flatMap(sectionName => asArray(roster[sectionName]));
 }
 
 function getPlayerTag(player) {

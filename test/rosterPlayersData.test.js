@@ -30,7 +30,7 @@ test('orders rosters by rosterOrder and appends unlisted rosters', () => {
     assert.deepEqual(rosters.map(roster => roster.id), ['bravo', 'alpha', 'charlie']);
 });
 
-test('formats players in main, subs, then missing order with linked Discord IDs', () => {
+test('formats active main and sub players while excluding archived missing players', () => {
     const lines = formatRosterPlayerLines(
         {
             id: 'alpha',
@@ -67,8 +67,7 @@ test('formats players in main, subs, then missing order with linked Discord IDs'
 
     assert.deepEqual(lines, [
         'Main One / <@111111111111111111>',
-        'Sub One / <@222222222222222222>',
-        'Missing One / no linked Discord ID'
+        'Sub One / <@222222222222222222>'
     ]);
 });
 
