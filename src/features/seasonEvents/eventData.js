@@ -928,13 +928,16 @@ async function loadEventForRendering(type, options = {}) {
     let authoritativeSource = authoritativeEvent ? 'mutation-result' : 'missing';
     let backendCurrentReadFailed = false;
     let ensuredCwlEvent = null;
+    let ensuredCwlResult = null;
     let refreshedCwlEvent = null;
     if (eventType === 'cwl' && options.ensureCurrent) {
         try {
             const ensured = await rosterBackend.ensureCurrentCwlSeasonEvent({
                 rosterId: options.rosterId || null,
+                forceNewEvent: options.forceNewEvent === true,
                 source: options.source || {}
             });
+            ensuredCwlResult = ensured && typeof ensured === 'object' ? ensured : null;
             ensuredCwlEvent = ensured?.event && typeof ensured.event === 'object' ? ensured.event : null;
             const refreshResult = await refreshCurrentCwlEventForRendering({
                 ...options,
@@ -1044,7 +1047,14 @@ async function loadEventForRendering(type, options = {}) {
     return {
         event,
         leaderboard,
-        source
+        source,
+        rollover: ensuredCwlResult?.supersededEventId
+            ? {
+                supersededEventId: ensuredCwlResult.supersededEventId,
+                reason: ensuredCwlResult.rolloverReason || '',
+                forced: ensuredCwlResult.rolloverForced === true
+            }
+            : null
     };
 }
 
@@ -1078,6 +1088,7 @@ async function resolveCurrentSeasonEvent(type, options = {}) {
         try {
             const ensured = await rosterBackend.ensureCurrentCwlSeasonEvent({
                 rosterId: options.rosterId || null,
+                forceNewEvent: options.forceNewEvent === true,
                 source: options.source || {}
             });
             const refreshResult = await refreshCurrentCwlEventForRendering({

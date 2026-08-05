@@ -15,13 +15,17 @@ afterEach(() => {
     rosterPublicData.readActiveRosterPayload = originalReadActiveRosterPayload;
 });
 
-test('CWL event command requires an autocompleted roster selector', () => {
+test('CWL event command requires a roster and exposes an optional administrator rollover', () => {
     const json = command.data.toJSON();
     const rosterOption = json.options.find(option => option.name === 'roster');
+    const startNewOption = json.options.find(option => option.name === 'start-new-event');
 
     assert.ok(rosterOption);
     assert.equal(rosterOption.required, true);
     assert.equal(rosterOption.autocomplete, true);
+    assert.ok(startNewOption);
+    assert.equal(startNewOption.required, false);
+    assert.equal(startNewOption.type, 5);
 });
 
 test('CWL event roster autocomplete only returns connected CWL rosters in configured order', async () => {

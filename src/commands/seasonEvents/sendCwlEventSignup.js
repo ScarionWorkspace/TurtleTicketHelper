@@ -22,7 +22,10 @@ module.exports = {
             .setName('roster')
             .setDescription('Roster whose signed-up accounts count for this CWL event.')
             .setRequired(true)
-            .setAutocomplete(true)),
+            .setAutocomplete(true))
+        .addBooleanOption(option => option
+            .setName('start-new-event')
+            .setDescription('Archive this roster\'s current CWL event and start a fresh one.')),
     async autocomplete(interaction) {
         const focused = String(interaction.options.getFocused() || '').trim().toLowerCase();
         const payload = await rosterPublicData.readActiveRosterPayload({
@@ -38,7 +41,8 @@ module.exports = {
     },
     async execute(interaction) {
         await sendSeasonEventSignupMessage(interaction, 'cwl', {
-            rosterId: interaction.options.getString('roster', true)
+            rosterId: interaction.options.getString('roster', true),
+            forceNewEvent: interaction.options.getBoolean('start-new-event') === true
         });
     }
 };

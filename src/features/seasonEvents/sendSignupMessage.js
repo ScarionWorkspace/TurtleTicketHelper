@@ -38,8 +38,9 @@ async function sendSeasonEventSignupMessage(interaction, type, options = {}) {
     await interaction.deferReply({ flags: 64 });
 
     const source = buildInteractionSource(interaction, eventType, null, 'discord-admin');
-    const { event, leaderboard } = await loadEventForRendering(eventType, {
+    const { event, leaderboard, rollover } = await loadEventForRendering(eventType, {
         rosterId: options.rosterId || null,
+        forceNewEvent: options.forceNewEvent === true,
         reconcile: eventType !== 'cwl',
         ensureCurrent: eventType === 'cwl',
         source
@@ -55,8 +56,11 @@ async function sendSeasonEventSignupMessage(interaction, type, options = {}) {
     const message = await channel.send(buildSignupMessage(eventType, event, leaderboard));
 
     const rosterTitle = event?.cwl?.target?.rosterTitle || event?.cwl?.target?.rosterId || '';
+    const rolloverNotice = rollover?.supersededEventId
+        ? ` The previous event was archived and a fresh event was started${rollover.forced ? ' by request' : ' automatically for the new CWL cycle'}.`
+        : '';
     await interaction.editReply({
-        content: `${typeConfig.title}${rosterTitle ? ` for ${rosterTitle}` : ''} signup message sent: ${message.url}`
+        content: `${typeConfig.title}${rosterTitle ? ` for ${rosterTitle}` : ''} signup message sent: ${message.url}${rolloverNotice}`
     });
 }
 

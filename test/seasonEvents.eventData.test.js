@@ -386,7 +386,12 @@ test('loadEventForRendering refreshes ensured CWL event before rendering signup 
     rosterBackend.isRosterBackendConfigured = () => true;
     rosterBackend.ensureCurrentCwlSeasonEvent = async payload => {
         calls.push({ method: 'ensure', payload });
-        return { event: waitingEvent };
+        return {
+            event: waitingEvent,
+            supersededEventId: 'cwl-2026-06-old',
+            rolloverReason: 'administrator-forced',
+            rolloverForced: true
+        };
     };
     rosterBackend.refreshCurrentCwlSeasonEvent = async payload => {
         calls.push({ method: 'refresh', payload });
@@ -419,12 +424,14 @@ test('loadEventForRendering refreshes ensured CWL event before rendering signup 
     const result = await loadEventForRendering('cwl', {
         ensureCurrent: true,
         rosterId: 'second',
+        forceNewEvent: true,
         source
     });
 
     assert.deepEqual(calls.map(call => call.method), ['ensure', 'refresh', 'leaderboard']);
     assert.deepEqual(calls[0].payload.source, source);
     assert.equal(calls[0].payload.rosterId, 'second');
+    assert.equal(calls[0].payload.forceNewEvent, true);
     assert.deepEqual(calls[1].payload.source, source);
     assert.equal(calls[1].payload.rosterId, 'second');
     assert.equal(calls[1].payload.eventId, waitingEvent.eventId);
@@ -434,6 +441,11 @@ test('loadEventForRendering refreshes ensured CWL event before rendering signup 
     assert.equal(result.event.startsAt, activeEvent.startsAt);
     assert.equal(result.event.participantsByDiscordId.user1.accounts[0].tag, '#AAA111');
     assert.equal(result.leaderboard.leaderboard[0].scoreLabel, '15 stars, 4 defense stars');
+    assert.deepEqual(result.rollover, {
+        supersededEventId: 'cwl-2026-06-old',
+        reason: 'administrator-forced',
+        forced: true
+    });
 });
 
 test('loadEventForRendering keeps CWL signup usable when immediate refresh fails', async () => {
