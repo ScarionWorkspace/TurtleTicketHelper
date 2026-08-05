@@ -35,6 +35,7 @@ async function handleRefreshButton(interaction, parsed) {
 
     await interaction.deferUpdate();
     await refreshSignupMessage(interaction, parsed.type, {
+        eventId: parsed.eventId,
         reconcile: isAdmin,
         messageId: interaction.message?.id,
         sourceType: isAdmin ? 'discord-admin' : 'discord-refresh'

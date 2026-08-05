@@ -195,8 +195,20 @@ async function readCurrentEventFromPublicData(type, options = {}) {
         cacheTtlMs: options.cacheTtlMs,
         timeoutMs: options.timeoutMs
     };
+    const exactEventId = String(options.eventId || '').trim();
+    if (exactEventId) {
+        const exactEvent = await rosterPublicData.readSeasonEventById(exactEventId, {
+            ...readOptions,
+            includeParticipantsByDiscordId: options.includeParticipantsByDiscordId === true
+        });
+        return exactEvent && getEventType(exactEvent) === eventType
+            ? normalizeBackendEvent(exactEvent, eventType)
+            : null;
+    }
     const pointer = eventType === 'cwl'
-        ? await rosterPublicData.readCurrentCwlSeasonEventPointer(readOptions)
+        ? options.rosterId && typeof rosterPublicData.readCurrentCwlSeasonEventPointerForRoster === 'function'
+            ? await rosterPublicData.readCurrentCwlSeasonEventPointerForRoster(options.rosterId, readOptions)
+            : await rosterPublicData.readCurrentCwlSeasonEventPointer(readOptions)
         : await rosterPublicData.readCurrentSeasonEventPointer(eventType, readOptions);
     const eventId = pointerToEventId(pointer);
 
@@ -264,6 +276,8 @@ async function readCurrentEventFromBackend(type, options = {}) {
         };
         const result = eventType === 'cwl' && typeof rosterBackend.getCurrentCwlSeasonEvent === 'function'
             ? await rosterBackend.getCurrentCwlSeasonEvent({
+                eventId: options.eventId || null,
+                rosterId: options.rosterId || null,
                 source: options.source || {}
             }, requestOptions)
             : await rosterBackend.getCurrentSeasonEvents({
@@ -373,6 +387,8 @@ async function refreshCurrentCwlEventForRendering(options = {}) {
 
     try {
         const refreshed = await rosterBackend.refreshCurrentCwlSeasonEvent({
+            eventId: options.eventId || null,
+            rosterId: options.rosterId || null,
             source: options.source || {}
         });
 
@@ -916,10 +932,14 @@ async function loadEventForRendering(type, options = {}) {
     if (eventType === 'cwl' && options.ensureCurrent) {
         try {
             const ensured = await rosterBackend.ensureCurrentCwlSeasonEvent({
+                rosterId: options.rosterId || null,
                 source: options.source || {}
             });
             ensuredCwlEvent = ensured?.event && typeof ensured.event === 'object' ? ensured.event : null;
-            const refreshResult = await refreshCurrentCwlEventForRendering(options);
+            const refreshResult = await refreshCurrentCwlEventForRendering({
+                ...options,
+                eventId: options.eventId || getEventId(ensuredCwlEvent)
+            });
             refreshedCwlEvent = refreshResult.event;
             backendCurrentReadFailed = refreshResult.backendUnavailable;
             authoritativeEvent = mergeEventRefreshResult(
@@ -974,6 +994,8 @@ async function loadEventForRendering(type, options = {}) {
     }
 
     const publicReadOptions = {
+        eventId: options.eventId || getEventId(authoritativeEvent),
+        rosterId: options.rosterId || null,
         includeParticipantsByDiscordId: true,
         cacheTtlMs: options.reconcile || options.ensureCurrent ? 0 : options.cacheTtlMs,
         timeoutMs: options.timeoutMs
@@ -1032,6 +1054,7 @@ async function loadSeasonEventMutationContext(type, discordUser, options = {}) {
     const result = await rosterBackend.getSeasonEventMutationContext({
         eventType,
         eventId: options.eventId || null,
+        rosterId: options.rosterId || null,
         discordUser: discordUser || {},
         source: options.source || {}
     });
@@ -1054,9 +1077,13 @@ async function resolveCurrentSeasonEvent(type, options = {}) {
     if (eventType === 'cwl' && options.ensureCurrent) {
         try {
             const ensured = await rosterBackend.ensureCurrentCwlSeasonEvent({
+                rosterId: options.rosterId || null,
                 source: options.source || {}
             });
-            const refreshResult = await refreshCurrentCwlEventForRendering(options);
+            const refreshResult = await refreshCurrentCwlEventForRendering({
+                ...options,
+                eventId: options.eventId || getEventId(ensured?.event)
+            });
             const refreshedEvent = refreshResult.event;
             const ensuredEvent = ensured?.event && typeof ensured.event === 'object' ? ensured.event : null;
             backendCurrentReadFailed = refreshResult.backendUnavailable;
@@ -1106,6 +1133,8 @@ async function resolveCurrentSeasonEvent(type, options = {}) {
     }
 
     return readCurrentEventFromPublicData(eventType, {
+        eventId: options.eventId || null,
+        rosterId: options.rosterId || null,
         cacheTtlMs: options.reconcile || options.ensureCurrent ? 0 : options.cacheTtlMs,
         timeoutMs: options.timeoutMs
     });

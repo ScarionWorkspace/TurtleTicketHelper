@@ -37,10 +37,10 @@ const ADMIN_ACTIONS = [
     ['Edit info', 'edit_info', 'Update the public signup info text.']
 ];
 
-function buildAdminOptionsRow(type, userId, messageId) {
+function buildAdminOptionsRow(type, eventId, userId, messageId) {
     return new ActionRowBuilder().addComponents(
         new StringSelectMenuBuilder()
-            .setCustomId(buildCustomId('admin', type, userId, messageId))
+            .setCustomId(buildCustomId('admin', type, { eventId, userId, messageId }))
             .setPlaceholder('Choose an event action')
             .setMinValues(1)
             .setMaxValues(1)
@@ -169,7 +169,8 @@ async function updateCurrentEvent(interaction, parsed, patch) {
         interaction,
         parsed.type,
         messageId,
-        'discord-admin'
+        'discord-admin',
+        parsed.eventId
     );
 
     if (!event || !eventId) {
@@ -183,6 +184,7 @@ async function updateCurrentEvent(interaction, parsed, patch) {
     });
 
     await refreshSignupMessage(interaction, parsed.type, {
+        eventId,
         reconcile: true,
         messageId,
         sourceType: 'discord-admin'
@@ -203,7 +205,7 @@ async function handleOptionsButton(interaction, parsed) {
     await interaction.reply({
         content: 'Season event options:',
         components: [
-            buildAdminOptionsRow(parsed.type, interaction.user.id, interaction.message?.id)
+            buildAdminOptionsRow(parsed.type, parsed.eventId, interaction.user.id, interaction.message?.id)
         ],
         flags: EPHEMERAL
     });
@@ -215,7 +217,8 @@ async function handleAdminShowStatus(interaction, parsed) {
         interaction,
         parsed.type,
         messageId,
-        'discord-admin'
+        'discord-admin',
+        parsed.eventId
     );
 
     await interaction.editReply({
@@ -234,7 +237,7 @@ async function handleAdminShowLeaderboard(interaction, parsed) {
         messageId,
         'discord-admin'
     );
-    const { leaderboard } = await loadEventForRendering(parsed.type, { source });
+    const { leaderboard } = await loadEventForRendering(parsed.type, { eventId: parsed.eventId, source });
 
     await interaction.editReply({
         content: `\`\`\`text\n${formatLeaderboardRows(leaderboard, parsed.type)}\n\`\`\``,
@@ -247,8 +250,11 @@ async function showTitleModal(interaction, parsed) {
         .setCustomId(buildCustomId(
             'title',
             parsed.type,
-            interaction.user.id,
-            getSourceMessageId(interaction, parsed)
+            {
+                eventId: parsed.eventId,
+                userId: interaction.user.id,
+                messageId: getSourceMessageId(interaction, parsed)
+            }
         ))
         .setTitle('Edit event title');
     const titleInput = new TextInputBuilder()
@@ -267,8 +273,11 @@ async function showInfoModal(interaction, parsed) {
         .setCustomId(buildCustomId(
             'info',
             parsed.type,
-            interaction.user.id,
-            getSourceMessageId(interaction, parsed)
+            {
+                eventId: parsed.eventId,
+                userId: interaction.user.id,
+                messageId: getSourceMessageId(interaction, parsed)
+            }
         ))
         .setTitle('Edit signup info');
     const infoInput = new TextInputBuilder()
@@ -316,8 +325,8 @@ async function handleAdminSelect(interaction, parsed) {
 
     if (action === 'refresh_message') {
         await refreshSignupMessage(interaction, parsed.type, {
+            eventId: parsed.eventId,
             reconcile: true,
-            ensureCurrent: parsed.type === 'cwl',
             messageId: getSourceMessageId(interaction, parsed),
             sourceType: 'discord-admin'
         });

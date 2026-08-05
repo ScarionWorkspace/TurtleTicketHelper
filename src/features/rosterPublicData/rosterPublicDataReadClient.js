@@ -328,6 +328,12 @@ function readCurrentCwlSeasonEventPointer(options = {}) {
     return readJsonPath(`${SEASON_EVENT_ROOT}/currentCwl`, options);
 }
 
+async function readCurrentCwlSeasonEventPointerForRoster(rosterId, options = {}) {
+    const pointers = await readJsonPath(`${SEASON_EVENT_ROOT}/currentCwlByRoster`, options);
+    const id = String(rosterId || '').trim();
+    return id && pointers && typeof pointers === 'object' ? pointers[id] || null : null;
+}
+
 function readLatestCompletedCwlSeasonEventPointer(options = {}) {
     return readJsonPath(`${SEASON_EVENT_ROOT}/latestCompletedCwl`, options);
 }
@@ -602,6 +608,7 @@ module.exports = {
     readJsonPath,
     readCurrentSeasonEventPointer,
     readCurrentCwlSeasonEventPointer,
+    readCurrentCwlSeasonEventPointerForRoster,
     readLatestCompletedCwlSeasonEventPointer,
     readCwlSeasonEventAggregate,
     readSeasonEventById,

@@ -59,6 +59,8 @@ async function refreshSignupMessage(interaction, type, options = {}) {
         options.sourceType || 'discord-refresh'
     );
     const { event, leaderboard } = await loadEventForRendering(type, {
+        eventId: options.eventId || null,
+        rosterId: options.rosterId || null,
         reconcile: options.reconcile === true && type !== 'cwl',
         ensureCurrent: type === 'cwl' && options.ensureCurrent === true,
         seedEvent: options.seedEvent || null,
@@ -78,10 +80,12 @@ async function resolveEventForMutation(
     interaction,
     type,
     messageId,
-    sourceType = 'discord-button'
+    sourceType = 'discord-button',
+    eventId = null
 ) {
     const source = buildInteractionSource(interaction, type, messageId, sourceType);
     const context = await loadSeasonEventMutationContext(type, buildDiscordUser(interaction), {
+        eventId,
         source
     });
     const event = context.event;

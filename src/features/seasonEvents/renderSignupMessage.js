@@ -692,28 +692,30 @@ function getConfirmedCount(event, rows) {
         0;
 }
 
-function buildSignupComponents(type) {
+function buildSignupComponents(type, eventRaw = null) {
     const labels = appConfig.seasonEvents?.labels || {};
+    const eventId = String(eventRaw?.eventId || eventRaw?.id || '').trim();
+    const context = eventId ? { eventId } : undefined;
 
     return [
         new ActionRowBuilder().addComponents(
             new ButtonBuilder()
-                .setCustomId(buildCustomId('refresh', type))
+                .setCustomId(buildCustomId('refresh', type, context))
                 .setEmoji('🔄')
                 .setLabel(labels.refresh || 'Refresh')
                 .setStyle(ButtonStyle.Secondary),
             new ButtonBuilder()
-                .setCustomId(buildCustomId('signup', type))
+                .setCustomId(buildCustomId('signup', type, context))
                 .setEmoji('✅')
                 .setLabel(labels.signup || 'Signup')
                 .setStyle(ButtonStyle.Success),
             new ButtonBuilder()
-                .setCustomId(buildCustomId('optout', type))
+                .setCustomId(buildCustomId('optout', type, context))
                 .setEmoji('❌')
                 .setLabel(labels.optOut || 'Opt-out')
                 .setStyle(ButtonStyle.Danger),
             new ButtonBuilder()
-                .setCustomId(buildCustomId('options', type))
+                .setCustomId(buildCustomId('options', type, context))
                 .setEmoji('⚙️')
                 .setLabel(labels.options || 'Options')
                 .setStyle(ButtonStyle.Secondary)
@@ -777,7 +779,7 @@ function buildSignupMessage(type, event, leaderboard = null) {
 
     return {
         embeds: [embed],
-        components: buildSignupComponents(type)
+        components: buildSignupComponents(type, event)
     };
 }
 

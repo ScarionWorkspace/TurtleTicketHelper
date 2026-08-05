@@ -189,8 +189,9 @@ test('signup uses one authoritative mutation call despite stale Cloudflare cache
 
 for (const eventType of ['push', 'cwl']) {
     test(`${eventType} seasonal signup uses the same one-call authoritative flow`, async () => {
+        const boundEventId = eventType === 'cwl' ? 'cwl-second-current' : `${eventType}-current`;
         const event = makeEvent({
-            eventId: `${eventType}-current`,
+            eventId: boundEventId,
             type: eventType,
             cwlTrackingState: eventType === 'cwl' ? 'active' : undefined,
             cwl: eventType === 'cwl'
@@ -214,9 +215,13 @@ for (const eventType of ['push', 'cwl']) {
         installBackendLeaderboard(event);
 
         const { interaction, state } = makeInteraction();
-        await handleSignupButton(interaction, { type: eventType });
+        await handleSignupButton(interaction, {
+            type: eventType,
+            eventId: eventType === 'cwl' ? boundEventId : null
+        });
 
         assert.equal(signupPayload.eventType, eventType);
+        assert.equal(signupPayload.eventId, eventType === 'cwl' ? boundEventId : null);
         assert.equal(signupPayload.playerTags, undefined);
         assert.match(state.edits[0].content, /signed up/i);
         assert.equal(state.messageEdits.length, 1);

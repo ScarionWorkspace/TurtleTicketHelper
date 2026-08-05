@@ -5,7 +5,7 @@ const { buildSignupMessage } = require('./renderSignupMessage');
 const { getEventTypeConfig, normalizeEventType } = require('./constants');
 const { buildInteractionSource } = require('./interactionSource');
 
-async function sendSeasonEventSignupMessage(interaction, type) {
+async function sendSeasonEventSignupMessage(interaction, type, options = {}) {
     const eventType = normalizeEventType(type);
     const typeConfig = getEventTypeConfig(eventType);
 
@@ -39,6 +39,7 @@ async function sendSeasonEventSignupMessage(interaction, type) {
 
     const source = buildInteractionSource(interaction, eventType, null, 'discord-admin');
     const { event, leaderboard } = await loadEventForRendering(eventType, {
+        rosterId: options.rosterId || null,
         reconcile: eventType !== 'cwl',
         ensureCurrent: eventType === 'cwl',
         source
@@ -53,8 +54,9 @@ async function sendSeasonEventSignupMessage(interaction, type) {
 
     const message = await channel.send(buildSignupMessage(eventType, event, leaderboard));
 
+    const rosterTitle = event?.cwl?.target?.rosterTitle || event?.cwl?.target?.rosterId || '';
     await interaction.editReply({
-        content: `${typeConfig.title} signup message sent: ${message.url}`
+        content: `${typeConfig.title}${rosterTitle ? ` for ${rosterTitle}` : ''} signup message sent: ${message.url}`
     });
 }
 

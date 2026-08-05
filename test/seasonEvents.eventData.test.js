@@ -20,6 +20,7 @@ const originalBackend = {
 const originalPublicData = {
     readCurrentSeasonEventPointer: rosterPublicData.readCurrentSeasonEventPointer,
     readCurrentCwlSeasonEventPointer: rosterPublicData.readCurrentCwlSeasonEventPointer,
+    readCurrentCwlSeasonEventPointerForRoster: rosterPublicData.readCurrentCwlSeasonEventPointerForRoster,
     readSeasonEventById: rosterPublicData.readSeasonEventById,
     readCwlSeasonEventAggregate: rosterPublicData.readCwlSeasonEventAggregate,
     readAllActivePlayerMetricsByTag: rosterPublicData.readAllActivePlayerMetricsByTag,
@@ -417,12 +418,16 @@ test('loadEventForRendering refreshes ensured CWL event before rendering signup 
 
     const result = await loadEventForRendering('cwl', {
         ensureCurrent: true,
+        rosterId: 'second',
         source
     });
 
     assert.deepEqual(calls.map(call => call.method), ['ensure', 'refresh', 'leaderboard']);
     assert.deepEqual(calls[0].payload.source, source);
+    assert.equal(calls[0].payload.rosterId, 'second');
     assert.deepEqual(calls[1].payload.source, source);
+    assert.equal(calls[1].payload.rosterId, 'second');
+    assert.equal(calls[1].payload.eventId, waitingEvent.eventId);
     assert.equal(calls[2].payload.eventId, activeEvent.eventId);
     assert.equal(result.source, 'backend');
     assert.equal(result.event.cwlTrackingState, 'active');

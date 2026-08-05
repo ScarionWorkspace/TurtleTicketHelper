@@ -51,6 +51,7 @@ function invalidateSeasonEventReads(eventId, type) {
         rosterPublicData.invalidateReadCachePrefix(`events/seasonEvents/cwlAggregates/byEvent/${encoded}`);
     }
     rosterPublicData.invalidateReadCachePath(type === 'cwl' ? 'events/seasonEvents/currentCwl' : 'events/seasonEvents/current');
+    if (type === 'cwl') rosterPublicData.invalidateReadCachePath('events/seasonEvents/currentCwlByRoster');
     rosterPublicData.invalidateReadCachePath('bootstrap/current');
 }
 
@@ -78,13 +79,13 @@ function normalizeLinkedAccounts(accounts) {
         .slice(0, 25);
 }
 
-function buildAccountPickerComponents(type, userId, messageId, accounts, mode) {
+function buildAccountPickerComponents(type, eventId, userId, messageId, accounts, mode) {
     const maxAccounts = getMaxAccountsForType(type);
 
     return [
         new ActionRowBuilder().addComponents(
             new StringSelectMenuBuilder()
-                .setCustomId(buildCustomId('select', type, userId, messageId, mode))
+                .setCustomId(buildCustomId('select', type, { eventId, userId, messageId, mode }))
                 .setPlaceholder(`Choose up to ${maxAccounts} account${maxAccounts === 1 ? '' : 's'}`)
                 .setMinValues(1)
                 .setMaxValues(Math.max(1, Math.min(maxAccounts, accounts.length)))
@@ -98,22 +99,22 @@ function buildAccountPickerComponents(type, userId, messageId, accounts, mode) {
     ];
 }
 
-function buildManageComponents(type, userId, messageId) {
+function buildManageComponents(type, eventId, userId, messageId) {
     return [
         new ActionRowBuilder().addComponents(
             new ButtonBuilder()
-                .setCustomId(buildCustomId('update', type, userId, messageId))
+                .setCustomId(buildCustomId('update', type, { eventId, userId, messageId }))
                 .setLabel('Update accounts')
                 .setStyle(ButtonStyle.Primary),
             new ButtonBuilder()
-                .setCustomId(buildCustomId('cancel', type, userId, messageId))
+                .setCustomId(buildCustomId('cancel', type, { eventId, userId, messageId }))
                 .setLabel('Cancel signup')
                 .setStyle(ButtonStyle.Danger)
         )
     ];
 }
 
-async function showAccountPicker(interaction, type, accounts, messageId, mode, content = null) {
+async function showAccountPicker(interaction, type, eventId, accounts, messageId, mode, content = null) {
     const normalizedAccounts = normalizeLinkedAccounts(accounts);
     const typeConfig = getEventTypeConfig(type);
 
@@ -131,6 +132,7 @@ async function showAccountPicker(interaction, type, accounts, messageId, mode, c
             `Choose the account${getMaxAccountsForType(type) === 1 ? '' : 's'} for ${typeConfig.title}.`,
         components: buildAccountPickerComponents(
             type,
+            eventId,
             interaction.user.id,
             messageId,
             normalizedAccounts,
@@ -146,10 +148,10 @@ function getParticipantStatus(participant) {
         .replace(/-/g, '_');
 }
 
-async function showManageResponse(interaction, type, messageId, result) {
+async function showManageResponse(interaction, type, eventId, messageId, result) {
     await interaction.editReply({
         content: getStatusMessage(getResultStatus(result, 'already-signed-up')),
-        components: buildManageComponents(type, interaction.user.id, messageId)
+        components: buildManageComponents(type, eventId, interaction.user.id, messageId)
     });
 }
 
@@ -175,6 +177,7 @@ async function handleSignupButton(interaction, parsed) {
     const discordUser = buildDiscordUser(interaction);
     const result = await rosterBackend.registerSeasonEventSignup({
         eventType: parsed.type,
+        eventId: parsed.eventId || null,
         discordUser,
         source: buildInteractionSource(
             interaction,
@@ -188,7 +191,7 @@ async function handleSignupButton(interaction, parsed) {
     const eventId = getEventId(event);
 
     if (status === 'already-signed-up' || status === 'accounts-differ-use-update-endpoint') {
-        await showManageResponse(interaction, parsed.type, messageId, result);
+        await showManageResponse(interaction, parsed.type, getEventId(event) || parsed.eventId, messageId, result);
         return;
     }
 
@@ -196,6 +199,7 @@ async function handleSignupButton(interaction, parsed) {
         await showAccountPicker(
             interaction,
             parsed.type,
+            getEventId(event) || parsed.eventId,
             Array.isArray(result?.linkedAccounts) ? result.linkedAccounts : [],
             messageId,
             'signup'
@@ -215,7 +219,7 @@ async function handleSignupButton(interaction, parsed) {
         content: getStatusMessage(status),
         components: []
     });
-    await refreshSignupMessageAfterMutationBestEffort(interaction, parsed.type, { messageId, seedEvent: event });
+    await refreshSignupMessageAfterMutationBestEffort(interaction, parsed.type, { eventId: eventId || parsed.eventId, messageId, seedEvent: event });
 }
 
 async function cancelSignup(interaction, parsed, messageId) {
@@ -223,7 +227,8 @@ async function cancelSignup(interaction, parsed, messageId) {
         interaction,
         parsed.type,
         messageId,
-        'discord-cancel'
+        'discord-cancel',
+        parsed.eventId
     );
 
     if (!event || !eventId) {
@@ -237,7 +242,7 @@ async function cancelSignup(interaction, parsed, messageId) {
     });
 
     invalidateSeasonEventReads(eventId, parsed.type);
-    await refreshSignupMessageAfterMutationBestEffort(interaction, parsed.type, { messageId, seedEvent: result?.event || event });
+    await refreshSignupMessageAfterMutationBestEffort(interaction, parsed.type, { eventId, messageId, seedEvent: result?.event || event });
     return getResultStatus(result, 'cancelled');
 }
 
@@ -290,7 +295,8 @@ async function handleUpdateButton(interaction, parsed) {
         interaction,
         parsed.type,
         messageId,
-        'discord-account-update'
+        'discord-account-update',
+        parsed.eventId
     );
 
     if (!event || !eventId) {
@@ -318,7 +324,7 @@ async function handleUpdateButton(interaction, parsed) {
     if (parsed.type === 'cwl' && !isCwlEventTargetResolved(event)) {
         await interaction.editReply({
             content: getStatusMessage('cwl-target-unresolved'),
-            components: buildManageComponents(parsed.type, interaction.user.id, messageId)
+            components: buildManageComponents(parsed.type, eventId, interaction.user.id, messageId)
         });
         return;
     }
@@ -326,7 +332,7 @@ async function handleUpdateButton(interaction, parsed) {
     if (linkedAccounts.length === 0) {
         await interaction.editReply({
             content: getStatusMessage('not-linked'),
-            components: buildManageComponents(parsed.type, interaction.user.id, messageId)
+            components: buildManageComponents(parsed.type, eventId, interaction.user.id, messageId)
         });
         return;
     }
@@ -334,7 +340,7 @@ async function handleUpdateButton(interaction, parsed) {
     if (linkedAccounts.length > 0 && eligibleAccounts.length === 0) {
         await interaction.editReply({
             content: getStatusMessage('accounts-outside-event-roster'),
-            components: buildManageComponents(parsed.type, interaction.user.id, messageId)
+            components: buildManageComponents(parsed.type, eventId, interaction.user.id, messageId)
         });
         return;
     }
@@ -342,6 +348,7 @@ async function handleUpdateButton(interaction, parsed) {
     await showAccountPicker(
         interaction,
         parsed.type,
+        eventId,
         eligibleAccounts,
         messageId,
         'update',
@@ -374,6 +381,7 @@ async function handleAccountSelect(interaction, parsed) {
     if (parsed.mode !== 'update') {
         const result = await rosterBackend.registerSeasonEventSignup({
             eventType: parsed.type,
+            eventId: parsed.eventId || null,
             discordUser: buildDiscordUser(interaction),
             playerTags: validation.playerTags,
             source: buildInteractionSource(
@@ -388,7 +396,7 @@ async function handleAccountSelect(interaction, parsed) {
         const eventId = getEventId(event);
 
         if (status === 'already-signed-up' || status === 'accounts-differ-use-update-endpoint') {
-            await showManageResponse(interaction, parsed.type, messageId, result);
+            await showManageResponse(interaction, parsed.type, getEventId(event) || parsed.eventId, messageId, result);
             return;
         }
 
@@ -405,7 +413,7 @@ async function handleAccountSelect(interaction, parsed) {
             content: getStatusMessage(status),
             components: []
         });
-        await refreshSignupMessageAfterMutationBestEffort(interaction, parsed.type, { messageId, seedEvent: event });
+        await refreshSignupMessageAfterMutationBestEffort(interaction, parsed.type, { eventId: eventId || parsed.eventId, messageId, seedEvent: event });
         return;
     }
 
@@ -413,7 +421,8 @@ async function handleAccountSelect(interaction, parsed) {
         interaction,
         parsed.type,
         messageId,
-        parsed.mode === 'update' ? 'discord-account-update' : 'discord-button'
+        parsed.mode === 'update' ? 'discord-account-update' : 'discord-button',
+        parsed.eventId
     );
 
     if (!event || !eventId) {
@@ -455,7 +464,7 @@ async function handleAccountSelect(interaction, parsed) {
     if (parsed.type === 'cwl' && !isCwlEventTargetResolved(event)) {
         await interaction.editReply({
             content: getStatusMessage('cwl-target-unresolved'),
-            components: parsed.mode === 'update' ? buildManageComponents(parsed.type, interaction.user.id, messageId) : []
+            components: parsed.mode === 'update' ? buildManageComponents(parsed.type, eventId, interaction.user.id, messageId) : []
         });
         return;
     }
@@ -463,7 +472,7 @@ async function handleAccountSelect(interaction, parsed) {
     if (hasOutsideRosterTag) {
         await interaction.editReply({
             content: getStatusMessage('player-tag-outside-event-roster'),
-            components: parsed.mode === 'update' ? buildManageComponents(parsed.type, interaction.user.id, messageId) : []
+            components: parsed.mode === 'update' ? buildManageComponents(parsed.type, eventId, interaction.user.id, messageId) : []
         });
         return;
     }
@@ -495,7 +504,7 @@ async function handleAccountSelect(interaction, parsed) {
     );
 
     if (status === 'already-signed-up' || status === 'accounts-differ-use-update-endpoint') {
-        await showManageResponse(interaction, parsed.type, messageId, result);
+        await showManageResponse(interaction, parsed.type, eventId, messageId, result);
         return;
     }
 
@@ -504,7 +513,7 @@ async function handleAccountSelect(interaction, parsed) {
         content: getStatusMessage(status),
         components: []
     });
-    await refreshSignupMessageAfterMutationBestEffort(interaction, parsed.type, { messageId, seedEvent: result?.event || event });
+    await refreshSignupMessageAfterMutationBestEffort(interaction, parsed.type, { eventId, messageId, seedEvent: result?.event || event });
 }
 
 module.exports = {

@@ -106,7 +106,27 @@ test('readJsonPath prefers protected Cloudflare bot data when configured', async
     });
     assert.equal(requested.length, 1);
     assert.equal(requested[0].url, 'https://worker.example/api/bot-data/active.json');
-    assert.equal(requested[0].options.headers.Authorization, 'Bearer worker-secret');
+  assert.equal(requested[0].options.headers.Authorization, 'Bearer worker-secret');
+});
+
+test('roster-specific CWL pointer reads select the requested event from the canonical pointer map', async () => {
+    const requestedUrls = [];
+    const client = loadClient();
+
+    global.fetch = async url => {
+        requestedUrls.push(url);
+        return makeJsonResponse({
+            main: { eventId: 'cwl-main', type: 'cwl' },
+            second: { eventId: 'cwl-second', type: 'cwl' }
+        });
+    };
+
+    const pointer = await client.readCurrentCwlSeasonEventPointerForRoster('second');
+
+    assert.deepEqual(pointer, { eventId: 'cwl-second', type: 'cwl' });
+    assert.deepEqual(requestedUrls, [
+        'https://turtlecoc.4jbf82gng5.workers.dev/api/bot-data/events/seasonEvents/currentCwlByRoster.json'
+    ]);
 });
 
 test('readJsonPath does not fall back to direct database when public data is not configured', async () => {

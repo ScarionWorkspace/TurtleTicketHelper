@@ -42,6 +42,18 @@ module.exports = {
     name: 'interactionCreate',
     async execute(interaction, client) {
         try {
+            if (interaction.isAutocomplete?.()) {
+                const command = client.commands.get(interaction.commandName);
+                try {
+                    if (command && typeof command.autocomplete === 'function') await command.autocomplete(interaction);
+                    else await interaction.respond([]);
+                } catch (error) {
+                    console.error(`Error autocompleting /${interaction.commandName}:`, error);
+                    await interaction.respond([]).catch(() => null);
+                }
+                return;
+            }
+
             if (interaction.isChatInputCommand()) {
                 const command = client.commands.get(interaction.commandName);
 
