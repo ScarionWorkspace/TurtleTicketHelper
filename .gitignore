@@ -12,6 +12,10 @@ env
 # logs
 logs/
 *.log
+
+# bot runtime state
+data/war-followup-state.json
+data/war-followup-state.json.*
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

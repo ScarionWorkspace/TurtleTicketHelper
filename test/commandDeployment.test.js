@@ -4,6 +4,7 @@ const { test } = require('node:test');
 process.env.TURTLE_HELPER_SKIP_DOTENV = '1';
 
 const {
+    getOtherCommandRoute,
     normalizeDeploymentScope,
     resolveDeploymentScope
 } = require('../deploy-commands');
@@ -39,4 +40,9 @@ test('command deployment rejects invalid scopes and unknown arguments', () => {
         () => resolveDeploymentScope(['--prod'], {}),
         /Unknown command deployment argument/
     );
+});
+
+test('guild deployment targets global commands as the duplicate scope to clear', () => {
+    assert.match(getOtherCommandRoute('guild'), /\/applications\/.*\/commands$/);
+    assert.doesNotMatch(getOtherCommandRoute('guild'), /\/guilds\//);
 });

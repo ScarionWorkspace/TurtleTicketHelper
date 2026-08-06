@@ -147,6 +147,51 @@ test('backend client reports HTML responses without exposing raw markup', async 
     );
 });
 
+test('War Follow Up wrappers keep the bot credential in the existing method contracts', async () => {
+    const bodies = [];
+    const client = loadClient();
+    global.fetch = async (_url, init) => {
+        bodies.push(JSON.parse(init.body));
+        return makeJsonResponse({ ok: true, result: { ok: true } });
+    };
+
+    await client.getWarFollowupState();
+    await client.getWarFollowupCase('#PLAYER');
+    await client.mutateWarFollowupCase({
+        tag: '#PLAYER',
+        action: 'dismiss',
+        mutationId: 'mutation-1'
+    });
+    await client.saveWarFollowupSettings(
+        { regularMissedThreshold: 3 },
+        '2026-08-01T00:00:00.000Z',
+        'rules-1'
+    );
+    await client.setWarFollowupTrustedAccount('#PLAYER', true, 'trust-1');
+
+    assert.deepEqual(bodies.map(body => body.method), [
+        'getWarFollowupState',
+        'getWarFollowupCase',
+        'mutateWarFollowupCase',
+        'saveWarFollowupSettings',
+        'setWarFollowupTrustedAccount'
+    ]);
+    assert.deepEqual(bodies[0].args, ['secret']);
+    assert.deepEqual(bodies[1].args, ['#PLAYER', 'secret']);
+    assert.deepEqual(bodies[2].args, [{
+        tag: '#PLAYER',
+        action: 'dismiss',
+        mutationId: 'mutation-1'
+    }, 'secret']);
+    assert.deepEqual(bodies[3].args, [
+        { regularMissedThreshold: 3 },
+        'secret',
+        '2026-08-01T00:00:00.000Z',
+        'rules-1'
+    ]);
+    assert.deepEqual(bodies[4].args, ['#PLAYER', true, 'secret', 'trust-1']);
+});
+
 test('season event calls retry a transient Apps Script HTML error', async () => {
     const client = loadClient();
     let attempts = 0;

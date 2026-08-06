@@ -11,6 +11,9 @@ It automatically renames ticket channels, handles join clan applications, and fe
 - Opens a modal for player application data
 - Fetches Clash of Clans player information through the Clash of Clans API
 - Lets staff recommend clans directly inside the ticket
+- Mirrors the private web-admin War Follow Up queue in Discord
+- Supports staff review, watch periods, hero-down decisions, prepared/direct DMs, recovery tracking, notes, assignments, closes, reopen, and reversible permanent ignores
+- Provides independently opt-in attack reminders, staff alerts, regular-war summaries, CWL all-clear updates, final CWL missed-attack reports, and Discord-link gap digests
 
 ## Requirements
 
@@ -38,6 +41,8 @@ CLOSED_TICKET_CATEGORY_ID=your_closed_ticket_category_id_here
 TICKET_TOOL_BOT_ID=your_ticket_tool_bot_id_here
 CLASHPERK_BOT_ID=your_clashperk_bot_id_here
 COC_API_TOKEN=your_clash_of_clans_api_key_here
+ROSTER_BACKEND_URL=https://script.google.com/macros/s/your-deployment-id/exec
+ROSTER_BOT_SECRET=your_shared_discord_backend_secret
 ```
 
 `DISCORD_BOT_TOKEN` and `CLASH_OF_CLANS_API_KEY` are still accepted as compatibility aliases, but `DISCORD_TOKEN` and `COC_API_TOKEN` are the preferred names.
@@ -134,6 +139,23 @@ Recommended additional permissions:
 The important part is that the bot can read ticket channels, rename channels, and send messages inside them.
 Manage Roles is required if you use the join clan application role assignment flow.
 
+## War Follow Up
+
+War Follow Up uses the same private cases and rules as the roster web-admin panel. Evidence is derived from the existing Cloudflare bot-data snapshot, so the bot does not add Clash API polling or public-data writes.
+
+Run `/war-follow-up setup` as staff and select a dedicated staff channel. The dashboard is enabled by that explicit setup, while every notification category remains off until its own boolean option is enabled. Running setup again changes only the options supplied; it does not reset the others.
+
+Available staff entry points:
+
+- `/war-follow-up panel` opens the private queue.
+- `/war-follow-up case` opens or manually adds a player.
+- `/war-follow-up rules` edits the shared regular-war, CWL, and workflow rules.
+- `/war-follow-up ignored` restores permanently ignored accounts.
+- `/war-follow-up status` shows Discord-specific opt-ins.
+- `/war-follow-up sync-now` performs one bounded dashboard/notification pass.
+
+Notification delivery keys and Discord-only settings are stored atomically in `data/war-followup-state.json`. The file is ignored by Git and must be retained with other VPS runtime data. The scheduler runs every five minutes, coalesces public reads, caches the private state for ten minutes, baselines existing cases on first observation, and never replays summaries from before a category was enabled.
+
 ## Clash of Clans API Setup
 
 Create a Clash of Clans API key and add it to:
@@ -195,6 +217,8 @@ node deploy-commands.js --guild
 node deploy-commands.js --global
 ```
 
+The deployment script replaces the selected scope and clears the other scope. This prevents Discord from displaying every command twice when the same application previously had both guild and global registrations.
+
 Startup command deployment is intentionally off. If you need the old behavior for a controlled environment, set:
 
 ```env
@@ -214,6 +238,7 @@ Leave this unset or `false` for normal local/dev/prod bot startup.
 - Ticket Tool bot ID added to `.env`
 - ClashPerk bot ID added to `.env`
 - Clash of Clans API key added to `.env` as `COC_API_TOKEN`
+- Roster Apps Script URL and shared bot secret configured for War Follow Up and roster features
 - Server Members Intent enabled
 - Message Content Intent enabled
 - Ticket Tool configured with both categories

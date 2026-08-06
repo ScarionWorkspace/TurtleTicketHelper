@@ -11,6 +11,7 @@ const {
 const { loadCommands } = require('./src/utils/loadCommands');
 
 const DEPLOYMENT_SCOPES = new Set(['guild', 'global']);
+const SNOWFLAKE_PATTERN = /^\d{17,20}$/;
 
 function normalizeDeploymentScope(value) {
     const scope = String(value || '').trim().toLowerCase();
@@ -70,6 +71,16 @@ function getCommandRoute(scope) {
     return Routes.applicationGuildCommands(DISCORD_CLIENT_ID, DISCORD_GUILD_ID);
 }
 
+function getOtherCommandRoute(scope) {
+    if (scope === 'global') {
+        return SNOWFLAKE_PATTERN.test(DISCORD_GUILD_ID)
+            ? Routes.applicationGuildCommands(DISCORD_CLIENT_ID, DISCORD_GUILD_ID)
+            : null;
+    }
+
+    return Routes.applicationCommands(DISCORD_CLIENT_ID);
+}
+
 async function main(argv = process.argv.slice(2)) {
     const scope = resolveDeploymentScope(argv);
 
@@ -92,7 +103,15 @@ async function main(argv = process.argv.slice(2)) {
         { body: commands }
     );
 
-    console.log(`Successfully reloaded ${commands.length} ${scope} application commands.`);
+    const otherRoute = getOtherCommandRoute(scope);
+    if (otherRoute) {
+        await rest.put(otherRoute, { body: [] });
+    }
+
+    console.log(
+        `Successfully reloaded ${commands.length} ${scope} application commands` +
+        `${otherRoute ? ' and cleared the other scope to remove duplicates' : ''}.`
+    );
 }
 
 if (require.main === module) {
@@ -104,6 +123,8 @@ if (require.main === module) {
 
 module.exports = {
     main,
+    getCommandRoute,
+    getOtherCommandRoute,
     normalizeDeploymentScope,
     resolveDeploymentScope
 };

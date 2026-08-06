@@ -12,6 +12,9 @@ const {
 const {
     handleLinkListInteraction
 } = require('../features/linkList/linkListInteraction');
+const {
+    handleWarFollowupInteraction
+} = require('../features/warFollowup/interaction');
 
 async function replyToFailedInteraction(interaction) {
     try {
@@ -19,6 +22,17 @@ async function replyToFailedInteraction(interaction) {
             content: 'There was an error while handling this interaction.',
             flags: 64
         };
+
+        if (
+            interaction.deferred &&
+            !interaction.replied &&
+            interaction.isChatInputCommand?.() &&
+            typeof interaction.editReply === 'function'
+        ) {
+            const { flags, ...editablePayload } = payload;
+            await interaction.editReply(editablePayload);
+            return;
+        }
 
         if (interaction.replied || interaction.deferred) {
             await interaction.followUp(payload);
@@ -76,6 +90,10 @@ module.exports = {
             }
 
             if (interaction.isButton()) {
+                if (await handleWarFollowupInteraction(interaction)) {
+                    return;
+                }
+
                 if (await handleLinkListInteraction(interaction)) {
                     return;
                 }
@@ -106,6 +124,10 @@ module.exports = {
             }
 
             if (interaction.isStringSelectMenu()) {
+                if (await handleWarFollowupInteraction(interaction)) {
+                    return;
+                }
+
                 if (await handleLinkListInteraction(interaction)) {
                     return;
                 }
@@ -127,6 +149,10 @@ module.exports = {
             }
 
             if (interaction.isModalSubmit()) {
+                if (await handleWarFollowupInteraction(interaction)) {
+                    return;
+                }
+
                 if (await handleSeasonEventInteraction(interaction)) {
                     return;
                 }

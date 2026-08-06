@@ -7,7 +7,8 @@ const FLAG_NAME = 'DISCORD_REGISTER_GLOBAL_COMMANDS_ON_STARTUP';
 
 const originalEnv = {
     TURTLE_HELPER_SKIP_DOTENV: process.env.TURTLE_HELPER_SKIP_DOTENV,
-    [FLAG_NAME]: process.env[FLAG_NAME]
+    [FLAG_NAME]: process.env[FLAG_NAME],
+    DISCORD_GUILD_ID: process.env.DISCORD_GUILD_ID
 };
 const originalConsole = {
     log: console.log,
@@ -29,7 +30,7 @@ function clearModuleCache() {
     delete require.cache[require.resolve(READY_MODULE_PATH)];
 }
 
-function loadClientReady(flagValue) {
+function loadClientReady(flagValue, guildId) {
     clearModuleCache();
     process.env.TURTLE_HELPER_SKIP_DOTENV = '1';
 
@@ -39,11 +40,15 @@ function loadClientReady(flagValue) {
         process.env[FLAG_NAME] = flagValue;
     }
 
+    if (guildId === undefined) delete process.env.DISCORD_GUILD_ID;
+    else process.env.DISCORD_GUILD_ID = guildId;
+
     return require(READY_MODULE_PATH);
 }
 
 function createClient() {
     const setCalls = [];
+    const guildSetCalls = [];
     const commandPayloads = [
         { name: 'link' },
         { name: 'roster' }
@@ -66,10 +71,21 @@ function createClient() {
                 }
             }
         },
+        guilds: {
+            cache: new Map([['123456789012345678', {
+                commands: {
+                    set: async commands => guildSetCalls.push(commands)
+                }
+            }]])
+        },
+        channels: {
+            cache: new Map()
+        },
         user: {
             tag: 'TestBot#0001'
         },
-        setCalls
+        setCalls,
+        guildSetCalls
     };
 }
 
@@ -102,7 +118,7 @@ test('client ready does not register global slash commands by default', async ()
 });
 
 test('client ready registers global slash commands when explicitly enabled', async () => {
-    const event = loadClientReady('true');
+    const event = loadClientReady('true', '123456789012345678');
     const client = createClient();
 
     await withMutedConsole(() => event.execute(client));
@@ -111,6 +127,7 @@ test('client ready registers global slash commands when explicitly enabled', asy
         { name: 'link' },
         { name: 'roster' }
     ]]);
+    assert.deepEqual(client.guildSetCalls, [[]]);
 });
 
 test('client ready treats false startup registration flag as disabled', async () => {

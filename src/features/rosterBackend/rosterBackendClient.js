@@ -9,6 +9,8 @@ const CWL_EVENT_REFRESH_TIMEOUT_MS = 180_000;
 const SEASON_EVENT_TIMEOUT_MS = 45_000;
 const SEASON_EVENT_MAX_ATTEMPTS = 2;
 const SEASON_EVENT_RETRY_DELAY_MS = 250;
+const WAR_FOLLOWUP_TIMEOUT_MS = 45_000;
+const WAR_FOLLOWUP_MAX_ATTEMPTS = 2;
 
 function normalizeBackendUrl(value) {
     const raw = String(value || '').trim();
@@ -268,6 +270,36 @@ async function callSeasonEventMethod(methodName, payload = {}, options = {}) {
     });
 }
 
+async function callWarFollowupMethod(methodName, args = [], options = {}) {
+    const maxAttempts = Math.max(1, Number(options.maxAttempts) || WAR_FOLLOWUP_MAX_ATTEMPTS);
+    const requestOptions = {
+        ...options,
+        timeoutMs: options.timeoutMs ?? WAR_FOLLOWUP_TIMEOUT_MS
+    };
+    delete requestOptions.maxAttempts;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        try {
+            return await callRosterBackendMethod(methodName, args, requestOptions);
+        } catch (error) {
+            error.method = error.method || methodName;
+            error.attempts = attempt;
+
+            if (attempt >= maxAttempts || !isTransientSeasonEventError(error)) {
+                throw error;
+            }
+
+            await wait(SEASON_EVENT_RETRY_DELAY_MS);
+        }
+    }
+
+    throw new RosterBackendError('Roster backend request failed.', {
+        code: 'REQUEST_FAILED',
+        method: methodName,
+        attempts: maxAttempts
+    });
+}
+
 function syncDiscordIdentityForPlayerTag(payload = {}, options = {}) {
     return callRosterBackendMethod(
         'syncDiscordIdentityForPlayerTag',
@@ -422,6 +454,62 @@ function resetCwlLeaguePreferences(payload = {}, options = {}) {
     return callSeasonEventMethod('resetCwlLeaguePreferences', payload, options);
 }
 
+function getWarFollowupState(options = {}) {
+    return callWarFollowupMethod(
+        'getWarFollowupState',
+        [ROSTER_BOT_SECRET],
+        options
+    );
+}
+
+function getWarFollowupCase(playerTag, options = {}) {
+    return callWarFollowupMethod(
+        'getWarFollowupCase',
+        [playerTag, ROSTER_BOT_SECRET],
+        options
+    );
+}
+
+function mutateWarFollowupCase(request = {}, options = {}) {
+    return callWarFollowupMethod(
+        'mutateWarFollowupCase',
+        [request, ROSTER_BOT_SECRET],
+        options
+    );
+}
+
+function saveWarFollowupSettings(settings = {}, expectedRulesUpdatedAt = '', mutationId = '', options = {}) {
+    return callWarFollowupMethod(
+        'saveWarFollowupSettings',
+        [settings, ROSTER_BOT_SECRET, expectedRulesUpdatedAt, mutationId],
+        options
+    );
+}
+
+function getWarFollowupRulesStatus(mutationId, options = {}) {
+    return callWarFollowupMethod(
+        'getWarFollowupRulesStatus',
+        [mutationId, ROSTER_BOT_SECRET],
+        options
+    );
+}
+
+function getWarFollowupTrustStatus(playerTag, mutationId = '', options = {}) {
+    return callWarFollowupMethod(
+        'getWarFollowupTrustStatus',
+        [playerTag, ROSTER_BOT_SECRET, mutationId],
+        options
+    );
+}
+
+function setWarFollowupTrustedAccount(playerTag, trusted, mutationId = '', options = {}) {
+    return callWarFollowupMethod(
+        'setWarFollowupTrustedAccount',
+        [playerTag, trusted === true, ROSTER_BOT_SECRET, mutationId],
+        options
+    );
+}
+
 module.exports = {
     RosterBackendError,
     isRosterBackendConfigured,
@@ -447,5 +535,12 @@ module.exports = {
     getCwlLeaguePreferencesForDiscordUser,
     getCwlLeagueSignupContextForDiscordUser,
     clearCwlLeaguePreference,
-    resetCwlLeaguePreferences
+    resetCwlLeaguePreferences,
+    getWarFollowupState,
+    getWarFollowupCase,
+    mutateWarFollowupCase,
+    saveWarFollowupSettings,
+    getWarFollowupRulesStatus,
+    getWarFollowupTrustStatus,
+    setWarFollowupTrustedAccount
 };
