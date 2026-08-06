@@ -58,6 +58,20 @@ class RosterBackendError extends Error {
     }
 }
 
+function isAppsScriptContentRedirect(requestUrlRaw, redirectUrlRaw) {
+    try {
+        const requestUrl = new URL(requestUrlRaw);
+        const redirectUrl = new URL(redirectUrlRaw, requestUrl);
+        return requestUrl.protocol === 'https:' &&
+            requestUrl.hostname === 'script.google.com' &&
+            redirectUrl.protocol === 'https:' &&
+            redirectUrl.hostname === 'script.googleusercontent.com' &&
+            redirectUrl.pathname === '/macros/echo';
+    } catch {
+        return false;
+    }
+}
+
 function isAppsScriptAuthorizationRequiredHtml(response, text) {
     const status = Number(response?.status);
 
@@ -139,9 +153,38 @@ async function parseJsonResponse(response, context = {}) {
             ].filter(Boolean).join(' ');
         throw new RosterBackendError(detail, {
             status: response.status,
-            code: 'INVALID_JSON'
+            code: context.appsScriptRedirect === true && Number(response.status) === 404
+                ? 'APPS_SCRIPT_RESULT_UNAVAILABLE'
+                : 'INVALID_JSON'
         });
     }
+}
+
+async function fetchRosterBackendResponse(requestUrl, requestInit) {
+    const initialResponse = await fetch(requestUrl, {
+        ...requestInit,
+        redirect: 'manual'
+    });
+    if (![301, 302, 303].includes(Number(initialResponse.status))) {
+        return { response: initialResponse, appsScriptRedirect: false };
+    }
+
+    const location = initialResponse.headers?.get?.('location') || '';
+    const redirectUrl = location ? new URL(location, requestUrl).toString() : '';
+    if (!redirectUrl || !isAppsScriptContentRedirect(requestUrl, redirectUrl)) {
+        throw new RosterBackendError('Roster backend returned an unexpected redirect.', {
+            status: initialResponse.status,
+            code: 'UNSAFE_REDIRECT'
+        });
+    }
+
+    const response = await fetch(redirectUrl, {
+        method: 'GET',
+        redirect: 'error',
+        headers: { 'Accept': 'application/json' },
+        signal: requestInit.signal
+    });
+    return { response, appsScriptRedirect: true };
 }
 
 async function callRosterBackendMethod(methodName, args, options = {}) {
@@ -152,14 +195,11 @@ async function callRosterBackendMethod(methodName, args, options = {}) {
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
-        const response = await fetch(ROSTER_BACKEND_REQUEST_URL, {
+        const fetched = await fetchRosterBackendResponse(ROSTER_BACKEND_REQUEST_URL, {
             method: 'POST',
-            redirect: 'follow',
             headers: {
                 'Accept': 'application/json',
-                'Authorization': `Bearer ${ROSTER_BOT_SECRET}`,
-                'Content-Type': 'application/json',
-                'X-Discord-Bot-Secret': ROSTER_BOT_SECRET
+                'Content-Type': 'application/json'
             },
             body: JSON.stringify({
                 method: methodName,
@@ -168,9 +208,11 @@ async function callRosterBackendMethod(methodName, args, options = {}) {
             }),
             signal: controller.signal
         });
+        const response = fetched.response;
 
         const payload = await parseJsonResponse(response, {
-            requestUrl: ROSTER_BACKEND_REQUEST_URL
+            requestUrl: ROSTER_BACKEND_REQUEST_URL,
+            appsScriptRedirect: fetched.appsScriptRedirect
         });
 
         if (!response.ok) {
@@ -225,6 +267,7 @@ function isTransientSeasonEventError(error) {
 
     return code === 'TIMEOUT' ||
         code === 'REQUEST_FAILED' ||
+        code === 'APPS_SCRIPT_RESULT_UNAVAILABLE' ||
         (code === 'INVALID_JSON' && (status === 403 || status === 429 || status >= 500)) ||
         status === 408 ||
         status === 425 ||

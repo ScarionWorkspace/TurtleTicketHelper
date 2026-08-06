@@ -26,10 +26,10 @@ function clearClientModules() {
     delete require.cache[require.resolve(ENV_MODULE_PATH)];
 }
 
-function loadClient() {
+function loadClient(options = {}) {
     clearClientModules();
     process.env.TURTLE_HELPER_SKIP_DOTENV = '1';
-    process.env.ROSTER_BACKEND_URL = 'https://backend.example/api';
+    process.env.ROSTER_BACKEND_URL = options.url || 'https://backend.example/api';
     process.env.ROSTER_BOT_SECRET = 'secret';
 
     return require(CLIENT_MODULE_PATH);
@@ -54,6 +54,17 @@ function makeTextResponse(text, contentType = 'text/plain') {
             get: () => contentType
         },
         text: async () => text
+    };
+}
+
+function makeRedirectResponse(location) {
+    return {
+        ok: false,
+        status: 302,
+        headers: {
+            get: name => String(name).toLowerCase() === 'location' ? location : 'text/html'
+        },
+        text: async () => ''
     };
 }
 
@@ -149,9 +160,11 @@ test('backend client reports HTML responses without exposing raw markup', async 
 
 test('War Follow Up wrappers keep the bot credential in the existing method contracts', async () => {
     const bodies = [];
+    const headers = [];
     const client = loadClient();
     global.fetch = async (_url, init) => {
         bodies.push(JSON.parse(init.body));
+        headers.push(init.headers);
         return makeJsonResponse({ ok: true, result: { ok: true } });
     };
 
@@ -190,6 +203,50 @@ test('War Follow Up wrappers keep the bot credential in the existing method cont
         'rules-1'
     ]);
     assert.deepEqual(bodies[4].args, ['#PLAYER', true, 'secret', 'trust-1']);
+    for (const requestHeaders of headers) {
+        assert.equal(requestHeaders.Authorization, undefined);
+        assert.equal(requestHeaders['X-Discord-Bot-Secret'], undefined);
+        assert.equal(requestHeaders['Content-Type'], 'application/json');
+    }
+});
+
+test('Apps Script redirects are followed explicitly without forwarding credentials', async () => {
+    const client = loadClient({
+        url: 'https://script.google.com/macros/s/deployment-id/exec'
+    });
+    const calls = [];
+    global.fetch = async (url, init) => {
+        calls.push({ url: String(url), init });
+        if (calls.length === 1) {
+            return makeRedirectResponse(
+                'https://script.googleusercontent.com/macros/echo?user_content_key=opaque&lib=library'
+            );
+        }
+        return makeJsonResponse({ ok: true, result: { cases: [], settings: {} } });
+    };
+
+    await client.getWarFollowupState({ maxAttempts: 1 });
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0].init.redirect, 'manual');
+    assert.equal(calls[1].init.method, 'GET');
+    assert.equal(calls[1].init.body, undefined);
+    assert.deepEqual(calls[1].init.headers, { Accept: 'application/json' });
+    assert.doesNotMatch(JSON.stringify(calls[1]), /secret/);
+});
+
+test('unexpected backend redirects are rejected without forwarding the request body', async () => {
+    const client = loadClient();
+    let calls = 0;
+    global.fetch = async () => {
+        calls += 1;
+        return makeRedirectResponse('https://attacker.example/capture');
+    };
+
+    await assert.rejects(
+        () => client.getWarFollowupState({ maxAttempts: 1 }),
+        error => error.code === 'UNSAFE_REDIRECT'
+    );
+    assert.equal(calls, 1);
 });
 
 test('season event calls retry a transient Apps Script HTML error', async () => {
