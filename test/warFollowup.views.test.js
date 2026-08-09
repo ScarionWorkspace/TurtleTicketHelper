@@ -288,9 +288,13 @@ test('public Moderation Hub is a clean personalized entry point with stable auto
     const json = serialize(built.payload);
     const rendered = JSON.stringify(json);
     assert.match(rendered, /Moderation Hub/);
-    assert.match(rendered, /Set up my coverage/);
+    assert.match(rendered, /Choose clans/);
     assert.match(rendered, /Main/);
-    assert.match(rendered, /1 available/);
+    assert.match(rendered, /1 leader/);
+    assert.match(rendered, /Current workload/);
+    assert.match(rendered, /No attacks pending/);
+    assert.match(rendered, /Updates automatically/);
+    assert.doesNotMatch(rendered, /Fair workload assignment|24h\/48h|72h reassignment/);
     assert.equal(Object.prototype.hasOwnProperty.call(json, 'flags'), false, 'the singleton panel itself is public');
     assert.equal(json.components.length, 2);
     assert.equal(json.components.every(row => row.components.length === 2), true);
@@ -356,8 +360,14 @@ test('moderator settings, coverage, and personal ownership views stay within Dis
             }
         }
     };
+    const settingsPayload = views.buildModeratorSettingsPayload(workspace, guildRecord, '222222222222222222', 'Moderator');
+    const settingsRendered = JSON.stringify(serialize(settingsPayload));
+    assert.match(settingsRendered, /Moderation settings/);
+    assert.match(settingsRendered, /Choose clans/);
+    assert.match(settingsRendered, /Pause new assignments/);
+    assert.doesNotMatch(settingsRendered, /Step 1|Step 2|Step 3/);
     const payloads = [
-        views.buildModeratorSettingsPayload(workspace, guildRecord, '222222222222222222', 'Moderator'),
+        settingsPayload,
         views.buildCoveragePayload(workspace, guildRecord, { eligibleIds: new Set(['222222222222222222']) }),
         views.buildMyCasesPayload(workspace, '222222222222222222')
     ];

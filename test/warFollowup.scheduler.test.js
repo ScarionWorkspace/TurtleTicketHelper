@@ -260,7 +260,7 @@ test('Moderation Hub is a persisted singleton that edits itself instead of addin
     });
     assert.ok(first.message?.id);
     assert.equal(harness.sends.length, 1);
-    assert.equal(harness.sends[0].title, '🛡️ Moderation Hub');
+    assert.equal(harness.sends[0].title, 'Moderation Hub');
     assert.equal(store.getGuild(GUILD_ID).moderationHub.messageId, first.message.id);
 
     store.upsertModerator(GUILD_ID, '666666666666666666', {
