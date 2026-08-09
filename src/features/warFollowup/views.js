@@ -149,8 +149,8 @@ function buildModerationHubPayload(workspace, guildRecord, options = {}) {
         const accepting = subscribed.filter(moderator => moderator.accepting);
         const indicator = accepting.length ? '🟢' : (subscribed.length ? '🟡' : '🔴');
         const detail = accepting.length
-            ? `${accepting.length} accepting${subscribed.length > accepting.length ? ` · ${subscribed.length - accepting.length} paused` : ''}`
-            : (subscribed.length ? `${subscribed.length} subscribed, all paused` : 'no coverage');
+            ? `${accepting.length} available${subscribed.length > accepting.length ? ` · ${subscribed.length - accepting.length} paused` : ''}`
+            : (subscribed.length ? `${subscribed.length} paused` : 'needs coverage');
         return `${indicator} **${safeInline(roster.title || clanTag)}** · ${detail}`;
     });
     const coveredClanCount = rosters.filter(roster => moderators.some(moderator =>
@@ -159,6 +159,10 @@ function buildModerationHubPayload(workspace, guildRecord, options = {}) {
     )).length;
     const snapshot = workflow.discordRelativeTimestamp(workspace?.rosterData?.lastUpdatedAt);
     const attention = summary.unassigned.length + summary.overdue.length;
+    const ownerAttention = summary.unassigned.length === 1
+        ? '1 needs an owner'
+        : `${summary.unassigned.length} need owners`;
+    const leaderAvailability = `${activeModerators.length} available leader${activeModerators.length === 1 ? '' : 's'}`;
     const semantic = JSON.stringify({
         rosters: rosters.map(roster => [roster.id, roster.title, workflow.normalizeTag(roster.clanTag)]),
         moderators: moderators.map(moderator => [
@@ -180,8 +184,8 @@ function buildModerationHubPayload(workspace, guildRecord, options = {}) {
         .setColor(attention || coveredClanCount < rosters.length ? COLORS.review : COLORS.success)
         .setTitle('🛡️ Moderation Hub')
         .setDescription([
-            '**Volunteer for the clans you know best.** New cases are assigned automatically and fairly to one accepting leader.',
-            'Use **Choose my rosters** below. Every response and all case details remain private to you.'
+            '**Choose the clans you can help with.** Cases are assigned automatically based on current workload.',
+            'Start with **Set up my coverage** below. Your settings and all case details open privately.'
         ].join('\n'))
         .addFields(
             {
@@ -189,52 +193,42 @@ function buildModerationHubPayload(workspace, guildRecord, options = {}) {
                 value: truncate(coverageLines.join('\n') || 'No connected clan rosters are currently available.', 1024)
             },
             {
-                name: 'Case queue',
+                name: 'At a glance',
                 value: [
-                    `Assigned **${summary.assigned.length}** · Unassigned **${summary.unassigned.length}**`,
-                    `Waiting **${summary.waiting.length}** · Overdue **${summary.overdue.length}**`
-                ].join('\n'),
-                inline: true
-            },
-            {
-                name: 'Team coverage',
-                value: [
-                    `Accepting leaders **${activeModerators.length}**`,
-                    `Covered clans **${coveredClanCount}/${rosters.length}**`
-                ].join('\n'),
-                inline: true
-            },
-            {
-                name: 'Live war activity',
-                value: [
-                    `Regular **${pending.regularAttacks} attacks / ${pending.regularPlayers} players** open`,
-                    `CWL attacks open **${pending.cwlPlayers}**`,
-                    snapshot ? `Roster snapshot ${snapshot}` : 'Roster snapshot unavailable'
+                    `📁 **${summary.items.length} open** · ${summary.assigned.length} assigned`,
+                    `⚠️ **${ownerAttention}** · ${summary.overdue.length} overdue`,
+                    `⏳ **${summary.waiting.length} waiting**`,
+                    `👥 **${leaderAvailability}** · ${coveredClanCount}/${rosters.length} clans covered`
                 ].join('\n')
             },
             {
-                name: 'How ownership works',
-                value: 'The eligible leader with the fewest open cases is selected first. Ties go to the leader who has waited longest. Inactive cases are reminded at 24h and 48h, then safely reassigned at 72h.'
-            },
-            {
-                name: 'Clean-channel design',
-                value: guildRecord?.config?.channelId
-                    ? `This hub remains one message. Assignment pings, reminders, and summaries go to <#${guildRecord.config.channelId}>.`
-                    : 'This hub remains one message. Notification delivery is configured separately.'
+                name: 'War status',
+                value: [
+                    `⚔️ Regular: **${pending.regularAttacks} attacks** / ${pending.regularPlayers} players open`,
+                    `🏆 CWL: **${pending.cwlPlayers} attacks open**`,
+                    [
+                        snapshot ? `Updated ${snapshot}` : 'Update time unavailable',
+                        guildRecord?.config?.channelId ? `alerts in <#${guildRecord.config.channelId}>` : ''
+                    ].filter(Boolean).join(' · ')
+                ].join('\n')
             }
         )
-        .setFooter({ text: 'This panel updates automatically. Notifications are posted only in the separate War Follow Up notification channel.' });
+        .setFooter({ text: 'Auto-updating · Fair workload assignment · 24h/48h reminders · 72h reassignment' });
 
     return {
         payload: {
             content: '',
             embeds: [embed],
-            components: [new ActionRowBuilder().addComponents(
-                actionButton('modsettings', 'Choose my rosters', ButtonStyle.Primary),
-                actionButton('mycases', 'My cases', ButtonStyle.Secondary),
-                actionButton('coverage', 'Coverage details', ButtonStyle.Secondary),
-                actionButton('home', 'Open case queue', ButtonStyle.Secondary)
-            )],
+            components: [
+                new ActionRowBuilder().addComponents(
+                    actionButton('modsettings', 'Set up my coverage', ButtonStyle.Primary).setEmoji('⚙️'),
+                    actionButton('mycases', 'My cases', ButtonStyle.Secondary).setEmoji('📥')
+                ),
+                new ActionRowBuilder().addComponents(
+                    actionButton('coverage', 'Clan coverage', ButtonStyle.Secondary).setEmoji('🗺️'),
+                    actionButton('home', 'All cases', ButtonStyle.Secondary).setEmoji('📋')
+                )
+            ],
             allowedMentions: { parse: [] }
         },
         semanticHash: workflow.stableRevision(semantic)
@@ -1028,25 +1022,30 @@ function buildModeratorSettingsPayload(workspace, guildRecord, userIdRaw, displa
     const rosters = connectedRosters(workspace).slice(0, 25);
     const embed = new EmbedBuilder()
         .setColor(preference.accepting ? COLORS.success : COLORS.closed)
-        .setTitle('Moderation assignment settings')
-        .setDescription('Choose the clans whose new cases you agree to receive automatically. These preferences affect ownership only; every case remains visible in War Follow Up.')
+        .setTitle('My moderation coverage')
+        .setDescription([
+            '**1.** Select the clans you can help with.',
+            '**2.** Choose where assignment notifications should arrive.',
+            '**3.** Turn on accepting assignments when you are ready.',
+            'Changes save immediately. All case details stay private.'
+        ].join('\n'))
         .addFields(
             {
-                name: 'Clan coverage',
+                name: 'My clans',
                 value: selectedClanTags.size
                     ? truncate(rosters.filter(roster => selectedClanTags.has(workflow.normalizeTag(roster.clanTag)))
                         .map(roster => safeInline(roster.title || roster.clanTag)).join(', ') || 'Saved clans are no longer connected.', 1024)
                     : 'No clans selected'
             },
             { name: 'Notifications', value: preference.notificationMode === 'both' ? 'DM and moderation-channel ping' : (preference.notificationMode === 'dm' ? 'DM' : 'Moderation-channel ping'), inline: true },
-            { name: 'Assignment availability', value: preference.accepting ? 'Accepting new cases' : 'Paused', inline: true }
+            { name: 'Status', value: preference.accepting ? 'Accepting new cases' : 'Paused', inline: true }
         );
     const components = [];
     if (rosters.length) {
         components.push(new ActionRowBuilder().addComponents(
             new StringSelectMenuBuilder()
                 .setCustomId(buildCustomId('modclans'))
-                .setPlaceholder('Select every clan you moderate')
+                .setPlaceholder('Step 1 · Select my clans')
                 .setMinValues(0)
                 .setMaxValues(rosters.length)
                 .addOptions(rosters.map(roster =>
@@ -1060,9 +1059,11 @@ function buildModeratorSettingsPayload(workspace, guildRecord, userIdRaw, displa
     }
     components.push(
         new ActionRowBuilder().addComponents(
-            actionButton('modnotify', 'DM', preference.notificationMode === 'dm' ? ButtonStyle.Primary : ButtonStyle.Secondary, 'dm'),
-            actionButton('modnotify', 'Channel ping', preference.notificationMode === 'channel' ? ButtonStyle.Primary : ButtonStyle.Secondary, 'channel'),
-            actionButton('modnotify', 'Both', preference.notificationMode === 'both' ? ButtonStyle.Primary : ButtonStyle.Secondary, 'both'),
+            actionButton('modnotify', 'Notify by DM', preference.notificationMode === 'dm' ? ButtonStyle.Primary : ButtonStyle.Secondary, 'dm'),
+            actionButton('modnotify', 'Notify in channel', preference.notificationMode === 'channel' ? ButtonStyle.Primary : ButtonStyle.Secondary, 'channel'),
+            actionButton('modnotify', 'DM + channel', preference.notificationMode === 'both' ? ButtonStyle.Primary : ButtonStyle.Secondary, 'both')
+        ),
+        new ActionRowBuilder().addComponents(
             actionButton('modtoggle', preference.accepting ? 'Pause assignments' : 'Accept assignments', preference.accepting ? ButtonStyle.Danger : ButtonStyle.Success)
         ),
         new ActionRowBuilder().addComponents(

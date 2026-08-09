@@ -288,12 +288,12 @@ test('public Moderation Hub is a clean personalized entry point with stable auto
     const json = serialize(built.payload);
     const rendered = JSON.stringify(json);
     assert.match(rendered, /Moderation Hub/);
-    assert.match(rendered, /Choose my rosters/);
+    assert.match(rendered, /Set up my coverage/);
     assert.match(rendered, /Main/);
-    assert.match(rendered, /1 accepting/);
+    assert.match(rendered, /1 available/);
     assert.equal(Object.prototype.hasOwnProperty.call(json, 'flags'), false, 'the singleton panel itself is public');
-    assert.equal(json.components.length, 1);
-    assert.equal(json.components[0].components.length, 4);
+    assert.equal(json.components.length, 2);
+    assert.equal(json.components.every(row => row.components.length === 2), true);
     assert.equal(collectCustomIds(json).every(id => id.length <= 100), true);
 
     const paused = views.buildModerationHubPayload(workspace, {
