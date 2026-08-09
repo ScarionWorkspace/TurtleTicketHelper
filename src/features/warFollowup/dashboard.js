@@ -9,6 +9,13 @@ const { buildCustomId } = require('./customIds');
 const views = require('./views');
 const { warFollowupStateStore } = require('./stateStore');
 
+const DISCORD_USER_ID_PATTERN = /^\d{17,20}$/;
+const DISPLAY_NAME_TOKEN_PATTERN = /\{\{wfu-user:(\d{17,20})\}\}/g;
+const DISPLAY_NAME_FETCH_CONCURRENCY = 4;
+// The shortest token is 30 characters, so replacements can never push an
+// already validated planner embed beyond Discord's per-field limits.
+const MAX_EMBED_DISPLAY_NAME_LENGTH = 30;
+
 function isSendableChannel(channel) {
     return Boolean(
         channel &&
@@ -123,8 +130,109 @@ function buildNotificationPayload(notification) {
     };
 }
 
+function safeEmbedDisplayName(value, fallback = 'Unknown player') {
+    const selected = String(value || fallback)
+        .replace(/[`*_~|>\[\]\\]/g, '\\$&')
+        .replace(/@/g, '@\u200b')
+        .replace(/\s+/g, ' ')
+        .trim() || fallback;
+    return selected.length > MAX_EMBED_DISPLAY_NAME_LENGTH
+        ? `${selected.slice(0, MAX_EMBED_DISPLAY_NAME_LENGTH - 1)}…`
+        : selected;
+}
+
+function getNotificationDisplayIds(notification) {
+    return Array.from(new Set(
+        Object.keys(notification?.displayNameFallbacks || {})
+            .filter(discordId => DISCORD_USER_ID_PATTERN.test(discordId))
+    ));
+}
+
+async function mapWithConcurrency(items, mapper) {
+    const values = Array.isArray(items) ? items : [];
+    let nextIndex = 0;
+    async function worker() {
+        while (nextIndex < values.length) {
+            const index = nextIndex;
+            nextIndex += 1;
+            await mapper(values[index]);
+        }
+    }
+    await Promise.all(Array.from(
+        { length: Math.min(DISPLAY_NAME_FETCH_CONCURRENCY, values.length) },
+        () => worker()
+    ));
+}
+
+async function resolveNotificationDisplayNames(channel, notification) {
+    const fallbacks = notification?.displayNameFallbacks || {};
+    const displayNames = Object.fromEntries(
+        getNotificationDisplayIds(notification).map(discordId => [
+            discordId,
+            safeEmbedDisplayName(fallbacks[discordId], 'Linked player')
+        ])
+    );
+    const guild = channel?.guild;
+    if (!guild?.members || typeof guild.members.fetch !== 'function') return displayNames;
+
+    await mapWithConcurrency(Object.keys(displayNames), async discordId => {
+        try {
+            // Force a per-delivery refresh: cached guild members are exactly what made
+            // display names stale in these follow-up messages.
+            const member = await guild.members.fetch({
+                user: discordId,
+                cache: false,
+                force: true
+            });
+            displayNames[discordId] = safeEmbedDisplayName(
+                member?.displayName || member?.user?.globalName || member?.user?.username,
+                displayNames[discordId]
+            );
+        } catch {
+            // A member may have left the guild or Discord may be temporarily unavailable.
+            // The roster name remains a clean, non-mention fallback in that case.
+        }
+    });
+
+    return displayNames;
+}
+
+function replaceDisplayNameTokens(value, displayNames) {
+    return typeof value === 'string'
+        ? value.replace(DISPLAY_NAME_TOKEN_PATTERN, (token, discordId) => displayNames[discordId] || 'Linked player')
+        : value;
+}
+
+function hydrateNotificationEmbed(embed, displayNames) {
+    if (!embed || typeof embed !== 'object') return embed;
+    return {
+        ...embed,
+        title: replaceDisplayNameTokens(embed.title, displayNames),
+        description: replaceDisplayNameTokens(embed.description, displayNames),
+        footer: embed.footer && typeof embed.footer === 'object'
+            ? { ...embed.footer, text: replaceDisplayNameTokens(embed.footer.text, displayNames) }
+            : embed.footer,
+        fields: Array.isArray(embed.fields)
+            ? embed.fields.map(field => ({
+                ...field,
+                name: replaceDisplayNameTokens(field.name, displayNames),
+                value: replaceDisplayNameTokens(field.value, displayNames)
+            }))
+            : embed.fields
+    };
+}
+
+async function hydrateNotificationForDelivery(channel, notification) {
+    const displayNames = await resolveNotificationDisplayNames(channel, notification);
+    return {
+        ...notification,
+        embeds: (notification?.embeds || []).map(embed => hydrateNotificationEmbed(embed, displayNames))
+    };
+}
+
 async function sendPlannedNotification(channel, notification) {
-    return channel.send(buildNotificationPayload(notification));
+    const hydratedNotification = await hydrateNotificationForDelivery(channel, notification);
+    return channel.send(buildNotificationPayload(hydratedNotification));
 }
 
 module.exports = {
@@ -133,5 +241,8 @@ module.exports = {
     ensureDashboard,
     retireDashboard,
     buildNotificationPayload,
+    safeEmbedDisplayName,
+    resolveNotificationDisplayNames,
+    hydrateNotificationForDelivery,
     sendPlannedNotification
 };

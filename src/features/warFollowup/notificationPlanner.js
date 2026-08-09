@@ -57,10 +57,22 @@ function playerIdentity(rosterData, tagRaw) {
 
 function playerLine(identityRaw, suffixRaw = '') {
     const identity = identityRaw && typeof identityRaw === 'object' ? identityRaw : {};
-    const mention = identity.discordId ? `<@${identity.discordId}>` : `**${safeInline(identity.name || identity.tag)}**`;
+    const displayName = identity.discordId
+        ? `{{wfu-user:${identity.discordId}}}`
+        : safeInline(identity.name || identity.tag);
     const tag = workflow.normalizeTag(identity.tag);
     const suffix = safeInline(suffixRaw, 220);
-    return `• ${mention} · \`${tag}\`${suffix ? ` — ${suffix}` : ''}`;
+    return `• **${displayName}** · \`${tag}\`${suffix ? ` — ${suffix}` : ''}`;
+}
+
+function displayNameFallbacks(identitiesRaw) {
+    const fallbacks = {};
+    for (const identityRaw of Array.isArray(identitiesRaw) ? identitiesRaw : []) {
+        const identity = identityRaw && typeof identityRaw === 'object' ? identityRaw : {};
+        if (!identity.discordId || fallbacks[identity.discordId]) continue;
+        fallbacks[identity.discordId] = safeInline(identity.name || identity.tag, 80);
+    }
+    return fallbacks;
 }
 
 function staffMention(config) {
@@ -154,13 +166,14 @@ function planCaseAlerts(work, config, record, nowIso) {
     });
     if (!changed.length) return { notification: null, observations: current };
 
-    const lines = changed.slice(0, MAX_NOTIFICATION_LINES).map(item => {
+    const changedIdentities = changed.slice(0, MAX_NOTIFICATION_LINES).map(item => ({
+        tag: item.tag,
+        name: item.player?.name,
+        discordId: item.player?.discordId
+    }));
+    const lines = changed.slice(0, MAX_NOTIFICATION_LINES).map((item, index) => {
         const meta = workflow.STATUS_META[item.status] || workflow.STATUS_META.needs_review;
-        const identity = {
-            tag: item.tag,
-            name: item.player?.name,
-            discordId: item.player?.discordId
-        };
+        const identity = changedIdentities[index];
         const reasons = item.signals?.length
             ? item.signals.map(signal => signal.title).join(', ')
             : meta.next;
@@ -184,7 +197,8 @@ function planCaseAlerts(work, config, record, nowIso) {
                 timestamp: nowIso
             }],
             allowedUserIds: unique(changed.map(item => item.player?.discordId)),
-            allowedRoleIds: config.staffRoleId ? [config.staffRoleId] : []
+            allowedRoleIds: config.staffRoleId ? [config.staffRoleId] : [],
+            displayNameFallbacks: displayNameFallbacks(changedIdentities)
         }
     };
 }
@@ -261,7 +275,8 @@ function planAttackReminder({ roster, rosterData, config, record, nowMs, mode })
             footer: { text: `Reminder window: ${threshold.label}` }
         }],
         allowedUserIds: userIds,
-        allowedRoleIds: staff && config.staffRoleId ? [config.staffRoleId] : []
+        allowedRoleIds: staff && config.staffRoleId ? [config.staffRoleId] : [],
+        displayNameFallbacks: displayNameFallbacks(pending.slice(0, MAX_NOTIFICATION_LINES).map(entry => entry.identity))
     };
 }
 
@@ -361,7 +376,10 @@ function summaryFields(summary, mode) {
             const average = row.stats.countedAttacks > 0
                 ? row.stats.totalDestruction / row.stats.countedAttacks
                 : 0;
-            return `${index + 1}. **${safeInline(row.identity.name)}** — ${row.stats.starsTotal}⭐ · ${average.toFixed(0)}% avg`;
+            const displayName = row.identity.discordId
+                ? `{{wfu-user:${row.identity.discordId}}}`
+                : safeInline(row.identity.name);
+            return `${index + 1}. **${displayName}** — ${row.stats.starsTotal}⭐ · ${average.toFixed(0)}% avg`;
         }).join('\n')
         : 'No counted attacks.';
     return [
@@ -404,7 +422,8 @@ function planRegularWarSummaries(rosterData, config, record, nowIso) {
                     timestamp: new Date(finalizedAt).toISOString()
                 }],
                 allowedUserIds: missedUserIds,
-                allowedRoleIds: config.staffRoleId ? [config.staffRoleId] : []
+                allowedRoleIds: config.staffRoleId ? [config.staffRoleId] : [],
+                displayNameFallbacks: displayNameFallbacks(summary.rows.map(row => row.identity))
             });
         }
     }
@@ -449,7 +468,8 @@ function planCwlEndSummaries(rosterData, config, record, nowIso) {
                 timestamp: nowIso
             }],
             allowedUserIds: missedUserIds,
-            allowedRoleIds: config.staffRoleId ? [config.staffRoleId] : []
+            allowedRoleIds: config.staffRoleId ? [config.staffRoleId] : [],
+            displayNameFallbacks: displayNameFallbacks(summary.rows.map(row => row.identity))
         });
     }
 

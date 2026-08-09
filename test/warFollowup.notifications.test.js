@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const workflow = require('../src/features/warFollowup/workflow');
 const planner = require('../src/features/warFollowup/notificationPlanner');
-const { buildNotificationPayload } = require('../src/features/warFollowup/dashboard');
+const { buildNotificationPayload, sendPlannedNotification } = require('../src/features/warFollowup/dashboard');
 
 const NOW = new Date('2026-08-10T08:30:00.000Z');
 
@@ -254,10 +254,10 @@ test('regular and CWL end summaries include missed attackers but never replay pr
     const regular = plan.notifications.filter(notification => notification.kind === 'regular-war-summary');
     const cwl = plan.notifications.filter(notification => notification.kind === 'cwl-end-summary');
     assert.equal(regular.length, 1, 'only the post-opt-in regular war should be summarized');
-    assert.match(regular[0].embeds[0].fields[0].value, /111111111111111111/);
+    assert.match(regular[0].embeds[0].fields[0].value, /\{\{wfu-user:111111111111111111\}\}/);
     assert.deepEqual(regular[0].allowedUserIds, ['111111111111111111']);
     assert.equal(cwl.length, 1);
-    assert.match(cwl[0].embeds[0].fields[0].value, /333333333333333333/);
+    assert.match(cwl[0].embeds[0].fields[0].value, /\{\{wfu-user:333333333333333333\}\}/);
     assert.deepEqual(cwl[0].allowedUserIds, ['333333333333333333']);
 });
 
@@ -379,4 +379,73 @@ test('daily Discord-gap digest is bounded, staff-tagged, and date-deduplicated',
         nowRaw: NOW
     });
     assert.equal(repeated.notifications.some(notification => notification.kind === 'missing-discord-digest'), false);
+});
+
+test('notification embeds resolve the current guild display name while keeping real notification mentions in content', async () => {
+    const fetchRequests = [];
+    let sentPayload = null;
+    const channel = {
+        guild: {
+            members: {
+                fetch: async options => {
+                    fetchRequests.push(options);
+                    return {
+                        displayName: 'Current server nickname',
+                        user: { username: 'outdated-user' }
+                    };
+                }
+            }
+        },
+        send: async payload => {
+            sentPayload = payload;
+            return { id: 'sent-message' };
+        }
+    };
+    const notification = {
+        kind: 'regular-attack-reminder',
+        content: '<@111111111111111111>',
+        embeds: [{
+            title: 'Main Clan · attacks still open',
+            description: '• **{{wfu-user:111111111111111111}}** · `#AAA` — 1 attack remaining'
+        }],
+        allowedUserIds: ['111111111111111111'],
+        allowedRoleIds: [],
+        displayNameFallbacks: { '111111111111111111': 'Old cached name' }
+    };
+
+    await sendPlannedNotification(channel, notification);
+
+    assert.deepEqual(fetchRequests, [{ user: '111111111111111111', cache: false, force: true }]);
+    assert.equal(sentPayload.content, '<@111111111111111111>');
+    assert.match(sentPayload.embeds[0].description, /Current server nickname/);
+    assert.doesNotMatch(sentPayload.embeds[0].description, /\{\{wfu-user:|<@111111111111111111>/);
+    assert.deepEqual(sentPayload.allowedMentions.users, ['111111111111111111']);
+});
+
+test('notification embeds fall back to the roster name when a linked member cannot be fetched', async () => {
+    let sentPayload = null;
+    const channel = {
+        guild: {
+            members: {
+                fetch: async () => {
+                    const error = new Error('Unknown Member');
+                    error.code = 10007;
+                    throw error;
+                }
+            }
+        },
+        send: async payload => {
+            sentPayload = payload;
+            return { id: 'sent-message' };
+        }
+    };
+
+    await sendPlannedNotification(channel, {
+        kind: 'case-alert',
+        embeds: [{ description: '• **{{wfu-user:111111111111111111}}** · `#AAA`' }],
+        displayNameFallbacks: { '111111111111111111': 'Roster fallback name' }
+    });
+
+    assert.match(sentPayload.embeds[0].description, /Roster fallback name/);
+    assert.doesNotMatch(sentPayload.embeds[0].description, /\{\{wfu-user:|<@111111111111111111>/);
 });
