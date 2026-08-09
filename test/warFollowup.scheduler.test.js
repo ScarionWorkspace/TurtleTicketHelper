@@ -9,7 +9,7 @@ const workflow = require('../src/features/warFollowup/workflow');
 const { getStaffRoleIds } = require('../src/features/permissions/staffPermissions');
 const { createWarFollowupStateStore } = require('../src/features/warFollowup/stateStore');
 const { processGuild, runWarFollowupTick } = require('../src/features/warFollowup/scheduler');
-const { retireDashboard } = require('../src/features/warFollowup/dashboard');
+const { ensureModerationHub, retireDashboard } = require('../src/features/warFollowup/dashboard');
 
 const temporaryDirectories = [];
 const GUILD_ID = '111111111111111111';
@@ -245,6 +245,34 @@ test('moving or disabling an integration retires the old dashboard controls', as
     assert.equal(retired, true);
     assert.deepEqual(message.payload.components, []);
     assert.match(message.payload.embeds[0].description, /active dashboard is now/);
+});
+
+test('Moderation Hub is a persisted singleton that edits itself instead of adding channel messages', async () => {
+    const store = createStore();
+    const harness = createDiscordHarness();
+    const workspace = buildWorkspace();
+
+    const first = await ensureModerationHub(harness.client, GUILD_ID, workspace, {
+        channel: harness.channel,
+        store,
+        force: true,
+        now: NOW
+    });
+    assert.ok(first.message?.id);
+    assert.equal(harness.sends.length, 1);
+    assert.equal(harness.sends[0].title, '🛡️ Moderation Hub');
+    assert.equal(store.getGuild(GUILD_ID).moderationHub.messageId, first.message.id);
+
+    store.upsertModerator(GUILD_ID, '666666666666666666', {
+        displayName: 'Leader',
+        clanTags: ['#MAIN'],
+        notificationMode: 'channel',
+        accepting: true
+    }, NOW);
+    const second = await ensureModerationHub(harness.client, GUILD_ID, workspace, { store, now: NOW });
+    assert.equal(second.message.id, first.message.id);
+    assert.equal(harness.sends.length, 1, 'refresh edits the recorded message rather than posting another');
+    assert.notEqual(second.semanticHash, first.semanticHash);
 });
 
 test('a failed assignment DM never rolls back ownership and releases its reservation for a later retry', async t => {

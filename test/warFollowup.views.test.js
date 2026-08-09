@@ -79,7 +79,7 @@ function collectCustomIds(value, out = []) {
     return out;
 }
 
-test('/war-follow-up exposes setup, panel, case, ignored, rules, status, and manual sync', () => {
+test('/war-follow-up exposes the private tools and public moderation-panel publisher', () => {
     const json = command.data.toJSON();
     assert.ok(json.dm_permission === false || json.contexts?.includes(0), 'the staff workflow must be guild-only');
     assert.deepEqual(json.options.map(option => option.name), [
@@ -87,6 +87,7 @@ test('/war-follow-up exposes setup, panel, case, ignored, rules, status, and man
         'moderation',
         'overview',
         'mine',
+        'publish-panel',
         'setup',
         'case',
         'ignored',
@@ -94,6 +95,8 @@ test('/war-follow-up exposes setup, panel, case, ignored, rules, status, and man
         'status',
         'sync-now'
     ]);
+    const publishPanel = json.options.find(option => option.name === 'publish-panel');
+    assert.equal(publishPanel.options.find(option => option.name === 'channel').required, true);
     const setup = json.options.find(option => option.name === 'setup');
     for (const name of [
         'channel',
@@ -144,6 +147,19 @@ test('setup rejects a staff role the bot cannot actually notify', () => {
         ...interaction,
         guildId: '111111111111111111'
     }), false, 'the @everyone role is never a valid staff notification role');
+    const everyone = { id: '111111111111111111' };
+    assert.equal(command.everyoneCanViewChannel({
+        permissionsFor: role => ({ has: permission => role === everyone && permission === 1024n })
+    }, {
+        guildId: '111111111111111111',
+        guild: { roles: { everyone } }
+    }), true);
+    assert.equal(command.everyoneCanViewChannel({
+        permissionsFor: () => ({ has: () => false })
+    }, {
+        guildId: '111111111111111111',
+        guild: { roles: { everyone } }
+    }), false);
 });
 
 test('versioned custom IDs round-trip safely and enforce Discord limits', () => {
@@ -251,6 +267,63 @@ test('dashboard and private queue remain within Discord component and custom-ID 
         assert.ok((payload.components || []).length <= 5);
         assert.equal(collectCustomIds(payload).every(id => id.length <= 100), true);
     }
+});
+
+test('public Moderation Hub is a clean personalized entry point with stable automatic-update semantics', () => {
+    const workspace = buildWorkspace();
+    const guildRecord = {
+        moderators: {
+            '222222222222222222': {
+                discordId: '222222222222222222',
+                displayName: 'Leader',
+                clanTags: ['#MAIN'],
+                notificationMode: 'both',
+                accepting: true
+            }
+        }
+    };
+    const built = views.buildModerationHubPayload(workspace, guildRecord, {
+        now: new Date('2026-08-09T12:00:00.000Z')
+    });
+    const json = serialize(built.payload);
+    const rendered = JSON.stringify(json);
+    assert.match(rendered, /Moderation Hub/);
+    assert.match(rendered, /Choose my rosters/);
+    assert.match(rendered, /Main/);
+    assert.match(rendered, /1 accepting/);
+    assert.equal(Object.prototype.hasOwnProperty.call(json, 'flags'), false, 'the singleton panel itself is public');
+    assert.equal(json.components.length, 1);
+    assert.equal(json.components[0].components.length, 4);
+    assert.equal(collectCustomIds(json).every(id => id.length <= 100), true);
+
+    const paused = views.buildModerationHubPayload(workspace, {
+        moderators: {
+            '222222222222222222': {
+                ...guildRecord.moderators['222222222222222222'],
+                accepting: false
+            }
+        }
+    }, { now: new Date('2026-08-09T12:00:00.000Z') });
+    assert.notEqual(paused.semanticHash, built.semanticHash, 'changing coverage causes an in-place panel refresh');
+});
+
+test('panel-channel validation permits only an empty channel or its one recorded hub message', async () => {
+    const channel = {
+        messages: {
+            fetch: async () => new Map()
+        }
+    };
+    assert.equal(await command.panelChannelIsEmpty(channel), true);
+    channel.messages.fetch = async () => new Map([
+        ['111111111111111111', { id: '111111111111111111' }]
+    ]);
+    assert.equal(await command.panelChannelIsEmpty(channel, '111111111111111111'), true);
+    assert.equal(await command.panelChannelIsEmpty(channel), false);
+    channel.messages.fetch = async () => new Map([
+        ['111111111111111111', { id: '111111111111111111' }],
+        ['222222222222222222', { id: '222222222222222222' }]
+    ]);
+    assert.equal(await command.panelChannelIsEmpty(channel, '111111111111111111'), false);
 });
 
 test('moderator settings, coverage, and personal ownership views stay within Discord UI limits', () => {

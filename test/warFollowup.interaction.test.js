@@ -298,3 +298,30 @@ test('moderators can persist their own clan subscriptions and assignment availab
     assert.equal(patches[1].accepting, true);
     assert.equal(toggle.calls.edits.length, 1);
 });
+
+test('public Moderation Hub controls always open a private personalized response', async t => {
+    const workspace = buildWorkspace({
+        tag: '#P0LYGQ',
+        status: 'needs_review',
+        updatedAt: '2026-08-01T00:00:00.000Z'
+    });
+    const deferPayloads = [];
+    t.mock.method(service, 'loadWorkspace', async () => workspace);
+    t.mock.method(warFollowupStateStore, 'getGuild', () => ({
+        config: { enabled: true, channelId: '444444444444444444', features: {} },
+        moderationHub: {},
+        moderators: {}
+    }));
+    const { interaction, calls } = baseInteraction(buildCustomId('modsettings'), {
+        user: { id: '222222222222222222', username: 'moderator' },
+        message: { flags: { bitfield: 0 } },
+        deferReply: async payload => {
+            interaction.deferred = true;
+            deferPayloads.push(payload);
+        }
+    });
+
+    assert.equal(await handleWarFollowupInteraction(interaction), true);
+    assert.equal(deferPayloads[0].flags, views.EPHEMERAL);
+    assert.equal(calls.edits.length, 1);
+});

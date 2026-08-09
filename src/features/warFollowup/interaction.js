@@ -7,7 +7,7 @@ const views = require('./views');
 const moderation = require('./moderation');
 const { isWarFollowupCustomId, parseCustomId } = require('./customIds');
 const { warFollowupStateStore } = require('./stateStore');
-const { ensureDashboard } = require('./dashboard');
+const { ensureDashboard, ensureModerationHub } = require('./dashboard');
 
 const directDmInFlight = new Set();
 
@@ -117,6 +117,19 @@ function directDmDeliveryKey(itemRaw) {
     return `direct-dm:${workflow.normalizeTag(item.tag)}:${decisionRevision}`;
 }
 
+async function refreshModerationHubQuietly(interaction, workspace) {
+    const moderationHub = warFollowupStateStore.getGuild(interaction.guildId).moderationHub || {};
+    if (!moderationHub.channelId) return;
+    try {
+        await ensureModerationHub(interaction.client, interaction.guildId, workspace);
+    } catch (error) {
+        console.error('Moderation Hub refresh failed:', {
+            guildId: interaction.guildId,
+            error: error?.message || String(error)
+        });
+    }
+}
+
 async function refreshDashboardQuietly(interaction, workspace) {
     const config = getConfig(interaction);
     if (!config.enabled || !config.channelId) return;
@@ -128,6 +141,7 @@ async function refreshDashboardQuietly(interaction, workspace) {
             error: error?.message || String(error)
         });
     }
+    await refreshModerationHubQuietly(interaction, workspace);
 }
 
 async function renderView(interaction, buildPayload, options = {}) {
@@ -386,6 +400,7 @@ async function handleButtonOrSelect(interaction, parsed) {
             identity.discordId,
             identity.displayName
         )));
+        await refreshModerationHubQuietly(interaction, workspace);
         return;
     }
     if (action === 'modnotify' || action === 'modtoggle') {
@@ -411,6 +426,7 @@ async function handleButtonOrSelect(interaction, parsed) {
             identity.discordId,
             identity.displayName
         )));
+        await refreshModerationHubQuietly(interaction, workspace);
         return;
     }
     if (action === 'gaps') {

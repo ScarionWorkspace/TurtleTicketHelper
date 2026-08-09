@@ -76,6 +76,11 @@ test('delivery keys and case baselines survive a fresh process read', () => {
         messageId: '444444444444444444',
         semanticHash: 'dashboard-v1'
     });
+    store.setModerationHub('111111111111111111', {
+        channelId: '555555555555555555',
+        messageId: '666666666666666666',
+        semanticHash: 'moderation-hub-v1'
+    });
     store.replaceCaseObservations('111111111111111111', {
         '#PLAYER': { fingerprint: 'fingerprint', status: 'needs_review', observedAt: '2026-08-01T00:00:00.000Z' }
     }, '2026-08-01T00:00:00.000Z');
@@ -87,6 +92,8 @@ test('delivery keys and case baselines survive a fresh process read', () => {
     assert.equal(reloaded.removeDeliveries('111111111111111111', 'war:key:6h'), false);
     assert.equal(reloaded.getGuild('111111111111111111').dashboard.messageId, '444444444444444444');
     assert.equal(reloaded.getGuild('111111111111111111').dashboard.channelId, '222222222222222222');
+    assert.equal(reloaded.getGuild('111111111111111111').moderationHub.messageId, '666666666666666666');
+    assert.equal(reloaded.getGuild('111111111111111111').moderationHub.channelId, '555555555555555555');
     assert.equal(
         reloaded.getGuild('111111111111111111').observations.caseFingerprints['#PLAYER'].fingerprint,
         'fingerprint'
@@ -162,5 +169,5 @@ test('schema migration persists sanitized per-moderator clan and notification pr
     );
     const reloaded = createWarFollowupStateStore({ filePath }).getGuild('111111111111111111');
     assert.equal(reloaded.moderators['222222222222222222'].lastAssignedAt, '2026-08-09T13:00:00.000Z');
-    assert.equal(JSON.parse(fs.readFileSync(filePath, 'utf8')).schemaVersion, 2);
+    assert.equal(JSON.parse(fs.readFileSync(filePath, 'utf8')).schemaVersion, 3);
 });

@@ -125,6 +125,122 @@ function moderationNavigationRow() {
     );
 }
 
+function connectedRosters(workspace) {
+    const seenClanTags = new Set();
+    return (workspace?.work?.directory?.rosters || []).filter(roster => {
+        const clanTag = workflow.normalizeTag(roster.clanTag);
+        if (!clanTag || seenClanTags.has(clanTag)) return false;
+        seenClanTags.add(clanTag);
+        return true;
+    });
+}
+
+function buildModerationHubPayload(workspace, guildRecord, options = {}) {
+    const rosters = connectedRosters(workspace);
+    const moderators = Object.values(guildRecord?.moderators || {});
+    const summary = moderationCaseSummary(workspace, guildRecord, options.now || new Date());
+    const pending = pendingAttackCounts(workspace?.rosterData);
+    const activeModerators = moderators.filter(moderator => moderator.accepting && moderator.clanTags?.length);
+    const coverageLines = rosters.map(roster => {
+        const clanTag = workflow.normalizeTag(roster.clanTag);
+        const subscribed = moderators.filter(moderator =>
+            (moderator.clanTags || []).map(workflow.normalizeTag).includes(clanTag)
+        );
+        const accepting = subscribed.filter(moderator => moderator.accepting);
+        const indicator = accepting.length ? '🟢' : (subscribed.length ? '🟡' : '🔴');
+        const detail = accepting.length
+            ? `${accepting.length} accepting${subscribed.length > accepting.length ? ` · ${subscribed.length - accepting.length} paused` : ''}`
+            : (subscribed.length ? `${subscribed.length} subscribed, all paused` : 'no coverage');
+        return `${indicator} **${safeInline(roster.title || clanTag)}** · ${detail}`;
+    });
+    const coveredClanCount = rosters.filter(roster => moderators.some(moderator =>
+        moderator.accepting &&
+        (moderator.clanTags || []).map(workflow.normalizeTag).includes(workflow.normalizeTag(roster.clanTag))
+    )).length;
+    const snapshot = workflow.discordRelativeTimestamp(workspace?.rosterData?.lastUpdatedAt);
+    const attention = summary.unassigned.length + summary.overdue.length;
+    const semantic = JSON.stringify({
+        rosters: rosters.map(roster => [roster.id, roster.title, workflow.normalizeTag(roster.clanTag)]),
+        moderators: moderators.map(moderator => [
+            moderator.discordId,
+            moderator.accepting,
+            moderator.clanTags
+        ]).sort((left, right) => left[0].localeCompare(right[0])),
+        cases: {
+            assigned: summary.assigned.length,
+            unassigned: summary.unassigned.length,
+            waiting: summary.waiting.length,
+            overdue: summary.overdue.length
+        },
+        pending,
+        notificationChannelId: guildRecord?.config?.channelId || '',
+        lastUpdatedAt: workspace?.rosterData?.lastUpdatedAt || ''
+    });
+    const embed = new EmbedBuilder()
+        .setColor(attention || coveredClanCount < rosters.length ? COLORS.review : COLORS.success)
+        .setTitle('🛡️ Moderation Hub')
+        .setDescription([
+            '**Volunteer for the clans you know best.** New cases are assigned automatically and fairly to one accepting leader.',
+            'Use **Choose my rosters** below. Every response and all case details remain private to you.'
+        ].join('\n'))
+        .addFields(
+            {
+                name: 'Clan coverage',
+                value: truncate(coverageLines.join('\n') || 'No connected clan rosters are currently available.', 1024)
+            },
+            {
+                name: 'Case queue',
+                value: [
+                    `Assigned **${summary.assigned.length}** · Unassigned **${summary.unassigned.length}**`,
+                    `Waiting **${summary.waiting.length}** · Overdue **${summary.overdue.length}**`
+                ].join('\n'),
+                inline: true
+            },
+            {
+                name: 'Team coverage',
+                value: [
+                    `Accepting leaders **${activeModerators.length}**`,
+                    `Covered clans **${coveredClanCount}/${rosters.length}**`
+                ].join('\n'),
+                inline: true
+            },
+            {
+                name: 'Live war activity',
+                value: [
+                    `Regular **${pending.regularAttacks} attacks / ${pending.regularPlayers} players** open`,
+                    `CWL attacks open **${pending.cwlPlayers}**`,
+                    snapshot ? `Roster snapshot ${snapshot}` : 'Roster snapshot unavailable'
+                ].join('\n')
+            },
+            {
+                name: 'How ownership works',
+                value: 'The eligible leader with the fewest open cases is selected first. Ties go to the leader who has waited longest. Inactive cases are reminded at 24h and 48h, then safely reassigned at 72h.'
+            },
+            {
+                name: 'Clean-channel design',
+                value: guildRecord?.config?.channelId
+                    ? `This hub remains one message. Assignment pings, reminders, and summaries go to <#${guildRecord.config.channelId}>.`
+                    : 'This hub remains one message. Notification delivery is configured separately.'
+            }
+        )
+        .setFooter({ text: 'This panel updates automatically. Notifications are posted only in the separate War Follow Up notification channel.' });
+
+    return {
+        payload: {
+            content: '',
+            embeds: [embed],
+            components: [new ActionRowBuilder().addComponents(
+                actionButton('modsettings', 'Choose my rosters', ButtonStyle.Primary),
+                actionButton('mycases', 'My cases', ButtonStyle.Secondary),
+                actionButton('coverage', 'Coverage details', ButtonStyle.Secondary),
+                actionButton('home', 'Open case queue', ButtonStyle.Secondary)
+            )],
+            allowedMentions: { parse: [] }
+        },
+        semanticHash: workflow.stableRevision(semantic)
+    };
+}
+
 function buildDashboardPayload(workspace, config) {
     const work = workspace?.work || {};
     const counts = statusCounts(work);
@@ -909,9 +1025,7 @@ function buildModeratorSettingsPayload(workspace, guildRecord, userIdRaw, displa
         accepting: false
     };
     const selectedClanTags = new Set((preference.clanTags || []).map(workflow.normalizeTag));
-    const rosters = (workspace?.work?.directory?.rosters || [])
-        .filter(roster => workflow.normalizeTag(roster.clanTag))
-        .slice(0, 25);
+    const rosters = connectedRosters(workspace).slice(0, 25);
     const embed = new EmbedBuilder()
         .setColor(preference.accepting ? COLORS.success : COLORS.closed)
         .setTitle('Moderation assignment settings')
@@ -977,7 +1091,7 @@ function moderationCaseSummary(workspace, guildRecord, nowRaw = new Date()) {
 
 function buildCoveragePayload(workspace, guildRecord, options = {}) {
     const moderators = Object.values(guildRecord?.moderators || {});
-    const rosters = (workspace?.work?.directory?.rosters || []).filter(roster => workflow.normalizeTag(roster.clanTag));
+    const rosters = connectedRosters(workspace);
     const eligibleIds = options.eligibleIds instanceof Set ? options.eligibleIds : null;
     const coverageLines = rosters.map(roster => {
         const clanTag = workflow.normalizeTag(roster.clanTag);
@@ -1084,6 +1198,7 @@ module.exports = {
     pendingAttackCounts,
     discordGapCount,
     buildDashboardPayload,
+    buildModerationHubPayload,
     buildHomePayload,
     buildCasePayload,
     buildEvidencePayload,

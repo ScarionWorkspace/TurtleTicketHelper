@@ -7,6 +7,7 @@ const { buildSummaryBaselineKeys, planNotifications } = require('./notificationP
 const { synchronizeModerationCases } = require('./moderation');
 const {
     ensureDashboard,
+    ensureModerationHub,
     resolveConfiguredChannel,
     sendPlannedNotification,
     sendPlannedDirectNotification
@@ -64,6 +65,19 @@ async function processGuild(client, guildState, workspace, options = {}) {
     );
     const activeWorkspace = moderationSync.workspace;
     await ensureDashboard(client, guildId, activeWorkspace, config, { channel, store });
+    const moderationHub = store.getGuild(guildId).moderationHub;
+    if (moderationHub.channelId) {
+        try {
+            await ensureModerationHub(client, guildId, activeWorkspace, {
+                store,
+                now: options.now || new Date()
+            });
+        } catch (error) {
+            // The optional clean-channel hub must never block assignments or
+            // notifications in the operational War Follow Up channel.
+            logSchedulerError(`Moderation Hub refresh failed for guild ${guildId}`, error);
+        }
+    }
 
     const currentRecord = initializeSummaryBaselines(store, guildId, activeWorkspace, config);
     const plan = planNotifications({

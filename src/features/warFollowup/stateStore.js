@@ -3,7 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const MAX_DELIVERIES_PER_GUILD = 2500;
 const MAX_CASE_OBSERVATIONS_PER_GUILD = 1500;
 const SNOWFLAKE_PATTERN = /^\d{17,20}$/;
@@ -44,6 +44,12 @@ function createDefaultGuildRecord() {
     return {
         config: createDefaultConfig(),
         dashboard: {
+            channelId: '',
+            messageId: '',
+            semanticHash: '',
+            updatedAt: ''
+        },
+        moderationHub: {
             channelId: '',
             messageId: '',
             semanticHash: '',
@@ -186,6 +192,7 @@ function sanitizeCaseFingerprints(raw) {
 function sanitizeGuildRecord(raw) {
     const value = raw && typeof raw === 'object' ? raw : {};
     const dashboard = value.dashboard && typeof value.dashboard === 'object' ? value.dashboard : {};
+    const moderationHub = value.moderationHub && typeof value.moderationHub === 'object' ? value.moderationHub : {};
     const observations = value.observations && typeof value.observations === 'object' ? value.observations : {};
     const summaryBaselinesRaw = observations.summaryBaselinesInitialized && typeof observations.summaryBaselinesInitialized === 'object'
         ? observations.summaryBaselinesInitialized
@@ -198,6 +205,12 @@ function sanitizeGuildRecord(raw) {
             messageId: cleanSnowflake(dashboard.messageId),
             semanticHash: cleanText(dashboard.semanticHash, 160),
             updatedAt: cleanTimestamp(dashboard.updatedAt)
+        },
+        moderationHub: {
+            channelId: cleanSnowflake(moderationHub.channelId),
+            messageId: cleanSnowflake(moderationHub.messageId),
+            semanticHash: cleanText(moderationHub.semanticHash, 160),
+            updatedAt: cleanTimestamp(moderationHub.updatedAt)
         },
         deliveries: sanitizeDeliveries(value.deliveries),
         moderators: sanitizeModerators(value.moderators),
@@ -355,6 +368,17 @@ function createWarFollowupStateStore(options = {}) {
         return clone(sanitizeGuildRecord(record).dashboard);
     }
 
+    function setModerationHub(guildIdRaw, hubRaw = {}) {
+        const { record } = ensureGuild(guildIdRaw);
+        record.moderationHub = {
+            ...record.moderationHub,
+            ...hubRaw,
+            updatedAt: hubRaw.updatedAt || new Date().toISOString()
+        };
+        save();
+        return clone(sanitizeGuildRecord(record).moderationHub);
+    }
+
     function hasDelivery(guildIdRaw, keyRaw) {
         const key = cleanText(keyRaw, 300);
         const record = getGuild(guildIdRaw);
@@ -483,6 +507,7 @@ function createWarFollowupStateStore(options = {}) {
         listEnabledGuilds,
         patchConfig,
         setDashboard,
+        setModerationHub,
         hasDelivery,
         recordDeliveries,
         upsertModerator,

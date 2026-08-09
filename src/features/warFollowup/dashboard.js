@@ -84,6 +84,48 @@ async function ensureDashboard(client, guildId, workspace, config, options = {})
     return { channel, message, semanticHash: built.semanticHash };
 }
 
+async function ensureModerationHub(client, guildId, workspace, options = {}) {
+    const store = options.store || warFollowupStateStore;
+    const record = store.getGuild(guildId);
+    const configuredChannelId = options.channel?.id || record.moderationHub.channelId;
+    if (!configuredChannelId) return { channel: null, message: null, semanticHash: '' };
+    const channel = options.channel || await resolveConfiguredChannel(client, guildId, configuredChannelId);
+    const built = views.buildModerationHubPayload(workspace, record, { now: options.now || new Date() });
+    const recordedChannelId = record.moderationHub.channelId;
+    const hubMoved = Boolean(
+        record.moderationHub.messageId &&
+        recordedChannelId &&
+        recordedChannelId !== channel.id
+    );
+    let message = hubMoved
+        ? null
+        : await fetchDashboardMessage(channel, record.moderationHub.messageId);
+    const shouldEdit = options.force === true || record.moderationHub.semanticHash !== built.semanticHash;
+
+    if (message && shouldEdit) {
+        message = await message.edit(built.payload);
+    } else if (!message) {
+        message = await channel.send(built.payload);
+    }
+
+    if (
+        message &&
+        (
+            message.id !== record.moderationHub.messageId ||
+            channel.id !== record.moderationHub.channelId ||
+            record.moderationHub.semanticHash !== built.semanticHash
+        )
+    ) {
+        store.setModerationHub(guildId, {
+            channelId: channel.id,
+            messageId: message.id,
+            semanticHash: built.semanticHash
+        });
+    }
+
+    return { channel, message, semanticHash: built.semanticHash };
+}
+
 async function retireDashboard(client, guildId, channelId, messageId, options = {}) {
     if (!channelId || !messageId) return false;
     try {
@@ -97,6 +139,30 @@ async function retireDashboard(client, guildId, channelId, messageId, options = 
                 color: 0x95a5a6,
                 title: 'War Follow Up dashboard inactive',
                 description: `${options.reason || 'The Discord integration was disabled.'}${destination}`
+            }],
+            components: [],
+            allowedMentions: { parse: [] }
+        });
+        return true;
+    } catch (error) {
+        if (Number(error?.code) === 10008) return false;
+        throw error;
+    }
+}
+
+async function retireModerationHub(client, guildId, channelId, messageId, options = {}) {
+    if (!channelId || !messageId) return false;
+    try {
+        const channel = await resolveConfiguredChannel(client, guildId, channelId);
+        const message = await fetchDashboardMessage(channel, messageId);
+        if (!message) return false;
+        const destination = options.newChannelId ? ` The active hub is now in <#${options.newChannelId}>.` : '';
+        await message.edit({
+            content: '',
+            embeds: [{
+                color: 0x95a5a6,
+                title: 'Moderation Hub moved',
+                description: `${options.reason || 'This panel is no longer active.'}${destination}`
             }],
             components: [],
             allowedMentions: { parse: [] }
@@ -259,7 +325,9 @@ module.exports = {
     isSendableChannel,
     resolveConfiguredChannel,
     ensureDashboard,
+    ensureModerationHub,
     retireDashboard,
+    retireModerationHub,
     buildNotificationPayload,
     safeEmbedDisplayName,
     resolveNotificationDisplayNames,

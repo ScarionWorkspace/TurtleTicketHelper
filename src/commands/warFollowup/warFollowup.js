@@ -13,7 +13,12 @@ const service = require('../../features/warFollowup/service');
 const views = require('../../features/warFollowup/views');
 const moderation = require('../../features/warFollowup/moderation');
 const { warFollowupStateStore } = require('../../features/warFollowup/stateStore');
-const { ensureDashboard, retireDashboard } = require('../../features/warFollowup/dashboard');
+const {
+    ensureDashboard,
+    ensureModerationHub,
+    retireDashboard,
+    retireModerationHub
+} = require('../../features/warFollowup/dashboard');
 const { initializeSummaryBaselines, runWarFollowupTick } = require('../../features/warFollowup/scheduler');
 
 const FEATURE_OPTIONS = Object.freeze({
@@ -76,6 +81,14 @@ const data = new SlashCommandBuilder()
     .addSubcommand(subcommand => subcommand
         .setName('mine')
         .setDescription('Show your currently assigned moderation cases.'))
+    .addSubcommand(subcommand => subcommand
+        .setName('publish-panel')
+        .setDescription('Publish the self-updating Moderation Hub in an empty channel.')
+        .addChannelOption(option => option
+            .setName('channel')
+            .setDescription('A new empty channel reserved only for this panel.')
+            .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
+            .setRequired(true)))
     .addSubcommand(subcommand => addSetupOptions(subcommand
         .setName('setup')
         .setDescription('Configure the dedicated channel and each notification opt-in.')))
@@ -120,6 +133,12 @@ function canMentionRole(role, channel, interaction) {
     if (!role || role.mentionable === true) return true;
     const permissions = channel?.permissionsFor?.(interaction.guild?.members?.me);
     return Boolean(permissions?.has?.(PermissionFlagsBits.MentionEveryone));
+}
+
+function everyoneCanViewChannel(channel, interaction) {
+    const everyoneRole = interaction?.guild?.roles?.everyone || interaction?.guild?.roles?.cache?.get?.(interaction.guildId);
+    const permissions = everyoneRole ? channel?.permissionsFor?.(everyoneRole) : null;
+    return Boolean(permissions?.has?.(PermissionFlagsBits.ViewChannel));
 }
 
 async function autocomplete(interaction) {
@@ -222,6 +241,12 @@ async function executeSetup(interaction) {
     if (enabled && (!effectiveChannel || !canWriteChannel(effectiveChannel, interaction))) {
         await interaction.editReply({
             content: 'I need a valid channel with View Channel, Send Messages, Embed Links, and Read Message History before this integration can be enabled.'
+        });
+        return;
+    }
+    if (enabled && channelId === existing.moderationHub.channelId) {
+        await interaction.editReply({
+            content: 'The notification channel must stay separate from the Moderation Hub channel. Choose another channel for notifications.'
         });
         return;
     }
@@ -339,6 +364,91 @@ async function executeMine(interaction) {
     )));
 }
 
+function collectionValues(collection) {
+    if (!collection) return [];
+    if (typeof collection.values === 'function') return Array.from(collection.values());
+    if (Array.isArray(collection)) return collection;
+    return [];
+}
+
+async function panelChannelIsEmpty(channel, expectedMessageId = '') {
+    if (!channel?.messages || typeof channel.messages.fetch !== 'function') return false;
+    const recent = await channel.messages.fetch({ limit: 10 });
+    return collectionValues(recent).every(message =>
+        expectedMessageId && String(message?.id || '') === String(expectedMessageId)
+    );
+}
+
+async function executePublishPanel(interaction) {
+    await interaction.deferReply({ flags: views.EPHEMERAL });
+    const selectedChannel = interaction.options.getChannel('channel', true);
+    const existing = warFollowupStateStore.getGuild(interaction.guildId);
+    if (!existing.config.enabled || !existing.config.channelId) {
+        await interaction.editReply({ content: 'Enable War Follow Up with `/war-follow-up setup` before publishing the Moderation Hub.' });
+        return;
+    }
+    if (selectedChannel.id === existing.config.channelId) {
+        await interaction.editReply({
+            content: 'Choose a separate empty channel. Assignment pings and summaries must remain in the existing notification channel.'
+        });
+        return;
+    }
+    if (!canWriteChannel(selectedChannel, interaction)) {
+        await interaction.editReply({
+            content: 'I need View Channel, Send Messages, Embed Links, and Read Message History in the panel channel.'
+        });
+        return;
+    }
+    if (everyoneCanViewChannel(selectedChannel, interaction)) {
+        await interaction.editReply({
+            content: 'The Moderation Hub must be staff-only. Disable View Channel for `@everyone`, grant access to the appropriate leader roles, then publish it again.'
+        });
+        return;
+    }
+    const existingMessageId = existing.moderationHub.channelId === selectedChannel.id
+        ? existing.moderationHub.messageId
+        : '';
+    if (!await panelChannelIsEmpty(selectedChannel, existingMessageId)) {
+        await interaction.editReply({
+            content: 'That channel is not empty. Use a new empty channel so the self-updating Moderation Hub remains its only message.'
+        });
+        return;
+    }
+
+    const workspace = await service.loadWorkspace({ forcePrivate: true });
+    const published = await ensureModerationHub(
+        interaction.client,
+        interaction.guildId,
+        workspace,
+        { channel: selectedChannel, force: true }
+    );
+    let retirementWarning = '';
+    if (
+        existing.moderationHub.messageId &&
+        existing.moderationHub.channelId &&
+        existing.moderationHub.channelId !== selectedChannel.id
+    ) {
+        try {
+            await retireModerationHub(
+                interaction.client,
+                interaction.guildId,
+                existing.moderationHub.channelId,
+                existing.moderationHub.messageId,
+                { reason: 'This Moderation Hub was moved.', newChannelId: selectedChannel.id }
+            );
+        } catch {
+            retirementWarning = ' The previous panel could not be marked inactive; remove that old bot message manually if it remains visible.';
+        }
+    }
+    await interaction.editReply({
+        content: `Moderation Hub published in ${selectedChannel}. It will update in place and will not post notifications in that channel.${retirementWarning}`,
+        allowedMentions: { parse: [] },
+        components: [],
+        embeds: []
+    });
+    return published;
+}
+
 async function executeCase(interaction) {
     await interaction.deferReply({ flags: views.EPHEMERAL });
     const input = interaction.options.getString('player', true);
@@ -448,6 +558,7 @@ async function execute(interaction) {
     if (subcommand === 'moderation') return executeModeration(interaction);
     if (subcommand === 'overview') return executeOverview(interaction);
     if (subcommand === 'mine') return executeMine(interaction);
+    if (subcommand === 'publish-panel') return executePublishPanel(interaction);
     if (subcommand === 'case') return executeCase(interaction);
     if (subcommand === 'ignored' || subcommand === 'rules') return executeSimpleView(interaction, subcommand);
     if (subcommand === 'status') return executeStatus(interaction);
@@ -462,5 +573,7 @@ module.exports = {
     FEATURE_OPTIONS,
     canWriteChannel,
     canMentionRole,
+    everyoneCanViewChannel,
+    panelChannelIsEmpty,
     resolvePlayerInput
 };
