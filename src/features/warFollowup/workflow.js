@@ -5,7 +5,7 @@
 // roster snapshot and the same private Apps Script cases; it does not create a
 // second moderation model.
 const DEFAULT_SETTINGS = Object.freeze({
-    schemaVersion: 1,
+    schemaVersion: 2,
     regularLookbackWars: 8,
     regularMissedThreshold: 2,
     regularPerformanceEnabled: true,
@@ -29,6 +29,7 @@ const DEFAULT_SETTINGS = Object.freeze({
 
 const STATUS_ORDER = Object.freeze([
     'needs_review',
+    'waiting',
     'needs_dm',
     'hero_down',
     'ready',
@@ -37,6 +38,7 @@ const STATUS_ORDER = Object.freeze([
 ]);
 
 const STATUS_META = Object.freeze({
+    waiting: { label: 'Waiting', next: 'Wait for the scheduled follow-up', emoji: '⏳' },
     needs_review: { label: 'Review', next: 'Review the war evidence', emoji: '🔎' },
     needs_dm: { label: 'Needs DM', next: 'Send the decision message', emoji: '✉️' },
     hero_down: { label: 'Hero-down', next: 'Track hero-down wars', emoji: '🛡️' },
@@ -148,7 +150,7 @@ function sanitizeSettings(raw) {
     )).sort().slice(0, 1000);
 
     return {
-        schemaVersion: 1,
+        schemaVersion: 2,
         regularLookbackWars: Math.floor(clamp(value.regularLookbackWars, 1, 8, DEFAULT_SETTINGS.regularLookbackWars)),
         regularMissedThreshold: Math.floor(clamp(value.regularMissedThreshold, 1, 16, DEFAULT_SETTINGS.regularMissedThreshold)),
         regularPerformanceEnabled: value.regularPerformanceEnabled == null ? true : value.regularPerformanceEnabled === true,
@@ -697,6 +699,19 @@ function normalizeCase(raw) {
         status: 'needs_review',
         outcome: '',
         handledBy: '',
+        assignedModeratorId: '',
+        assignedModeratorName: '',
+        assignedAt: '',
+        assignmentUpdatedAt: '',
+        lastMeaningfulActionAt: '',
+        assignmentBlockedModeratorId: '',
+        assignmentBlockedUntil: '',
+        waitingUntil: '',
+        waitingReason: '',
+        escalatedAt: '',
+        escalatedBy: '',
+        openedAt: '',
+        triggerSignalIds: [],
         reasonCodes: [],
         dismissedSignalIds: [],
         mutationLedger: [],

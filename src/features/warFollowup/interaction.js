@@ -4,6 +4,7 @@ const { isStaffMember } = require('../permissions/staffPermissions');
 const workflow = require('./workflow');
 const service = require('./service');
 const views = require('./views');
+const moderation = require('./moderation');
 const { isWarFollowupCustomId, parseCustomId } = require('./customIds');
 const { warFollowupStateStore } = require('./stateStore');
 const { ensureDashboard } = require('./dashboard');
@@ -68,14 +69,22 @@ function assertCurrentCaseView(item, tokenRaw) {
 function assertCaseActionAllowed(item, action) {
     const status = item?.status || '';
     const allowedStatuses = {
-        dismiss: ['needs_review', 'watching'],
+        contact: ['needs_review', 'waiting'],
         watch: ['needs_review'],
         hero_down: ['needs_review'],
         mark_dm_sent: ['needs_dm'],
-        reopen: ['needs_dm', 'watching', 'closed'],
+        reopen: ['needs_dm', 'waiting', 'watching', 'closed'],
         extend: ['hero_down', 'ready'],
         close: ['hero_down', 'ready']
     };
+    if (action === 'wait' || action === 'dismiss') {
+        if (!moderation.isOpenItem(item)) throw new Error('This moderation case is already closed.');
+        return;
+    }
+    if (action === 'resolve' || action === 'escalate') {
+        if (!moderation.isOpenItem(item)) throw new Error('This moderation case is already closed.');
+        return;
+    }
     if (action === 'approve_return') {
         if (status !== 'ready' || item?.recovery?.ready !== true) {
             throw new Error('This player has not completed the required recovery period.');
@@ -130,6 +139,29 @@ async function renderView(interaction, buildPayload, options = {}) {
     const payload = buildPayload(workspace, getConfig(interaction));
     await interaction.editReply(views.asEditPayload(payload));
     return workspace;
+}
+
+function moderatorIdentity(interaction) {
+    return {
+        discordId: String(interaction.user?.id || interaction.member?.id || '').trim(),
+        displayName: service.getActorName(interaction)
+    };
+}
+
+async function buildCoverageForInteraction(interaction, workspace) {
+    const guildRecord = warFollowupStateStore.getGuild(interaction.guildId);
+    const resolveMember = moderation.createMemberResolver(interaction.guild);
+    const eligibleIds = new Set();
+    for (const roster of workspace?.work?.directory?.rosters || []) {
+        const eligible = await moderation.getEligibleModerators(
+            interaction.guild,
+            guildRecord,
+            roster.clanTag,
+            { resolveMember }
+        );
+        for (const moderator of eligible) eligibleIds.add(moderator.discordId);
+    }
+    return views.buildCoveragePayload(workspace, guildRecord, { eligibleIds });
 }
 
 async function showCachedModal(interaction, builder) {
@@ -188,6 +220,7 @@ async function handleDirectMessage(interaction, tagRaw, viewTokenRaw) {
     assertCurrentCaseView(item, viewTokenRaw);
     if (item.status !== 'needs_dm') throw new Error('This follow-up is not waiting for a DM.');
     if (!config.features.directMessages) throw new Error('Direct DMs are not opted in for this server.');
+    const generalContact = item.case?.contactPurpose === 'general';
     if (!item.player?.discordId) throw new Error('This player has no linked Discord ID.');
     const deliveryKey = directDmDeliveryKey(item);
     const scopedDeliveryKey = `${interaction.guildId}:${deliveryKey}`;
@@ -233,7 +266,9 @@ async function handleDirectMessage(interaction, tagRaw, viewTokenRaw) {
         workspace = await service.loadWorkspace({ forcePrivate: true });
         await interaction.editReply(views.asEditPayload(views.buildCasePayload(findItem(workspace, item.tag), workspace, config)));
         await interaction.followUp({
-            content: `Decision DM sent to <@${item.player.discordId}> and the recovery period is now active.`,
+            content: generalContact
+                ? `Contact message sent to <@${item.player.discordId}>. The case is waiting for a response with a 24-hour follow-up.`
+                : `Decision DM sent to <@${item.player.discordId}> and the recovery period is now active.`,
             flags: views.EPHEMERAL,
             allowedMentions: { parse: [] }
         });
@@ -307,6 +342,75 @@ async function handleButtonOrSelect(interaction, parsed) {
         await renderView(interaction, (workspace, config) => views.buildHomePayload(workspace, config), {
             forcePrivate: action === 'refresh'
         });
+        return;
+    }
+    if (action === 'modsettings') {
+        await renderView(interaction, workspace => {
+            const identity = moderatorIdentity(interaction);
+            return views.buildModeratorSettingsPayload(
+                workspace,
+                warFollowupStateStore.getGuild(interaction.guildId),
+                identity.discordId,
+                identity.displayName
+            );
+        }, { forcePrivate: true });
+        return;
+    }
+    if (action === 'mycases') {
+        await renderView(interaction, workspace => views.buildMyCasesPayload(workspace, moderatorIdentity(interaction).discordId), {
+            forcePrivate: true
+        });
+        return;
+    }
+    if (action === 'coverage') {
+        if (isEphemeralSource(interaction)) await interaction.deferUpdate();
+        else await interaction.deferReply({ flags: views.EPHEMERAL });
+        const workspace = await service.loadWorkspace({ forcePrivate: true });
+        await interaction.editReply(views.asEditPayload(await buildCoverageForInteraction(interaction, workspace)));
+        return;
+    }
+    if (action === 'modclans') {
+        await interaction.deferUpdate();
+        const workspace = await service.loadWorkspace({ forcePrivate: false });
+        const available = new Set((workspace?.work?.directory?.rosters || []).map(roster => workflow.normalizeTag(roster.clanTag)).filter(Boolean));
+        const clanTags = (interaction.values || []).map(workflow.normalizeTag).filter(tag => available.has(tag));
+        if (clanTags.length !== (interaction.values || []).length) throw new Error('One selected clan is no longer available. Reopen your settings.');
+        const identity = moderatorIdentity(interaction);
+        warFollowupStateStore.upsertModerator(interaction.guildId, identity.discordId, {
+            displayName: identity.displayName,
+            clanTags
+        });
+        await interaction.editReply(views.asEditPayload(views.buildModeratorSettingsPayload(
+            workspace,
+            warFollowupStateStore.getGuild(interaction.guildId),
+            identity.discordId,
+            identity.displayName
+        )));
+        return;
+    }
+    if (action === 'modnotify' || action === 'modtoggle') {
+        await interaction.deferUpdate();
+        const identity = moderatorIdentity(interaction);
+        const record = warFollowupStateStore.getGuild(interaction.guildId);
+        const current = record.moderators?.[identity.discordId] || {};
+        const patch = { displayName: identity.displayName };
+        if (action === 'modnotify') {
+            if (!['dm', 'channel', 'both'].includes(first)) throw new Error('Invalid notification preference.');
+            patch.notificationMode = first;
+        } else {
+            if (!Array.isArray(current.clanTags) || !current.clanTags.length) {
+                throw new Error('Select at least one clan before accepting assignments.');
+            }
+            patch.accepting = current.accepting !== true;
+        }
+        warFollowupStateStore.upsertModerator(interaction.guildId, identity.discordId, patch);
+        const workspace = await service.loadWorkspace({ forcePrivate: false });
+        await interaction.editReply(views.asEditPayload(views.buildModeratorSettingsPayload(
+            workspace,
+            warFollowupStateStore.getGuild(interaction.guildId),
+            identity.discordId,
+            identity.displayName
+        )));
         return;
     }
     if (action === 'gaps') {
@@ -419,10 +523,24 @@ async function handleButtonOrSelect(interaction, parsed) {
         return;
     }
     if (action === 'assignment') {
+        if (isEphemeralSource(interaction)) await interaction.deferUpdate();
+        else await interaction.deferReply({ flags: views.EPHEMERAL });
+        const workspace = await service.loadWorkspace({ forcePrivate: true });
+        const item = findItem(workspace, first);
+        assertCurrentCaseView(item, second);
+        const eligible = await moderation.getEligibleModerators(
+            interaction.guild,
+            warFollowupStateStore.getGuild(interaction.guildId),
+            moderation.caseClanTag(item)
+        );
+        await interaction.editReply(views.asEditPayload(views.buildReassignmentPayload(item, eligible)));
+        return;
+    }
+    if (action === 'contact' || action === 'wait') {
         await showCachedModal(interaction, workspace => {
             const item = findItem(workspace, first);
             assertCurrentCaseView(item, second);
-            return item ? views.buildAssignmentModal(item) : null;
+            return item ? (action === 'contact' ? views.buildContactModal(item) : views.buildWaitModal(item)) : null;
         });
         return;
     }
@@ -442,7 +560,52 @@ async function handleButtonOrSelect(interaction, parsed) {
         });
         return;
     }
+    if (action === 'assignpick') {
+        await interaction.deferUpdate();
+        let workspace = await service.loadWorkspace({ forcePrivate: true });
+        const item = findItem(workspace, first);
+        assertCurrentCaseView(item, second);
+        const eligible = await moderation.getEligibleModerators(
+            interaction.guild,
+            warFollowupStateStore.getGuild(interaction.guildId),
+            moderation.caseClanTag(item)
+        );
+        const selected = String(interaction.values?.[0] || '');
+        const chosen = selected === '__auto__'
+            ? moderation.chooseModerator(eligible, workspace.work.items, {
+                avoidModeratorId: item.case?.assignedModeratorId,
+                blockedModeratorId: item.case?.assignmentBlockedModeratorId,
+                blockedUntil: item.case?.assignmentBlockedUntil,
+                nowMs: Date.now()
+            })
+            : eligible.find(candidate => candidate.discordId === selected) || null;
+        let mutationAction = 'assign_owner';
+        let patch = moderation.assignmentPatch(chosen);
+        if (selected === '__unassigned__') {
+            mutationAction = 'unassign_owner';
+            patch = {};
+        } else if (!chosen) {
+            throw new Error('No eligible moderator is currently available for that assignment.');
+        }
+        const result = await service.mutateCase(item, mutationAction, patch, {
+            actor: service.getActorName(interaction),
+            seed: `${interaction.id}:${mutationAction}:${item.tag}:${chosen?.discordId || 'unassigned'}`
+        });
+        if (chosen) {
+            warFollowupStateStore.recordModeratorAssignment(
+                interaction.guildId,
+                chosen.discordId,
+                result?.assignedAt || new Date()
+            );
+        }
+        workspace = await service.loadWorkspace({ forcePrivate: true });
+        await interaction.editReply(views.asEditPayload(views.buildCasePayload(findItem(workspace, item.tag), workspace, getConfig(interaction))));
+        await refreshDashboardQuietly(interaction, workspace);
+        return;
+    }
     if (action === 'dismiss') return mutateAndRender(interaction, 'dismiss', first, second);
+    if (action === 'resolve') return mutateAndRender(interaction, 'resolve', first, second);
+    if (action === 'escalate') return mutateAndRender(interaction, 'escalate', first, second);
     if (action === 'reopen') return mutateAndRender(interaction, 'reopen', first, second);
     if (action === 'approve') return mutateAndRender(interaction, 'approve_return', first, second);
     if (action === 'close') return mutateAndRender(interaction, 'close', first, second, { outcome: 'no_return' });
@@ -486,7 +649,21 @@ async function handleCaseModal(interaction, parsed) {
     let mutationAction = '';
     let patch = {};
 
-    if (action === 'watchform') {
+    if (action === 'contactform') {
+        mutationAction = 'contact';
+        assertCaseActionAllowed(item, mutationAction);
+        patch = { dmText: String(interaction.fields.getTextInputValue('message') || '').trim() };
+        if (!patch.dmText) throw new Error('The contact message cannot be empty.');
+    } else if (action === 'waitform') {
+        mutationAction = 'wait';
+        assertCaseActionAllowed(item, mutationAction);
+        const followupHours = Number(String(interaction.fields.getTextInputValue('hours') || '').trim());
+        if (![0, 24, 48, 72].includes(followupHours)) throw new Error('Follow-up hours must be 0, 24, 48, or 72.');
+        patch = {
+            followupHours,
+            waitingReason: String(interaction.fields.getTextInputValue('reason') || '').trim().slice(0, 1000)
+        };
+    } else if (action === 'watchform') {
         mutationAction = 'watch';
         assertCaseActionAllowed(item, mutationAction);
         patch = {

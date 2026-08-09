@@ -117,6 +117,14 @@ function navigationRow() {
     );
 }
 
+function moderationNavigationRow() {
+    return new ActionRowBuilder().addComponents(
+        actionButton('mycases', 'My cases', ButtonStyle.Secondary),
+        actionButton('modsettings', 'Moderation settings', ButtonStyle.Secondary),
+        actionButton('coverage', 'Coverage overview', ButtonStyle.Secondary)
+    );
+}
+
 function buildDashboardPayload(workspace, config) {
     const work = workspace?.work || {};
     const counts = statusCounts(work);
@@ -139,6 +147,7 @@ function buildDashboardPayload(workspace, config) {
             {
                 name: 'Workflow',
                 value: [
+                    `Waiting: **${counts.waiting}**`,
                     `🔎 Review: **${counts.needs_review}**`,
                     `✉️ Needs DM: **${counts.needs_dm}**`,
                     `🛡️ Hero-down: **${counts.hero_down}**`,
@@ -208,8 +217,8 @@ function buildHomePayload(workspace, config, options = {}) {
     const counts = statusCounts(work);
     const lines = items.slice(0, 12).map(item => {
         const meta = workflow.STATUS_META[item.status] || workflow.STATUS_META.needs_review;
-        const handler = item.case?.handledBy ? ` · ${safeInline(item.case.handledBy)}` : '';
-        return `${meta.emoji} **${safeInline(item.player?.name || item.tag)}** · ${meta.label}${handler}`;
+        const handler = item.case?.assignedModeratorName || item.case?.handledBy;
+        return `${meta.emoji} **${safeInline(item.player?.name || item.tag)}** · ${meta.label} · ${handler ? safeInline(handler) : 'Unassigned'}`;
     });
     if (items.length > lines.length) lines.push(`…and ${items.length - lines.length} more on this page.`);
     const embed = new EmbedBuilder()
@@ -218,7 +227,7 @@ function buildHomePayload(workspace, config, options = {}) {
         .setDescription(lines.length ? lines.join('\n') : 'No follow-up items match this view.')
         .addFields({
             name: 'Counts',
-            value: `Review ${counts.needs_review} · DM ${counts.needs_dm} · Hero-down ${counts.hero_down} · Ready ${counts.ready} · Watching ${counts.watching} · Closed ${counts.closed}`
+            value: `Review ${counts.needs_review} · Waiting ${counts.waiting} · DM ${counts.needs_dm} · Hero-down ${counts.hero_down} · Ready ${counts.ready} · Watching ${counts.watching} · Closed ${counts.closed}`
         })
         .setFooter({ text: `${status === 'all' ? 'All statuses' : workflow.STATUS_META[status].label} · page ${page + 1}/${pageCount}` });
     const components = [];
@@ -244,11 +253,12 @@ function buildHomePayload(workspace, config, options = {}) {
 
     const pagingRow = new ActionRowBuilder().addComponents(
         actionButton('page', 'Previous', ButtonStyle.Secondary, String(page - 1), status).setDisabled(page <= 0),
+        actionButton('filter', `Waiting (${counts.waiting})`, status === 'waiting' ? ButtonStyle.Primary : ButtonStyle.Secondary, 'waiting'),
         actionButton('filter', `Closed (${counts.closed})`, status === 'closed' ? ButtonStyle.Primary : ButtonStyle.Secondary, 'closed'),
         actionButton('filter', 'All', status === 'all' ? ButtonStyle.Primary : ButtonStyle.Secondary, 'all'),
         actionButton('page', 'Next', ButtonStyle.Secondary, String(page + 1), status).setDisabled(page >= pageCount - 1)
     );
-    components.push(pagingRow, navigationRow());
+    components.push(pagingRow, moderationNavigationRow(), navigationRow());
 
     return { embeds: [embed], components, flags: EPHEMERAL, allowedMentions: { parse: [] } };
 }
@@ -288,7 +298,9 @@ function hasEvidenceData(evidenceRaw) {
 function evidenceForDisplay(itemRaw) {
     const item = itemRaw && typeof itemRaw === 'object' ? itemRaw : {};
     const decisionEvidence = item.case?.evidence;
-    const usesDecisionEvidence = !['needs_review', 'watching'].includes(item.status) && hasEvidenceData(decisionEvidence);
+    const usesDecisionEvidence = hasEvidenceData(decisionEvidence) && Boolean(
+        item.case?.openedAt || !['needs_review', 'watching', 'waiting'].includes(item.status)
+    );
     return {
         evidence: usesDecisionEvidence ? decisionEvidence : (item.evidence || {}),
         usesDecisionEvidence
@@ -416,7 +428,20 @@ function buildCasePayload(item, workspace, config) {
             value: `${item.watching.completedWars}/${item.watching.targetWars} regular wars observed`
         });
     }
-    if (item.case?.handledBy) embed.addFields({ name: 'Handled by', value: safeInline(item.case.handledBy), inline: true });
+    embed.addFields({
+        name: 'Assigned moderator',
+        value: safeInline(item.case?.assignedModeratorName || item.case?.handledBy || 'Unassigned'),
+        inline: true
+    });
+    if (item.case?.sourceRosterTitle || item.case?.sourceClanTag) {
+        embed.addFields({
+            name: 'Case source snapshot',
+            value: [safeInline(item.case.sourceRosterTitle), workflow.normalizeTag(item.case.sourceClanTag)].filter(Boolean).join(' · '),
+            inline: true
+        });
+    }
+    if (item.case?.waitingUntil) embed.addFields({ name: 'Follow-up due', value: workflow.discordRelativeTimestamp(item.case.waitingUntil), inline: true });
+    if (item.case?.escalatedAt) embed.addFields({ name: 'Leadership review', value: `Escalated ${workflow.discordRelativeTimestamp(item.case.escalatedAt)}`, inline: true });
     if (item.case?.targetRosterTitle) embed.addFields({ name: 'Hero-down roster', value: safeInline(item.case.targetRosterTitle), inline: true });
     if (item.case?.dmText && item.status === 'needs_dm') {
         embed.addFields({ name: 'Decision message', value: truncate(toText(item.case.dmText).replace(/`/g, "'"), 1000) });
@@ -432,6 +457,12 @@ function buildCasePayload(item, workspace, config) {
             actionButton('watch', 'Keep watching', ButtonStyle.Secondary, tag, token),
             actionButton('hero', 'Hero-down period', ButtonStyle.Primary, tag, token)
         ));
+        components.push(new ActionRowBuilder().addComponents(
+            actionButton('contact', 'Contact player', ButtonStyle.Primary, tag, token),
+            actionButton('wait', 'Mark waiting', ButtonStyle.Secondary, tag, token),
+            actionButton('resolve', 'Resolve', ButtonStyle.Success, tag, token),
+            actionButton('escalate', 'Escalate', ButtonStyle.Danger, tag, token)
+        ));
     } else if (item.status === 'needs_dm') {
         const row = new ActionRowBuilder();
         if (config?.features?.directMessages === true && player.discordId) {
@@ -442,18 +473,40 @@ function buildCasePayload(item, workspace, config) {
             actionButton('reopen', 'Change decision', ButtonStyle.Secondary, tag, token)
         );
         components.push(row);
+        components.push(new ActionRowBuilder().addComponents(
+            actionButton('wait', 'Mark waiting', ButtonStyle.Secondary, tag, token),
+            actionButton('resolve', 'Resolve', ButtonStyle.Success, tag, token),
+            actionButton('escalate', 'Escalate', ButtonStyle.Danger, tag, token),
+            actionButton('dismiss', 'Dismiss', ButtonStyle.Secondary, tag, token)
+        ));
     } else if (item.status === 'hero_down' || item.status === 'ready') {
         const row = new ActionRowBuilder();
         if (item.recovery?.ready) row.addComponents(actionButton('approve', 'Approve return', ButtonStyle.Success, tag, token));
         row.addComponents(
             actionButton('extend', 'Extend period', ButtonStyle.Secondary, tag, token),
-            actionButton('closeask', 'Close without return', ButtonStyle.Danger, tag, token)
+            actionButton('closeask', 'Close without return', ButtonStyle.Danger, tag, token),
+            actionButton('wait', 'Mark waiting', ButtonStyle.Secondary, tag, token),
+            actionButton('escalate', 'Escalate', ButtonStyle.Danger, tag, token)
         );
         components.push(row);
+        components.push(new ActionRowBuilder().addComponents(
+            actionButton('dismiss', 'Dismiss case', ButtonStyle.Secondary, tag, token)
+        ));
+    } else if (item.status === 'waiting') {
+        components.push(new ActionRowBuilder().addComponents(
+            actionButton('reopen', 'Review now', ButtonStyle.Primary, tag, token),
+            actionButton('wait', 'Change follow-up', ButtonStyle.Secondary, tag, token),
+            actionButton('resolve', 'Resolve', ButtonStyle.Success, tag, token),
+            actionButton('escalate', 'Escalate', ButtonStyle.Danger, tag, token),
+            actionButton('dismiss', 'Dismiss', ButtonStyle.Secondary, tag, token)
+        ));
     } else if (item.status === 'watching') {
         components.push(new ActionRowBuilder().addComponents(
             actionButton('reopen', 'Review now', ButtonStyle.Primary, tag, token),
-            actionButton('dismiss', 'No action', ButtonStyle.Secondary, tag, token)
+            actionButton('dismiss', 'No action', ButtonStyle.Secondary, tag, token),
+            actionButton('wait', 'Mark waiting', ButtonStyle.Secondary, tag, token),
+            actionButton('resolve', 'Resolve', ButtonStyle.Success, tag, token),
+            actionButton('escalate', 'Escalate', ButtonStyle.Danger, tag, token)
         ));
     } else {
         components.push(new ActionRowBuilder().addComponents(
@@ -462,13 +515,13 @@ function buildCasePayload(item, workspace, config) {
     }
 
     components.push(new ActionRowBuilder().addComponents(
-        actionButton('assignment', item.case?.handledBy ? 'Change assignment' : 'Assign', ButtonStyle.Secondary, tag, token),
+        actionButton('assignment', item.case?.assignedModeratorId || item.case?.handledBy ? 'Reassign' : 'Assign', ButtonStyle.Secondary, tag, token),
         actionButton('note', 'Add private note', ButtonStyle.Secondary, tag, token),
         actionButton('evidence', 'War details', ButtonStyle.Secondary, tag, token),
         actionButton('activity', 'Activity', ButtonStyle.Secondary, tag, token, '0'),
         actionButton('ignoreask', 'Always ignore', ButtonStyle.Danger, tag, token)
     ));
-    components.push(navigationRow());
+    components.push(moderationNavigationRow(), navigationRow());
     return { embeds: [embed], components, flags: EPHEMERAL, allowedMentions: { parse: [] } };
 }
 
@@ -741,9 +794,31 @@ function buildNoteModal(item) {
 
 function buildMarkDmModal(item) {
     return modal('Review and mark DM sent', buildCustomId('markdmform', item.tag, caseToken(item)), [
-        textInput('message', 'Decision message that was sent', item.case?.dmText || '', {
+        textInput('message', 'Message that was sent', item.case?.dmText || '', {
             style: TextInputStyle.Paragraph,
             maxLength: 2000
+        })
+    ]);
+}
+
+function buildContactModal(item) {
+    const playerName = safeInline(item.player?.name || item.tag);
+    return modal('Prepare player contact', buildCustomId('contactform', item.tag, caseToken(item)), [
+        textInput('message', 'Message to the player', `Hi ${playerName}. A leader is reviewing your recent war activity and would like to follow up with you.`, {
+            style: TextInputStyle.Paragraph,
+            maxLength: 2000
+        })
+    ]);
+}
+
+function buildWaitModal(item) {
+    return modal('Mark case as waiting', buildCustomId('waitform', item.tag, caseToken(item)), [
+        textInput('hours', 'Follow-up hours (0, 24, 48, or 72)', '24', { maxLength: 2 }),
+        textInput('reason', 'Waiting for (optional)', item.case?.waitingReason || '', {
+            style: TextInputStyle.Paragraph,
+            maxLength: 1000,
+            required: false,
+            minLength: 0
         })
     ]);
 }
@@ -756,6 +831,40 @@ function buildAssignmentModal(item) {
             minLength: 0
         })
     ]);
+}
+
+function buildReassignmentPayload(item, moderatorsRaw) {
+    const moderators = Array.isArray(moderatorsRaw) ? moderatorsRaw : [];
+    const options = [
+        new StringSelectMenuOptionBuilder()
+            .setLabel('Assign automatically')
+            .setDescription('Use current clan coverage and workload balancing.')
+            .setValue('__auto__')
+    ];
+    for (const moderator of moderators.slice(0, 24)) {
+        options.push(new StringSelectMenuOptionBuilder()
+            .setLabel(truncate(moderator.displayName || moderator.discordId, 100))
+            .setDescription(truncate(`${moderator.notificationMode || 'channel'} notifications · accepting`, 100))
+            .setValue(moderator.discordId)
+            .setDefault(moderator.discordId === item.case?.assignedModeratorId));
+    }
+    return {
+        embeds: [new EmbedBuilder()
+            .setColor(COLORS.neutral)
+            .setTitle(`Assign · ${truncate(item.player?.name || item.tag, 220)}`)
+            .setDescription(`Eligible moderators for **${safeInline(item.case?.sourceRosterTitle || item.player?.rosterTitle || 'this clan')}** are shown below.`)],
+        components: [
+            new ActionRowBuilder().addComponents(
+                new StringSelectMenuBuilder()
+                    .setCustomId(buildCustomId('assignpick', item.tag, caseToken(item)))
+                    .setPlaceholder('Choose assignment')
+                    .addOptions(options)
+            ),
+            new ActionRowBuilder().addComponents(actionButton('case', 'Back to case', ButtonStyle.Secondary, item.tag))
+        ],
+        flags: EPHEMERAL,
+        allowedMentions: { parse: [] }
+    };
 }
 
 function buildRegularRulesModal(settings) {
@@ -788,6 +897,154 @@ function buildWorkflowRulesModal(settings) {
             minLength: 0
         })
     ]);
+}
+
+function buildModeratorSettingsPayload(workspace, guildRecord, userIdRaw, displayNameRaw) {
+    const userId = toText(userIdRaw).trim();
+    const preference = guildRecord?.moderators?.[userId] || {
+        discordId: userId,
+        displayName: displayNameRaw,
+        clanTags: [],
+        notificationMode: 'channel',
+        accepting: false
+    };
+    const selectedClanTags = new Set((preference.clanTags || []).map(workflow.normalizeTag));
+    const rosters = (workspace?.work?.directory?.rosters || [])
+        .filter(roster => workflow.normalizeTag(roster.clanTag))
+        .slice(0, 25);
+    const embed = new EmbedBuilder()
+        .setColor(preference.accepting ? COLORS.success : COLORS.closed)
+        .setTitle('Moderation assignment settings')
+        .setDescription('Choose the clans whose new cases you agree to receive automatically. These preferences affect ownership only; every case remains visible in War Follow Up.')
+        .addFields(
+            {
+                name: 'Clan coverage',
+                value: selectedClanTags.size
+                    ? truncate(rosters.filter(roster => selectedClanTags.has(workflow.normalizeTag(roster.clanTag)))
+                        .map(roster => safeInline(roster.title || roster.clanTag)).join(', ') || 'Saved clans are no longer connected.', 1024)
+                    : 'No clans selected'
+            },
+            { name: 'Notifications', value: preference.notificationMode === 'both' ? 'DM and moderation-channel ping' : (preference.notificationMode === 'dm' ? 'DM' : 'Moderation-channel ping'), inline: true },
+            { name: 'Assignment availability', value: preference.accepting ? 'Accepting new cases' : 'Paused', inline: true }
+        );
+    const components = [];
+    if (rosters.length) {
+        components.push(new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder()
+                .setCustomId(buildCustomId('modclans'))
+                .setPlaceholder('Select every clan you moderate')
+                .setMinValues(0)
+                .setMaxValues(rosters.length)
+                .addOptions(rosters.map(roster =>
+                    new StringSelectMenuOptionBuilder()
+                        .setLabel(truncate(roster.title || roster.id, 100))
+                        .setDescription(truncate(roster.clanTag, 100))
+                        .setValue(workflow.normalizeTag(roster.clanTag))
+                        .setDefault(selectedClanTags.has(workflow.normalizeTag(roster.clanTag)))
+                ))
+        ));
+    }
+    components.push(
+        new ActionRowBuilder().addComponents(
+            actionButton('modnotify', 'DM', preference.notificationMode === 'dm' ? ButtonStyle.Primary : ButtonStyle.Secondary, 'dm'),
+            actionButton('modnotify', 'Channel ping', preference.notificationMode === 'channel' ? ButtonStyle.Primary : ButtonStyle.Secondary, 'channel'),
+            actionButton('modnotify', 'Both', preference.notificationMode === 'both' ? ButtonStyle.Primary : ButtonStyle.Secondary, 'both'),
+            actionButton('modtoggle', preference.accepting ? 'Pause assignments' : 'Accept assignments', preference.accepting ? ButtonStyle.Danger : ButtonStyle.Success)
+        ),
+        new ActionRowBuilder().addComponents(
+            actionButton('mycases', 'My cases', ButtonStyle.Secondary),
+            actionButton('coverage', 'Coverage overview', ButtonStyle.Secondary),
+            actionButton('home', 'Open queue', ButtonStyle.Primary)
+        )
+    );
+    return { embeds: [embed], components, flags: EPHEMERAL, allowedMentions: { parse: [] } };
+}
+
+function moderationCaseSummary(workspace, guildRecord, nowRaw = new Date()) {
+    const items = (workspace?.work?.items || []).filter(item => item.status !== 'closed');
+    const nowMs = nowRaw instanceof Date ? nowRaw.getTime() : new Date(nowRaw).getTime();
+    const assigned = items.filter(item => item.case?.assignedModeratorId || item.case?.handledBy);
+    const unassigned = items.filter(item => !item.case?.assignedModeratorId && !item.case?.handledBy);
+    const waiting = items.filter(item => item.status === 'waiting');
+    const overdue = items.filter(item => {
+        const dueMs = workflow.parseMs(item.case?.waitingUntil);
+        const anchorMs = workflow.parseMs(item.case?.lastMeaningfulActionAt || item.case?.assignedAt || item.case?.updatedAt);
+        if (item.status === 'waiting' && dueMs > 0) return dueMs <= nowMs;
+        return Boolean(item.case?.assignedModeratorId && anchorMs > 0 && nowMs - anchorMs >= 24 * 60 * 60 * 1000);
+    });
+    return { items, assigned, unassigned, waiting, overdue };
+}
+
+function buildCoveragePayload(workspace, guildRecord, options = {}) {
+    const moderators = Object.values(guildRecord?.moderators || {});
+    const rosters = (workspace?.work?.directory?.rosters || []).filter(roster => workflow.normalizeTag(roster.clanTag));
+    const eligibleIds = options.eligibleIds instanceof Set ? options.eligibleIds : null;
+    const coverageLines = rosters.map(roster => {
+        const clanTag = workflow.normalizeTag(roster.clanTag);
+        const subscribed = moderators.filter(moderator => (moderator.clanTags || []).map(workflow.normalizeTag).includes(clanTag));
+        const labels = subscribed.map(moderator => {
+            const eligible = moderator.accepting && (!eligibleIds || eligibleIds.has(moderator.discordId));
+            return `${safeInline(moderator.displayName || moderator.discordId)}${eligible ? '' : ' (paused/ineligible)'}`;
+        });
+        return `**${safeInline(roster.title || clanTag)}** · ${labels.length ? labels.join(', ') : 'No coverage'}`;
+    });
+    const summary = moderationCaseSummary(workspace, guildRecord, options.now || new Date());
+    const uncovered = rosters.filter(roster => !moderators.some(moderator =>
+        moderator.accepting &&
+        (!eligibleIds || eligibleIds.has(moderator.discordId)) &&
+        (moderator.clanTags || []).map(workflow.normalizeTag).includes(workflow.normalizeTag(roster.clanTag))
+    ));
+    const embed = new EmbedBuilder()
+        .setColor(uncovered.length || summary.unassigned.length || summary.overdue.length ? COLORS.review : COLORS.success)
+        .setTitle('Moderation coverage overview')
+        .setDescription(truncate(coverageLines.join('\n') || 'No connected clans are available.', 4000))
+        .addFields(
+            { name: 'No active coverage', value: uncovered.length ? truncate(uncovered.map(roster => safeInline(roster.title || roster.clanTag)).join(', '), 1024) : 'None' },
+            { name: 'Open cases', value: `Assigned **${summary.assigned.length}** · Unassigned **${summary.unassigned.length}**`, inline: true },
+            { name: 'Attention', value: `Waiting **${summary.waiting.length}** · Overdue **${summary.overdue.length}**`, inline: true }
+        );
+    return {
+        embeds: [embed],
+        components: [new ActionRowBuilder().addComponents(
+            actionButton('modsettings', 'My settings', ButtonStyle.Secondary),
+            actionButton('mycases', 'My cases', ButtonStyle.Secondary),
+            actionButton('home', 'Open queue', ButtonStyle.Primary)
+        )],
+        flags: EPHEMERAL,
+        allowedMentions: { parse: [] }
+    };
+}
+
+function buildMyCasesPayload(workspace, userIdRaw) {
+    const userId = toText(userIdRaw).trim();
+    const items = (workspace?.work?.items || []).filter(item =>
+        item.status !== 'closed' && item.case?.assignedModeratorId === userId
+    );
+    const visibleItems = items.slice(0, 25);
+    const lines = visibleItems.map(item => {
+        const meta = workflow.STATUS_META[item.status] || workflow.STATUS_META.needs_review;
+        return `${meta.emoji} **${safeInline(item.player?.name || item.tag)}** · ${meta.label} · \`${item.tag}\``;
+    });
+    if (items.length > visibleItems.length) lines.push(`…and ${items.length - visibleItems.length} more in the full queue.`);
+    const embed = new EmbedBuilder()
+        .setColor(items.length ? COLORS.neutral : COLORS.success)
+        .setTitle('My assigned moderation cases')
+        .setDescription(truncate(lines.join('\n') || 'You have no open assigned cases.', 4096));
+    const components = [];
+    if (items.length) {
+        components.push(new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder()
+                .setCustomId(buildCustomId('pick'))
+                .setPlaceholder('Open one of my cases')
+                .addOptions(visibleItems.map(caseOption))
+        ));
+    }
+    components.push(new ActionRowBuilder().addComponents(
+        actionButton('modsettings', 'My settings', ButtonStyle.Secondary),
+        actionButton('coverage', 'Coverage overview', ButtonStyle.Secondary),
+        actionButton('home', 'Full queue', ButtonStyle.Primary)
+    ));
+    return { embeds: [embed], components, flags: EPHEMERAL, allowedMentions: { parse: [] } };
 }
 
 function buildSetupSummary(config, channelMention) {
@@ -841,10 +1098,17 @@ module.exports = {
     buildExtendModal,
     buildNoteModal,
     buildMarkDmModal,
+    buildContactModal,
+    buildWaitModal,
     buildAssignmentModal,
+    buildReassignmentPayload,
     buildRegularRulesModal,
     buildCwlRulesModal,
     buildWorkflowRulesModal,
+    buildModeratorSettingsPayload,
+    buildCoveragePayload,
+    buildMyCasesPayload,
+    moderationCaseSummary,
     buildSetupSummary,
     navigationRow,
     asEditPayload,

@@ -449,3 +449,141 @@ test('notification embeds fall back to the roster name when a linked member cann
     assert.match(sentPayload.embeds[0].description, /Roster fallback name/);
     assert.doesNotMatch(sentPayload.embeds[0].description, /\{\{wfu-user:|<@111111111111111111>/);
 });
+
+test('assignment and inactivity notifications honor each moderator delivery preference and remain idempotent', () => {
+    const assignedAt = '2026-08-09T07:00:00.000Z';
+    const workspace = buildWorkspace([{
+        tag: '#AAA',
+        name: 'Alpha',
+        sourceRosterId: 'main',
+        sourceRosterTitle: 'Main Clan',
+        sourceClanTag: '#MAIN',
+        status: 'needs_review',
+        assignedModeratorId: '666666666666666666',
+        assignedModeratorName: 'Case Owner',
+        handledBy: 'Case Owner',
+        assignedAt,
+        assignmentUpdatedAt: assignedAt,
+        lastMeaningfulActionAt: assignedAt,
+        createdAt: assignedAt,
+        updatedAt: assignedAt,
+        activity: []
+    }]);
+    const moderators = {
+        '666666666666666666': {
+            discordId: '666666666666666666',
+            displayName: 'Case Owner',
+            notificationMode: 'both',
+            accepting: true,
+            clanTags: ['#MAIN']
+        }
+    };
+    const notifications = planner.planModerationOwnershipNotifications(
+        workspace.work,
+        buildConfig(),
+        emptyRecord(),
+        moderators,
+        NOW.getTime()
+    );
+
+    assert.deepEqual(
+        notifications.map(notification => `${notification.kind}:${notification.destination}`).sort(),
+        [
+            'case-assignment:channel',
+            'case-assignment:dm',
+            'case-inactivity-reminder:channel',
+            'case-inactivity-reminder:dm'
+        ]
+    );
+    assert.equal(notifications.filter(notification => notification.destination === 'channel').every(notification => notification.content === '<@666666666666666666>'), true);
+    assert.equal(notifications.filter(notification => notification.destination === 'dm').every(notification => notification.content === ''), true);
+    assert.equal(notifications.filter(notification => notification.kind === 'case-inactivity-reminder').every(notification => /:24h:/.test(notification.key)), true);
+
+    const fortyEightHour = planner.planModerationOwnershipNotifications(
+        workspace.work,
+        buildConfig(),
+        emptyRecord(),
+        moderators,
+        new Date(assignedAt).getTime() + 49 * 60 * 60 * 1000
+    ).filter(notification => notification.kind === 'case-inactivity-reminder');
+    assert.equal(fortyEightHour.every(notification => /:48h:/.test(notification.key)), true);
+    assert.equal(fortyEightHour.every(notification => notification.consumeKeys.some(key => /:24h:/.test(key))), true);
+
+    const delivered = Object.fromEntries(notifications.flatMap(notification =>
+        (notification.consumeKeys || [notification.key]).map(key => [key, { at: NOW.toISOString() }])
+    ));
+    assert.deepEqual(
+        planner.planModerationOwnershipNotifications(
+            workspace.work,
+            buildConfig(),
+            { ...emptyRecord(), deliveries: delivered },
+            moderators,
+            NOW.getTime()
+        ),
+        []
+    );
+});
+
+test('a future waiting follow-up suppresses generic inactivity reminders until it is due', () => {
+    const now = new Date('2026-08-10T12:00:00.000Z');
+    const assignedAt = new Date(now.getTime() - 50 * 60 * 60 * 1000).toISOString();
+    const workspace = buildWorkspace([{
+        tag: '#AAA',
+        name: 'Alpha',
+        sourceRosterId: 'main',
+        sourceRosterTitle: 'Main Clan',
+        sourceClanTag: '#MAIN',
+        status: 'waiting',
+        assignedModeratorId: '222222222222222222',
+        assignedModeratorName: 'Leader A',
+        handledBy: 'Leader A',
+        assignedAt,
+        assignmentUpdatedAt: assignedAt,
+        lastMeaningfulActionAt: assignedAt,
+        waitingUntil: new Date(now.getTime() + 22 * 60 * 60 * 1000).toISOString(),
+        createdAt: assignedAt,
+        updatedAt: assignedAt,
+        activity: []
+    }]);
+    const notifications = planner.planModerationOwnershipNotifications(
+        workspace.work,
+        buildConfig(),
+        { deliveries: {} },
+        {
+            '222222222222222222': {
+                discordId: '222222222222222222',
+                displayName: 'Leader A',
+                notificationMode: 'both',
+                accepting: true
+            }
+        },
+        now.getTime()
+    );
+
+    assert.equal(notifications.filter(entry => entry.kind === 'case-inactivity-reminder').length, 0);
+});
+
+test('unassigned and escalated cases produce deduplicated leadership-visible notifications', () => {
+    const workspace = buildWorkspace([{
+        tag: '#AAA',
+        name: 'Alpha',
+        sourceRosterTitle: 'Main Clan',
+        sourceClanTag: '#MAIN',
+        status: 'needs_review',
+        assignmentUpdatedAt: '2026-08-10T08:00:00.000Z',
+        escalatedAt: '2026-08-10T08:05:00.000Z',
+        escalatedBy: 'Case Owner',
+        createdAt: '2026-08-10T08:00:00.000Z',
+        updatedAt: '2026-08-10T08:05:00.000Z',
+        activity: []
+    }]);
+    const notifications = planner.planModerationOwnershipNotifications(
+        workspace.work,
+        buildConfig(),
+        emptyRecord(),
+        {},
+        NOW.getTime()
+    );
+    assert.deepEqual(notifications.map(notification => notification.kind).sort(), ['case-escalation', 'case-unassigned']);
+    assert.equal(notifications.every(notification => notification.content === '<@&555555555555555555>'), true);
+});

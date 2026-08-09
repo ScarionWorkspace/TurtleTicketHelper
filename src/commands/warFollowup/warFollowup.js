@@ -11,6 +11,7 @@ const rosterPublicData = require('../../features/rosterPublicData/rosterPublicDa
 const workflow = require('../../features/warFollowup/workflow');
 const service = require('../../features/warFollowup/service');
 const views = require('../../features/warFollowup/views');
+const moderation = require('../../features/warFollowup/moderation');
 const { warFollowupStateStore } = require('../../features/warFollowup/stateStore');
 const { ensureDashboard, retireDashboard } = require('../../features/warFollowup/dashboard');
 const { initializeSummaryBaselines, runWarFollowupTick } = require('../../features/warFollowup/scheduler');
@@ -66,6 +67,15 @@ const data = new SlashCommandBuilder()
     .addSubcommand(subcommand => subcommand
         .setName('panel')
         .setDescription('Open the private staff queue.'))
+    .addSubcommand(subcommand => subcommand
+        .setName('moderation')
+        .setDescription('Choose clans, notifications, and assignment availability.'))
+    .addSubcommand(subcommand => subcommand
+        .setName('overview')
+        .setDescription('Show clan coverage, ownership, and overdue cases.'))
+    .addSubcommand(subcommand => subcommand
+        .setName('mine')
+        .setDescription('Show your currently assigned moderation cases.'))
     .addSubcommand(subcommand => addSetupOptions(subcommand
         .setName('setup')
         .setDescription('Configure the dedicated channel and each notification opt-in.')))
@@ -288,6 +298,47 @@ async function executePanel(interaction) {
     await interaction.editReply(views.asEditPayload(views.buildHomePayload(workspace, config)));
 }
 
+function interactionModeratorIdentity(interaction) {
+    return {
+        discordId: String(interaction.user?.id || interaction.member?.id || '').trim(),
+        displayName: service.getActorName(interaction)
+    };
+}
+
+async function executeModeration(interaction) {
+    await interaction.deferReply({ flags: views.EPHEMERAL });
+    const workspace = await service.loadWorkspace({ forcePrivate: true });
+    const identity = interactionModeratorIdentity(interaction);
+    await interaction.editReply(views.asEditPayload(views.buildModeratorSettingsPayload(
+        workspace,
+        warFollowupStateStore.getGuild(interaction.guildId),
+        identity.discordId,
+        identity.displayName
+    )));
+}
+
+async function executeOverview(interaction) {
+    await interaction.deferReply({ flags: views.EPHEMERAL });
+    const workspace = await service.loadWorkspace({ forcePrivate: true });
+    const record = warFollowupStateStore.getGuild(interaction.guildId);
+    const resolveMember = moderation.createMemberResolver(interaction.guild);
+    const eligibleIds = new Set();
+    for (const roster of workspace.work.directory.rosters || []) {
+        const eligible = await moderation.getEligibleModerators(interaction.guild, record, roster.clanTag, { resolveMember });
+        for (const moderator of eligible) eligibleIds.add(moderator.discordId);
+    }
+    await interaction.editReply(views.asEditPayload(views.buildCoveragePayload(workspace, record, { eligibleIds })));
+}
+
+async function executeMine(interaction) {
+    await interaction.deferReply({ flags: views.EPHEMERAL });
+    const workspace = await service.loadWorkspace({ forcePrivate: true });
+    await interaction.editReply(views.asEditPayload(views.buildMyCasesPayload(
+        workspace,
+        interactionModeratorIdentity(interaction).discordId
+    )));
+}
+
 async function executeCase(interaction) {
     await interaction.deferReply({ flags: views.EPHEMERAL });
     const input = interaction.options.getString('player', true);
@@ -303,6 +354,23 @@ async function executeCase(interaction) {
         );
         workspace = await service.loadWorkspace({ forcePrivate: true });
         item = workspace.work.items.find(candidate => candidate.tag === tag) || item;
+    }
+    if (item && moderation.isOpenItem(item) && !item.case?.assignedModeratorId && !item.case?.handledBy) {
+        const eligible = await moderation.getEligibleModerators(
+            interaction.guild,
+            warFollowupStateStore.getGuild(interaction.guildId),
+            moderation.caseClanTag(item)
+        );
+        const chosen = moderation.chooseModerator(eligible, workspace.work.items, { nowMs: Date.now() });
+        if (chosen) {
+            const assigned = await service.mutateCase(item, 'assign_owner', moderation.assignmentPatch(chosen), {
+                actor: 'War Follow Up',
+                seed: `${interaction.id}:manual-assign:${tag}:${chosen.discordId}`
+            });
+            warFollowupStateStore.recordModeratorAssignment(interaction.guildId, chosen.discordId, assigned?.assignedAt || new Date());
+            workspace = await service.loadWorkspace({ forcePrivate: true });
+            item = workspace.work.items.find(candidate => candidate.tag === tag) || item;
+        }
     }
     const config = warFollowupStateStore.getGuild(interaction.guildId).config;
     await interaction.editReply(views.asEditPayload(views.buildCasePayload(item, workspace, config)));
@@ -377,6 +445,9 @@ async function execute(interaction) {
     const subcommand = interaction.options.getSubcommand();
     if (subcommand === 'setup') return executeSetup(interaction);
     if (subcommand === 'panel') return executePanel(interaction);
+    if (subcommand === 'moderation') return executeModeration(interaction);
+    if (subcommand === 'overview') return executeOverview(interaction);
+    if (subcommand === 'mine') return executeMine(interaction);
     if (subcommand === 'case') return executeCase(interaction);
     if (subcommand === 'ignored' || subcommand === 'rules') return executeSimpleView(interaction, subcommand);
     if (subcommand === 'status') return executeStatus(interaction);

@@ -61,7 +61,7 @@ async function readPrivateState(options = {}) {
         timeoutMs: options.timeoutMs
     }).then(result => {
         const state = {
-            schemaVersion: 1,
+            schemaVersion: 2,
             settings: workflow.sanitizeSettings(result?.settings),
             cases: (Array.isArray(result?.cases) ? result.cases : [])
                 .map(workflow.normalizeCase)
@@ -150,9 +150,9 @@ function mutationBase(itemRaw, actorRaw) {
         tag: workflow.normalizeTag(item.tag || player.tag),
         name: String(player.name || caseValue?.name || '').trim(),
         discord: String(player.discord || caseValue?.discord || '').trim(),
-        sourceRosterId: String(player.rosterId || caseValue?.sourceRosterId || '').trim(),
-        sourceRosterTitle: String(player.rosterTitle || caseValue?.sourceRosterTitle || '').trim(),
-        sourceClanTag: workflow.normalizeTag(player.clanTag || caseValue?.sourceClanTag),
+        sourceRosterId: String(caseValue?.sourceRosterId || player.rosterId || '').trim(),
+        sourceRosterTitle: String(caseValue?.sourceRosterTitle || player.rosterTitle || '').trim(),
+        sourceClanTag: workflow.normalizeTag(caseValue?.sourceClanTag || player.clanTag),
         actor,
         handledBy: String(caseValue?.handledBy || actor || '').trim(),
         signalIds: Array.isArray(item.signalIds) ? item.signalIds : [],
@@ -202,7 +202,8 @@ async function ensureManualCase(tagRaw, workspace, actorRaw, seedRaw) {
 
     await mutateCase(item, 'manual_review', {
         reasonCodes: ['manual'],
-        handledBy: String(actorRaw || '').trim()
+        evidence: item.evidence,
+        handledBy: ''
     }, {
         actor: actorRaw,
         seed: seedRaw

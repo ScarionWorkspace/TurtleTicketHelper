@@ -188,7 +188,9 @@ function planCaseAlerts(work, config, record, nowIso) {
             key: notificationKey,
             kind: 'case-alert',
             featureKey: 'caseAlerts',
-            content: staffMention(config),
+            content: changed.some(item => !item.case?.assignedModeratorId && !item.case?.handledBy)
+                ? staffMention(config)
+                : '',
             embeds: [{
                 color: 0xf59e0b,
                 title: 'War follow-up needs attention',
@@ -201,6 +203,155 @@ function planCaseAlerts(work, config, record, nowIso) {
             displayNameFallbacks: displayNameFallbacks(changedIdentities)
         }
     };
+}
+
+function moderatorPreference(moderatorsRaw, discordIdRaw) {
+    const discordId = toText(discordIdRaw).trim();
+    const value = moderatorsRaw && typeof moderatorsRaw === 'object' ? moderatorsRaw[discordId] : null;
+    return value && typeof value === 'object' ? value : null;
+}
+
+function assignmentDestinations(preference) {
+    const mode = toText(preference?.notificationMode).trim().toLowerCase();
+    if (mode === 'dm') return ['dm'];
+    if (mode === 'both') return ['channel', 'dm'];
+    return ['channel'];
+}
+
+function caseAssignmentNotification(item, preference, destination, config) {
+    const caseValue = item.case || {};
+    const moderatorId = toText(caseValue.assignedModeratorId).trim();
+    const assignmentRevision = caseValue.assignmentUpdatedAt || caseValue.assignedAt || caseValue.updatedAt;
+    const playerName = safeInline(item.player?.name || caseValue.name || item.tag, 100);
+    const clanName = safeInline(caseValue.sourceRosterTitle || item.player?.rosterTitle || 'Unknown clan', 120);
+    const key = `case-assignment:${semanticKey([item.tag, moderatorId, assignmentRevision])}:${destination}`;
+    return {
+        key,
+        kind: 'case-assignment',
+        destination,
+        recipientUserId: moderatorId,
+        content: destination === 'channel' ? `<@${moderatorId}>` : '',
+        embeds: [{
+            color: 0x5865f2,
+            title: 'New moderation case assigned',
+            description: [
+                `**${playerName}** · \`${item.tag}\``,
+                `Source clan: **${clanName}**${caseValue.sourceClanTag ? ` · \`${caseValue.sourceClanTag}\`` : ''}`,
+                item.signals?.length
+                    ? `Reason: ${safeInline(item.signals.map(signal => signal.title).join(', '), 500)}`
+                    : 'Open War Follow Up to review the preserved case evidence.'
+            ].join('\n'),
+            footer: { text: 'This assignment remains valid even if a notification delivery fails.' },
+            timestamp: assignmentRevision || undefined
+        }],
+        allowedUserIds: destination === 'channel' ? [moderatorId] : [],
+        allowedRoleIds: [],
+        displayNameFallbacks: { [moderatorId]: preference?.displayName || caseValue.assignedModeratorName || 'Moderator' }
+    };
+}
+
+function inactivityReminderNotification(item, preference, destination, hours, config, nowIso) {
+    const caseValue = item.case || {};
+    const moderatorId = toText(caseValue.assignedModeratorId).trim();
+    const anchor = caseValue.lastMeaningfulActionAt || caseValue.assignedAt || caseValue.updatedAt;
+    const keyPrefix = `case-inactivity:${semanticKey([item.tag, moderatorId, anchor])}`;
+    const consumeKeys = [24, 48]
+        .filter(threshold => threshold <= hours)
+        .map(threshold => `${keyPrefix}:${threshold}h:${destination}`);
+    return {
+        key: `${keyPrefix}:${hours}h:${destination}`,
+        consumeKeys,
+        kind: 'case-inactivity-reminder',
+        destination,
+        recipientUserId: moderatorId,
+        content: destination === 'channel' ? `<@${moderatorId}>` : '',
+        embeds: [{
+            color: hours >= 48 ? 0xed4245 : 0xf59e0b,
+            title: `Moderation case needs an update · ${hours}h`,
+            description: [
+                `**${safeInline(item.player?.name || caseValue.name || item.tag, 100)}** · \`${item.tag}\``,
+                `Assigned to **{{wfu-user:${moderatorId}}}** with no meaningful action for ${hours} hours.`,
+                hours >= 48
+                    ? 'Please update, wait, resolve, reassign, or escalate it. At 72 hours it will be reassigned automatically.'
+                    : 'Please record an update or set a follow-up time.'
+            ].join('\n'),
+            timestamp: nowIso
+        }],
+        allowedUserIds: destination === 'channel' ? [moderatorId] : [],
+        allowedRoleIds: [],
+        displayNameFallbacks: { [moderatorId]: preference?.displayName || caseValue.assignedModeratorName || 'Moderator' }
+    };
+}
+
+function planModerationOwnershipNotifications(work, config, record, moderators, nowMs) {
+    const notifications = [];
+    for (const item of Array.isArray(work?.items) ? work.items : []) {
+        const caseValue = item.case && typeof item.case === 'object' ? item.case : null;
+        if (caseValue?.escalatedAt) {
+            const escalationKey = `case-escalation:${semanticKey([item.tag, caseValue.escalatedAt])}`;
+            if (!record?.deliveries?.[escalationKey]) {
+                notifications.push({
+                    key: escalationKey,
+                    kind: 'case-escalation',
+                    destination: 'channel',
+                    content: staffMention(config),
+                    embeds: [{
+                        color: 0xed4245,
+                        title: 'Leadership review requested',
+                        description: `**${safeInline(item.player?.name || caseValue.name || item.tag)}** · \`${item.tag}\` was escalated by ${safeInline(caseValue.escalatedBy || 'a moderator')}.`,
+                        timestamp: caseValue.escalatedAt
+                    }],
+                    allowedUserIds: [],
+                    allowedRoleIds: config.staffRoleId ? [config.staffRoleId] : []
+                });
+            }
+        }
+        const moderatorId = toText(caseValue?.assignedModeratorId).trim();
+        if (!moderatorId && !caseValue?.handledBy && caseValue?.assignmentUpdatedAt && !['closed', 'dismissed'].includes(caseValue.status)) {
+            const unassignedKey = `case-unassigned:${semanticKey([item.tag, caseValue.assignmentUpdatedAt])}`;
+            if (!record?.deliveries?.[unassignedKey]) {
+                notifications.push({
+                    key: unassignedKey,
+                    kind: 'case-unassigned',
+                    destination: 'channel',
+                    content: staffMention(config),
+                    embeds: [{
+                        color: 0xed4245,
+                        title: 'Moderation case is unassigned',
+                        description: `**${safeInline(item.player?.name || caseValue.name || item.tag)}** · \`${item.tag}\` needs an eligible moderator. Check clan coverage or assign it manually.`,
+                        timestamp: caseValue.assignmentUpdatedAt
+                    }],
+                    allowedUserIds: [],
+                    allowedRoleIds: config.staffRoleId ? [config.staffRoleId] : []
+                });
+            }
+        }
+        if (!moderatorId || !caseValue?.assignmentUpdatedAt || ['closed', 'dismissed'].includes(caseValue.status)) continue;
+        const preference = moderatorPreference(moderators, moderatorId);
+        if (!preference) continue;
+        for (const destination of assignmentDestinations(preference)) {
+            const assignment = caseAssignmentNotification(item, preference, destination, config);
+            if (!record?.deliveries?.[assignment.key]) notifications.push(assignment);
+        }
+
+        if (caseValue.status === 'waiting' && workflow.parseMs(caseValue.waitingUntil) > nowMs) continue;
+        const anchorMs = workflow.parseMs(caseValue.lastMeaningfulActionAt || caseValue.assignedAt || caseValue.updatedAt);
+        const elapsedHours = anchorMs > 0 ? Math.floor((nowMs - anchorMs) / (60 * 60 * 1000)) : 0;
+        const reminderHours = elapsedHours >= 48 && elapsedHours < 72 ? 48 : (elapsedHours >= 24 && elapsedHours < 72 ? 24 : 0);
+        if (!reminderHours) continue;
+        for (const destination of assignmentDestinations(preference)) {
+            const reminder = inactivityReminderNotification(
+                item,
+                preference,
+                destination,
+                reminderHours,
+                config,
+                new Date(nowMs).toISOString()
+            );
+            if (!reminder.consumeKeys.every(key => record?.deliveries?.[key])) notifications.push(reminder);
+        }
+    }
+    return notifications;
 }
 
 function getRegularPendingPlayers(roster, rosterData) {
@@ -522,11 +673,12 @@ function planMissingDiscordDigest(work, config, record, now) {
     };
 }
 
-function planNotifications({ rosterData, work, config, record, nowRaw = new Date() }) {
+function planNotifications({ rosterData, work, config, record, moderators = {}, nowRaw = new Date() }) {
     const now = nowRaw instanceof Date ? nowRaw : new Date(nowRaw);
     const nowMs = Number.isFinite(now.getTime()) ? now.getTime() : Date.now();
     const nowIso = new Date(nowMs).toISOString();
     const notifications = [];
+    notifications.push(...planModerationOwnershipNotifications(work, config, record, moderators, nowMs));
     const casePlan = planCaseAlerts(work, config, record, nowIso);
     if (casePlan.notification && !record?.deliveries?.[casePlan.notification.key]) {
         notifications.push(casePlan.notification);
@@ -568,6 +720,7 @@ module.exports = {
     buildCurrentCaseObservations,
     buildSummaryBaselineKeys,
     summarizeStatsRows,
+    planModerationOwnershipNotifications,
     zonedDateParts,
     planNotifications
 };

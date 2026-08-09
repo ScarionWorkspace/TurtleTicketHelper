@@ -3,10 +3,11 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const MAX_DELIVERIES_PER_GUILD = 2500;
 const MAX_CASE_OBSERVATIONS_PER_GUILD = 1500;
 const SNOWFLAKE_PATTERN = /^\d{17,20}$/;
+const MODERATOR_NOTIFICATION_MODES = Object.freeze(['dm', 'channel', 'both']);
 const FEATURE_KEYS = Object.freeze([
     'caseAlerts',
     'attackReminders',
@@ -49,6 +50,7 @@ function createDefaultGuildRecord() {
             updatedAt: ''
         },
         deliveries: {},
+        moderators: {},
         observations: {
             caseFingerprints: {},
             casesInitializedAt: '',
@@ -78,6 +80,37 @@ function cleanSnowflake(value) {
 function cleanTimestamp(value) {
     const ms = new Date(String(value || '')).getTime();
     return Number.isFinite(ms) && ms > 0 ? new Date(ms).toISOString() : '';
+}
+
+function cleanClanTag(value) {
+    const compact = cleanText(value, 24).toUpperCase().replace(/\s+/g, '').replace(/O/g, '0');
+    if (!compact) return '';
+    return compact.startsWith('#') ? compact : `#${compact}`;
+}
+
+function sanitizeModerators(raw) {
+    const value = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+    const moderators = {};
+    for (const [rawDiscordId, rawPreference] of Object.entries(value)) {
+        const discordId = cleanSnowflake(rawDiscordId || rawPreference?.discordId);
+        if (!discordId) continue;
+        const preference = rawPreference && typeof rawPreference === 'object' ? rawPreference : {};
+        const notificationMode = cleanText(preference.notificationMode, 20).toLowerCase();
+        moderators[discordId] = {
+            discordId,
+            displayName: cleanText(preference.displayName, 80),
+            clanTags: Array.from(new Set(
+                (Array.isArray(preference.clanTags) ? preference.clanTags : [])
+                    .map(cleanClanTag)
+                    .filter(Boolean)
+            )).sort().slice(0, 25),
+            notificationMode: MODERATOR_NOTIFICATION_MODES.includes(notificationMode) ? notificationMode : 'channel',
+            accepting: preference.accepting === true,
+            updatedAt: cleanTimestamp(preference.updatedAt),
+            lastAssignedAt: cleanTimestamp(preference.lastAssignedAt)
+        };
+    }
+    return moderators;
 }
 
 function sanitizeFeatures(raw) {
@@ -167,6 +200,7 @@ function sanitizeGuildRecord(raw) {
             updatedAt: cleanTimestamp(dashboard.updatedAt)
         },
         deliveries: sanitizeDeliveries(value.deliveries),
+        moderators: sanitizeModerators(value.moderators),
         observations: {
             caseFingerprints: sanitizeCaseFingerprints(observations.caseFingerprints),
             casesInitializedAt: cleanTimestamp(observations.casesInitializedAt),
@@ -346,6 +380,39 @@ function createWarFollowupStateStore(options = {}) {
         save();
     }
 
+    function upsertModerator(guildIdRaw, discordIdRaw, patchRaw = {}, nowRaw = new Date()) {
+        const { record } = ensureGuild(guildIdRaw);
+        const discordId = cleanSnowflake(discordIdRaw);
+        if (!discordId) throw new Error('A valid Discord moderator ID is required.');
+        const current = record.moderators?.[discordId] || { discordId };
+        const patch = patchRaw && typeof patchRaw === 'object' ? patchRaw : {};
+        const now = nowRaw instanceof Date ? nowRaw : new Date(nowRaw);
+        const updatedAt = Number.isFinite(now.getTime()) ? now.toISOString() : new Date().toISOString();
+        record.moderators = sanitizeModerators({
+            ...record.moderators,
+            [discordId]: {
+                ...current,
+                ...patch,
+                discordId,
+                updatedAt,
+                lastAssignedAt: Object.prototype.hasOwnProperty.call(patch, 'lastAssignedAt')
+                    ? patch.lastAssignedAt
+                    : current.lastAssignedAt
+            }
+        });
+        save();
+        return clone(record.moderators[discordId]);
+    }
+
+    function recordModeratorAssignment(guildIdRaw, discordIdRaw, assignedAtRaw = new Date()) {
+        const discordId = cleanSnowflake(discordIdRaw);
+        if (!discordId) return null;
+        const assignedAt = assignedAtRaw instanceof Date
+            ? assignedAtRaw.toISOString()
+            : (cleanTimestamp(assignedAtRaw) || new Date().toISOString());
+        return upsertModerator(guildIdRaw, discordId, { lastAssignedAt: assignedAt }, assignedAt);
+    }
+
     function removeDeliveries(guildIdRaw, keysRaw) {
         const { record } = ensureGuild(guildIdRaw);
         const keys = Array.from(new Set(
@@ -418,6 +485,8 @@ function createWarFollowupStateStore(options = {}) {
         setDashboard,
         hasDelivery,
         recordDeliveries,
+        upsertModerator,
+        recordModeratorAssignment,
         removeDeliveries,
         replaceCaseObservations,
         setLastMissingDiscordDigestDate,
@@ -433,9 +502,11 @@ module.exports = {
     FEATURE_KEYS,
     SUMMARY_FEATURE_KEYS,
     MAX_DELIVERIES_PER_GUILD,
+    MODERATOR_NOTIFICATION_MODES,
     createDefaultConfig,
     createDefaultGuildRecord,
     sanitizeConfig,
+    sanitizeModerators,
     sanitizeGuildRecord,
     createWarFollowupStateStore,
     warFollowupStateStore

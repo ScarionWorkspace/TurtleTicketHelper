@@ -257,3 +257,44 @@ test('a known Discord DM failure releases the durable reservation for a safe ret
     assert.equal(calls.followUps.length, 1);
     assert.match(calls.followUps[0].content, /Discord rejected the DM/);
 });
+
+test('moderators can persist their own clan subscriptions and assignment availability from the panel', async t => {
+    const workspace = buildWorkspace({
+        tag: '#P0LYGQ',
+        status: 'needs_review',
+        updatedAt: '2026-08-01T00:00:00.000Z'
+    });
+    const moderatorId = '222222222222222222';
+    let preference = {
+        discordId: moderatorId,
+        displayName: 'Moderator',
+        clanTags: [],
+        notificationMode: 'channel',
+        accepting: false
+    };
+    const patches = [];
+    t.mock.method(service, 'loadWorkspace', async () => workspace);
+    t.mock.method(warFollowupStateStore, 'getGuild', () => ({
+        config: { enabled: true, channelId: '444444444444444444', features: {} },
+        moderators: { [moderatorId]: preference }
+    }));
+    t.mock.method(warFollowupStateStore, 'upsertModerator', (_guildId, _discordId, patch) => {
+        patches.push(patch);
+        preference = { ...preference, ...patch };
+        return preference;
+    });
+    const clans = baseInteraction(buildCustomId('modclans'), {
+        user: { id: moderatorId, username: 'moderator' },
+        values: ['#2LUCULP']
+    });
+    assert.equal(await handleWarFollowupInteraction(clans.interaction), true);
+    assert.deepEqual(patches[0].clanTags, ['#2LUCULP']);
+    assert.equal(clans.calls.edits.length, 1);
+
+    const toggle = baseInteraction(buildCustomId('modtoggle'), {
+        user: { id: moderatorId, username: 'moderator' }
+    });
+    assert.equal(await handleWarFollowupInteraction(toggle.interaction), true);
+    assert.equal(patches[1].accepting, true);
+    assert.equal(toggle.calls.edits.length, 1);
+});

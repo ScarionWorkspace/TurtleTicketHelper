@@ -129,3 +129,38 @@ test('a corrupt runtime file is backed up rather than silently overwritten', () 
     assert.equal(backups.length, 1);
     assert.equal(fs.readFileSync(filePath, 'utf8'), '{not json');
 });
+
+test('schema migration persists sanitized per-moderator clan and notification preferences', () => {
+    const { filePath } = createStore();
+    fs.writeFileSync(filePath, JSON.stringify({
+        schemaVersion: 1,
+        guilds: {
+            '111111111111111111': {
+                config: {},
+                deliveries: {},
+                observations: {}
+            }
+        }
+    }), 'utf8');
+    const store = createWarFollowupStateStore({ filePath });
+    assert.deepEqual(store.getGuild('111111111111111111').moderators, {});
+
+    const saved = store.upsertModerator('111111111111111111', '222222222222222222', {
+        displayName: 'Clan Leader',
+        clanTags: ['#CLANO', ' clan2 ', '#CLANO'],
+        notificationMode: 'both',
+        accepting: true
+    }, new Date('2026-08-09T12:00:00.000Z'));
+    assert.deepEqual(saved.clanTags, ['#CLAN0', '#CLAN2']);
+    assert.equal(saved.notificationMode, 'both');
+    assert.equal(saved.accepting, true);
+
+    store.recordModeratorAssignment(
+        '111111111111111111',
+        '222222222222222222',
+        '2026-08-09T13:00:00.000Z'
+    );
+    const reloaded = createWarFollowupStateStore({ filePath }).getGuild('111111111111111111');
+    assert.equal(reloaded.moderators['222222222222222222'].lastAssignedAt, '2026-08-09T13:00:00.000Z');
+    assert.equal(JSON.parse(fs.readFileSync(filePath, 'utf8')).schemaVersion, 2);
+});

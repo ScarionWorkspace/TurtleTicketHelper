@@ -84,6 +84,9 @@ test('/war-follow-up exposes setup, panel, case, ignored, rules, status, and man
     assert.ok(json.dm_permission === false || json.contexts?.includes(0), 'the staff workflow must be guild-only');
     assert.deepEqual(json.options.map(option => option.name), [
         'panel',
+        'moderation',
+        'overview',
+        'mine',
         'setup',
         'case',
         'ignored',
@@ -248,6 +251,52 @@ test('dashboard and private queue remain within Discord component and custom-ID 
         assert.ok((payload.components || []).length <= 5);
         assert.equal(collectCustomIds(payload).every(id => id.length <= 100), true);
     }
+});
+
+test('moderator settings, coverage, and personal ownership views stay within Discord UI limits', () => {
+    const workspace = buildWorkspace({
+        tag: '#P0LYGQ',
+        status: 'waiting',
+        sourceRosterId: 'main',
+        sourceRosterTitle: 'Main',
+        sourceClanTag: '#2LUCULP',
+        assignedModeratorId: '222222222222222222',
+        assignedModeratorName: 'Moderator',
+        handledBy: 'Moderator',
+        assignedAt: '2026-08-01T00:00:00.000Z',
+        assignmentUpdatedAt: '2026-08-01T00:00:00.000Z',
+        lastMeaningfulActionAt: '2026-08-01T00:00:00.000Z',
+        waitingUntil: '2026-08-02T00:00:00.000Z',
+        openedAt: '2026-08-01T00:00:00.000Z',
+        createdAt: '2026-08-01T00:00:00.000Z',
+        updatedAt: '2026-08-01T00:00:00.000Z',
+        activity: []
+    });
+    const guildRecord = {
+        moderators: {
+            '222222222222222222': {
+                discordId: '222222222222222222',
+                displayName: 'Moderator',
+                clanTags: ['#2LUCULP'],
+                notificationMode: 'both',
+                accepting: true
+            }
+        }
+    };
+    const payloads = [
+        views.buildModeratorSettingsPayload(workspace, guildRecord, '222222222222222222', 'Moderator'),
+        views.buildCoveragePayload(workspace, guildRecord, { eligibleIds: new Set(['222222222222222222']) }),
+        views.buildMyCasesPayload(workspace, '222222222222222222')
+    ];
+    for (const payload of payloads) {
+        assert.ok(payload.components.length <= 5);
+        assert.equal(payload.components.every(row => row.toJSON().components.length <= 5), true);
+        assert.equal(collectCustomIds(payload.components.map(row => row.toJSON())).every(id => id.length <= 100), true);
+    }
+    const assignedCase = workspace.work.items.find(item => item.tag === '#P0LYGQ');
+    const caseJson = views.buildCasePayload(assignedCase, workspace, { features: {} }).embeds[0].toJSON();
+    assert.match(JSON.stringify(caseJson), /Assigned moderator/);
+    assert.match(JSON.stringify(caseJson), /Case source snapshot/);
 });
 
 test('reply-only ephemeral flags are stripped before editing an interaction response', () => {

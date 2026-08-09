@@ -6,6 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { afterEach, test } = require('node:test');
 const workflow = require('../src/features/warFollowup/workflow');
+const { getStaffRoleIds } = require('../src/features/permissions/staffPermissions');
 const { createWarFollowupStateStore } = require('../src/features/warFollowup/stateStore');
 const { processGuild, runWarFollowupTick } = require('../src/features/warFollowup/scheduler');
 const { retireDashboard } = require('../src/features/warFollowup/dashboard');
@@ -35,6 +36,7 @@ function createDiscordHarness(options = {}) {
         guildId: GUILD_ID,
         isTextBased: () => true,
         isThread: () => false,
+        guild: options.guild,
         messages: {
             fetch: async messageId => {
                 if (messages.has(messageId)) return messages.get(messageId);
@@ -65,7 +67,8 @@ function createDiscordHarness(options = {}) {
         channels: {
             cache: new Map([[CHANNEL_ID, channel]]),
             fetch: async channelId => channelId === CHANNEL_ID ? channel : null
-        }
+        },
+        users: options.users
     };
     return { client, channel, messages, sends };
 }
@@ -242,4 +245,84 @@ test('moving or disabling an integration retires the old dashboard controls', as
     assert.equal(retired, true);
     assert.deepEqual(message.payload.components, []);
     assert.match(message.payload.embeds[0].description, /active dashboard is now/);
+});
+
+test('a failed assignment DM never rolls back ownership and releases its reservation for a later retry', async t => {
+    t.mock.method(console, 'error', () => {});
+    const store = createStore();
+    const moderatorId = '666666666666666666';
+    const staffRoleId = getStaffRoleIds()[0];
+    let dmAttempts = 0;
+    const guild = {
+        members: {
+            fetch: async ({ user }) => ({
+                id: user,
+                displayName: 'Assigned Leader',
+                user: { username: 'assigned-leader' },
+                roles: { cache: { has: roleId => roleId === staffRoleId } }
+            })
+        }
+    };
+    const harness = createDiscordHarness({
+        guild,
+        users: {
+            fetch: async () => ({
+                send: async () => {
+                    dmAttempts += 1;
+                    throw new Error('DMs disabled');
+                }
+            })
+        }
+    });
+    store.patchConfig(GUILD_ID, {
+        enabled: true,
+        channelId: CHANNEL_ID
+    }, new Date('2026-08-10T07:00:00.000Z'));
+    store.upsertModerator(GUILD_ID, moderatorId, {
+        displayName: 'Assigned Leader',
+        clanTags: ['#MAIN'],
+        notificationMode: 'dm',
+        accepting: true
+    }, NOW);
+    const workspace = buildWorkspace();
+    workspace.privateState.cases = [{
+        tag: '#P0LYGQ',
+        name: 'Alpha',
+        sourceRosterId: 'main',
+        sourceRosterTitle: 'Main Clan',
+        sourceClanTag: '#MAIN',
+        status: 'needs_review',
+        assignedModeratorId: moderatorId,
+        assignedModeratorName: 'Assigned Leader',
+        handledBy: 'Assigned Leader',
+        assignedAt: NOW.toISOString(),
+        assignmentUpdatedAt: NOW.toISOString(),
+        lastMeaningfulActionAt: NOW.toISOString(),
+        openedAt: NOW.toISOString(),
+        createdAt: NOW.toISOString(),
+        updatedAt: NOW.toISOString(),
+        activity: []
+    }];
+    workspace.work = workflow.buildWorkItems(workspace.rosterData, workspace.privateState);
+
+    const first = await processGuild(
+        harness.client,
+        { guildId: GUILD_ID, ...store.getGuild(GUILD_ID) },
+        workspace,
+        { store, now: NOW }
+    );
+    assert.equal(first.planned, 1);
+    assert.deepEqual(first.sent, []);
+    assert.equal(dmAttempts, 1);
+    assert.equal(workspace.work.items[0].case.assignedModeratorId, moderatorId);
+    assert.deepEqual(store.getGuild(GUILD_ID).deliveries, {});
+
+    await processGuild(
+        harness.client,
+        { guildId: GUILD_ID, ...store.getGuild(GUILD_ID) },
+        workspace,
+        { store, now: NOW }
+    );
+    assert.equal(dmAttempts, 2, 'a known failed delivery is safely retryable');
+    assert.equal(workspace.work.items[0].case.assignedModeratorId, moderatorId);
 });

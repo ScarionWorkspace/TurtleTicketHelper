@@ -4,10 +4,12 @@ const { redactKnownSecrets } = require('../../config/env');
 const { loadWorkspace } = require('./service');
 const { warFollowupStateStore } = require('./stateStore');
 const { buildSummaryBaselineKeys, planNotifications } = require('./notificationPlanner');
+const { synchronizeModerationCases } = require('./moderation');
 const {
     ensureDashboard,
     resolveConfiguredChannel,
-    sendPlannedNotification
+    sendPlannedNotification,
+    sendPlannedDirectNotification
 } = require('./dashboard');
 
 const POLL_INTERVAL_MS = 5 * 60 * 1000;
@@ -53,14 +55,23 @@ async function processGuild(client, guildState, workspace, options = {}) {
         return { guildId, skipped: true, reason: 'disabled-during-tick', planned: 0, sent: [] };
     }
     const channel = await resolveConfiguredChannel(client, guildId, config.channelId);
-    await ensureDashboard(client, guildId, workspace, config, { channel, store });
+    const moderationSync = await synchronizeModerationCases(
+        channel.guild,
+        guildId,
+        workspace,
+        store,
+        { now: options.now || new Date() }
+    );
+    const activeWorkspace = moderationSync.workspace;
+    await ensureDashboard(client, guildId, activeWorkspace, config, { channel, store });
 
-    const currentRecord = initializeSummaryBaselines(store, guildId, workspace, config);
+    const currentRecord = initializeSummaryBaselines(store, guildId, activeWorkspace, config);
     const plan = planNotifications({
-        rosterData: workspace.rosterData,
-        work: workspace.work,
+        rosterData: activeWorkspace.rosterData,
+        work: activeWorkspace.work,
         config,
         record: currentRecord,
+        moderators: currentRecord.moderators,
         nowRaw: options.now || new Date()
     });
     const queued = plan.notifications.slice(0, MAX_NOTIFICATIONS_PER_TICK_PER_GUILD);
@@ -81,8 +92,23 @@ async function processGuild(client, guildState, workspace, options = {}) {
         }
         if (notification.featureKey && liveConfig.features?.[notification.featureKey] !== true) continue;
         if (store.hasDelivery(guildId, notification.key)) continue;
+        let deliveryReserved = false;
         try {
-            const message = await sendPlannedNotification(channel, notification);
+            const ownershipNotification = [
+                'case-assignment',
+                'case-inactivity-reminder',
+                'case-unassigned',
+                'case-escalation'
+            ].includes(notification.kind);
+            if (notification.destination === 'dm' || ownershipNotification) {
+                store.recordDeliveries(guildId, notification.key, {
+                    disposition: notification.destination === 'dm' ? 'direct-dm-pending' : 'notification-pending'
+                });
+                deliveryReserved = true;
+            }
+            const message = notification.destination === 'dm'
+                ? await sendPlannedDirectNotification(client, channel.guild, notification)
+                : await sendPlannedNotification(channel, notification);
             store.recordDeliveries(
                 guildId,
                 notification.consumeKeys?.length ? notification.consumeKeys : notification.key,
@@ -90,6 +116,13 @@ async function processGuild(client, guildState, workspace, options = {}) {
             );
             sent.push(notification.key);
         } catch (error) {
+            if (deliveryReserved) {
+                try {
+                    store.removeDeliveries(guildId, notification.key);
+                } catch (releaseError) {
+                    logSchedulerError(`War Follow Up notification reservation could not be released for guild ${guildId}`, releaseError);
+                }
+            }
             if (notification.kind === 'case-alert') caseAlertFailed = true;
             if (notification.kind === 'missing-discord-digest') missingDigestFailed = true;
             logSchedulerError(`War Follow Up notification failed for guild ${guildId}`, error);
@@ -105,7 +138,7 @@ async function processGuild(client, guildState, workspace, options = {}) {
         store.setLastMissingDiscordDigestDate(guildId, plan.missingDiscordDigestDate);
     }
 
-    return { guildId, planned: queued.length, sent };
+    return { guildId, planned: queued.length, sent, moderationMutations: moderationSync.mutations };
 }
 
 async function runWarFollowupTick(client, options = {}) {

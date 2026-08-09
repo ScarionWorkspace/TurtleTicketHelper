@@ -109,7 +109,14 @@ async function retireDashboard(client, guildId, channelId, messageId, options = 
 }
 
 function buildNotificationPayload(notification) {
-    const components = notification.kind === 'case-alert' || notification.kind === 'missing-discord-digest'
+    const opensFollowup = [
+        'case-alert',
+        'case-assignment',
+        'case-inactivity-reminder',
+        'case-unassigned',
+        'case-escalation'
+    ].includes(notification.kind) && notification.destination !== 'dm';
+    const components = opensFollowup || notification.kind === 'missing-discord-digest'
         ? [new ActionRowBuilder().addComponents(
             new ButtonBuilder()
                 .setCustomId(buildCustomId(notification.kind === 'missing-discord-digest' ? 'gaps' : 'home'))
@@ -235,6 +242,19 @@ async function sendPlannedNotification(channel, notification) {
     return channel.send(buildNotificationPayload(hydratedNotification));
 }
 
+async function sendPlannedDirectNotification(client, guild, notification) {
+    const recipientUserId = String(notification?.recipientUserId || '').trim();
+    if (!DISCORD_USER_ID_PATTERN.test(recipientUserId)) {
+        throw new Error('A valid assignment notification recipient is required.');
+    }
+    const user = await client?.users?.fetch?.(recipientUserId);
+    if (!user || typeof user.send !== 'function') {
+        throw new Error('The assigned moderator could not be reached by DM.');
+    }
+    const hydratedNotification = await hydrateNotificationForDelivery({ guild }, notification);
+    return user.send(buildNotificationPayload(hydratedNotification));
+}
+
 module.exports = {
     isSendableChannel,
     resolveConfiguredChannel,
@@ -244,5 +264,6 @@ module.exports = {
     safeEmbedDisplayName,
     resolveNotificationDisplayNames,
     hydrateNotificationForDelivery,
-    sendPlannedNotification
+    sendPlannedNotification,
+    sendPlannedDirectNotification
 };
