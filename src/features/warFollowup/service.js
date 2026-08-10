@@ -61,7 +61,7 @@ async function readPrivateState(options = {}) {
         timeoutMs: options.timeoutMs
     }).then(result => {
         const state = {
-            schemaVersion: 2,
+            schemaVersion: 3,
             settings: workflow.sanitizeSettings(result?.settings),
             cases: (Array.isArray(result?.cases) ? result.cases : [])
                 .map(workflow.normalizeCase)
@@ -150,11 +150,12 @@ function mutationBase(itemRaw, actorRaw) {
         tag: workflow.normalizeTag(item.tag || player.tag),
         name: String(player.name || caseValue?.name || '').trim(),
         discord: String(player.discord || caseValue?.discord || '').trim(),
+        discordId: String(player.discordId || caseValue?.discordId || '').trim(),
         sourceRosterId: String(caseValue?.sourceRosterId || player.rosterId || '').trim(),
         sourceRosterTitle: String(caseValue?.sourceRosterTitle || player.rosterTitle || '').trim(),
         sourceClanTag: workflow.normalizeTag(caseValue?.sourceClanTag || player.clanTag),
         actor,
-        handledBy: String(caseValue?.handledBy || actor || '').trim(),
+        handledBy: String(caseValue?.handledBy || '').trim(),
         signalIds: Array.isArray(item.signalIds) ? item.signalIds : [],
         expectedUpdatedAt: String(caseValue?.updatedAt || '').trim()
     };

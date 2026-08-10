@@ -24,6 +24,7 @@ const COLORS = Object.freeze({
 });
 const EPHEMERAL = 64;
 const PAGE_SIZE = 25;
+const ACTIVE_CASE_STATUSES = new Set(['needs_review', 'waiting', 'needs_dm', 'removal_pending', 'hero_down', 'ready']);
 
 function toText(value) {
     return value == null ? '' : String(value);
@@ -241,7 +242,7 @@ function buildDashboardPayload(workspace, config) {
     const counts = statusCounts(work);
     const pending = pendingAttackCounts(workspace?.rosterData);
     const gaps = discordGapCount(work);
-    const actionable = counts.needs_review + counts.needs_dm + counts.ready;
+    const actionable = counts.needs_review + counts.needs_dm + counts.removal_pending + counts.ready;
     const featuresEnabled = Object.entries(config?.features || {})
         .filter(([, enabled]) => enabled === true)
         .map(([key]) => key);
@@ -261,6 +262,7 @@ function buildDashboardPayload(workspace, config) {
                     `Waiting: **${counts.waiting}**`,
                     `🔎 Review: **${counts.needs_review}**`,
                     `✉️ Needs DM: **${counts.needs_dm}**`,
+                    `🚫 Removal: **${counts.removal_pending}**`,
                     `🛡️ Hero-down: **${counts.hero_down}**`,
                     `✅ Ready: **${counts.ready}**`,
                     `👀 Watching: **${counts.watching}**`
@@ -308,7 +310,10 @@ function filteredItems(work, statusRaw) {
 }
 
 function caseOption(item) {
-    const meta = workflow.STATUS_META[item.status] || workflow.STATUS_META.needs_review;
+    const removalEvasion = item.case?.status === 'removal_evasion' || item.removalRejoinDetected === true;
+    const meta = removalEvasion
+        ? { label: 'Removal evasion', next: 'Remove the player again or approve their return', emoji: '🚨' }
+        : (workflow.STATUS_META[item.status] || workflow.STATUS_META.needs_review);
     const description = item.signals?.length
         ? item.signals.map(signal => signal.title).join(', ')
         : meta.next;
@@ -338,7 +343,7 @@ function buildHomePayload(workspace, config, options = {}) {
         .setDescription(lines.length ? lines.join('\n') : 'No follow-up items match this view.')
         .addFields({
             name: 'Counts',
-            value: `Review ${counts.needs_review} · Waiting ${counts.waiting} · DM ${counts.needs_dm} · Hero-down ${counts.hero_down} · Ready ${counts.ready} · Watching ${counts.watching} · Closed ${counts.closed}`
+            value: `Review ${counts.needs_review} · Waiting ${counts.waiting} · DM ${counts.needs_dm} · Removal ${counts.removal_pending} · Hero-down ${counts.hero_down} · Ready ${counts.ready} · Monitoring ${counts.watching} · Closed ${counts.closed}`
         })
         .setFooter({ text: `${status === 'all' ? 'All statuses' : workflow.STATUS_META[status].label} · page ${page + 1}/${pageCount}` });
     const components = [];
@@ -357,9 +362,9 @@ function buildHomePayload(workspace, config, options = {}) {
     components.push(new ActionRowBuilder().addComponents(
         actionButton('filter', `Review (${counts.needs_review})`, status === 'needs_review' ? ButtonStyle.Primary : ButtonStyle.Secondary, 'needs_review'),
         actionButton('filter', `Needs DM (${counts.needs_dm})`, status === 'needs_dm' ? ButtonStyle.Primary : ButtonStyle.Secondary, 'needs_dm'),
+        actionButton('filter', `Removal (${counts.removal_pending})`, status === 'removal_pending' ? ButtonStyle.Danger : ButtonStyle.Secondary, 'removal_pending'),
         actionButton('filter', `Hero-down (${counts.hero_down})`, status === 'hero_down' ? ButtonStyle.Primary : ButtonStyle.Secondary, 'hero_down'),
-        actionButton('filter', `Ready (${counts.ready})`, status === 'ready' ? ButtonStyle.Success : ButtonStyle.Secondary, 'ready'),
-        actionButton('filter', `Watching (${counts.watching})`, status === 'watching' ? ButtonStyle.Primary : ButtonStyle.Secondary, 'watching')
+        actionButton('filter', `Ready (${counts.ready})`, status === 'ready' ? ButtonStyle.Success : ButtonStyle.Secondary, 'ready')
     ));
 
     const pagingRow = new ActionRowBuilder().addComponents(
@@ -505,7 +510,11 @@ function buildCasePayload(item, workspace, config) {
             allowedMentions: { parse: [] }
         };
     }
-    const meta = workflow.STATUS_META[item.status] || workflow.STATUS_META.needs_review;
+    const removalEvasion = item.case?.status === 'removal_evasion' || item.removalRejoinDetected === true;
+    const removedMonitoring = item.case?.status === 'removed' && !removalEvasion;
+    const meta = removalEvasion
+        ? { label: 'Removal evasion', next: 'Remove the player again or approve their return', emoji: '🚨' }
+        : (workflow.STATUS_META[item.status] || workflow.STATUS_META.needs_review);
     const player = item.player || {};
     const shownEvidence = evidenceForDisplay(item);
     const embed = new EmbedBuilder()
@@ -535,7 +544,7 @@ function buildCasePayload(item, workspace, config) {
     }
     if (item.watching) {
         embed.addFields({
-            name: 'Watch progress',
+            name: 'Monitoring progress',
             value: `${item.watching.completedWars}/${item.watching.targetWars} regular wars observed`
         });
     }
@@ -554,6 +563,28 @@ function buildCasePayload(item, workspace, config) {
     if (item.case?.waitingUntil) embed.addFields({ name: 'Follow-up due', value: workflow.discordRelativeTimestamp(item.case.waitingUntil), inline: true });
     if (item.case?.escalatedAt) embed.addFields({ name: 'Leadership review', value: `Escalated ${workflow.discordRelativeTimestamp(item.case.escalatedAt)}`, inline: true });
     if (item.case?.targetRosterTitle) embed.addFields({ name: 'Hero-down roster', value: safeInline(item.case.targetRosterTitle), inline: true });
+    if (item.case?.removalReason) embed.addFields({ name: 'Removal reason', value: truncate(safeInline(item.case.removalReason), 1024) });
+    if (item.case?.status === 'removal_pending') {
+        embed.addFields({
+            name: 'In-game removal',
+            value: item.case.removalActionedAt
+                ? `Recorded ${workflow.discordRelativeTimestamp(item.case.removalActionedAt)} · waiting for the next roster sync to confirm the player left.`
+                : 'Remove the player from the clan in game, then record it below. The case closes only after roster data confirms they left.'
+        });
+    }
+    if (removalEvasion) {
+        embed.addFields({
+            name: 'Rejoin detected',
+            value: [
+                safeInline(item.case.rejoinRosterTitle || player.rosterTitle || 'Connected clan'),
+                workflow.normalizeTag(item.case.rejoinClanTag || player.clanTag),
+                item.case.removalRejoinedAt ? workflow.discordRelativeTimestamp(item.case.removalRejoinedAt) : 'Detected in the latest roster data'
+            ].filter(Boolean).join(' · ')
+        });
+    }
+    if (removedMonitoring) {
+        embed.addFields({ name: 'Rejoin monitoring', value: 'Active. If this account appears in any connected clan again, a new removal review will open automatically.' });
+    }
     if (item.case?.dmText && item.status === 'needs_dm') {
         embed.addFields({ name: 'Decision message', value: truncate(toText(item.case.dmText).replace(/`/g, "'"), 1000) });
     }
@@ -562,16 +593,23 @@ function buildCasePayload(item, workspace, config) {
     const components = [];
     const tag = item.tag;
     const token = caseToken(item);
-    if (item.status === 'needs_review') {
+    if (removalEvasion) {
+        components.push(new ActionRowBuilder().addComponents(
+            actionButton('remove', 'Remove again', ButtonStyle.Danger, tag, token),
+            actionButton('approverejoin', 'Approve rejoin', ButtonStyle.Success, tag, token),
+            actionButton('escalate', 'Escalate', ButtonStyle.Danger, tag, token)
+        ));
+    } else if (item.status === 'needs_review') {
         components.push(new ActionRowBuilder().addComponents(
             actionButton('dismiss', 'No action', ButtonStyle.Secondary, tag, token),
-            actionButton('watch', 'Keep watching', ButtonStyle.Secondary, tag, token),
-            actionButton('hero', 'Hero-down period', ButtonStyle.Primary, tag, token)
+            actionButton('watch', 'Monitor next wars', ButtonStyle.Secondary, tag, token),
+            actionButton('hero', 'Hero-down period', ButtonStyle.Primary, tag, token),
+            actionButton('remove', 'Remove from community', ButtonStyle.Danger, tag, token)
         ));
         components.push(new ActionRowBuilder().addComponents(
             actionButton('contact', 'Contact player', ButtonStyle.Primary, tag, token),
-            actionButton('wait', 'Mark waiting', ButtonStyle.Secondary, tag, token),
-            actionButton('resolve', 'Resolve', ButtonStyle.Success, tag, token),
+            actionButton('wait', 'Set follow-up', ButtonStyle.Secondary, tag, token),
+            actionButton('resolveask', 'Record resolution', ButtonStyle.Success, tag, token),
             actionButton('escalate', 'Escalate', ButtonStyle.Danger, tag, token)
         ));
     } else if (item.status === 'needs_dm') {
@@ -579,16 +617,29 @@ function buildCasePayload(item, workspace, config) {
         if (config?.features?.directMessages === true && player.discordId) {
             row.addComponents(actionButton('senddm', 'Send DM now', ButtonStyle.Success, tag, token));
         }
-        row.addComponents(
-            actionButton('markdm', 'Mark DM sent', ButtonStyle.Primary, tag, token),
-            actionButton('reopen', 'Change decision', ButtonStyle.Secondary, tag, token)
-        );
+        row.addComponents(actionButton('markdm', item.case?.contactPurpose === 'removal' ? 'Mark notice sent' : 'Mark DM sent', ButtonStyle.Primary, tag, token));
+        if (item.case?.contactPurpose !== 'removal') {
+            row.addComponents(actionButton('reopen', 'Change decision', ButtonStyle.Secondary, tag, token));
+        }
+        if (item.case?.contactPurpose === 'removal' && !player.discordId) {
+            row.addComponents(actionButton('removalnodm', 'Continue without DM', ButtonStyle.Secondary, tag, token));
+        }
         components.push(row);
         components.push(new ActionRowBuilder().addComponents(
-            actionButton('wait', 'Mark waiting', ButtonStyle.Secondary, tag, token),
-            actionButton('resolve', 'Resolve', ButtonStyle.Success, tag, token),
-            actionButton('escalate', 'Escalate', ButtonStyle.Danger, tag, token),
-            actionButton('dismiss', 'Dismiss', ButtonStyle.Secondary, tag, token)
+            ...(item.case?.contactPurpose === 'removal'
+                ? [actionButton('cancelremoval', 'Cancel removal', ButtonStyle.Secondary, tag, token)]
+                : [
+                    actionButton('wait', 'Set follow-up', ButtonStyle.Secondary, tag, token),
+                    actionButton('resolveask', 'Close case', ButtonStyle.Success, tag, token)
+                ]),
+            actionButton('escalate', 'Escalate', ButtonStyle.Danger, tag, token)
+        ));
+    } else if (item.status === 'removal_pending') {
+        components.push(new ActionRowBuilder().addComponents(
+            actionButton('removaldone', item.case?.removalActionedAt ? 'Removal recorded' : 'I removed them in game', ButtonStyle.Danger, tag, token)
+                .setDisabled(Boolean(item.case?.removalActionedAt)),
+            actionButton('cancelremoval', 'Cancel removal', ButtonStyle.Secondary, tag, token),
+            actionButton('escalate', 'Escalate', ButtonStyle.Danger, tag, token)
         ));
     } else if (item.status === 'hero_down' || item.status === 'ready') {
         const row = new ActionRowBuilder();
@@ -596,28 +647,26 @@ function buildCasePayload(item, workspace, config) {
         row.addComponents(
             actionButton('extend', 'Extend period', ButtonStyle.Secondary, tag, token),
             actionButton('closeask', 'Close without return', ButtonStyle.Danger, tag, token),
-            actionButton('wait', 'Mark waiting', ButtonStyle.Secondary, tag, token),
+            actionButton('remove', 'Remove from community', ButtonStyle.Danger, tag, token),
             actionButton('escalate', 'Escalate', ButtonStyle.Danger, tag, token)
         );
         components.push(row);
-        components.push(new ActionRowBuilder().addComponents(
-            actionButton('dismiss', 'Dismiss case', ButtonStyle.Secondary, tag, token)
-        ));
     } else if (item.status === 'waiting') {
         components.push(new ActionRowBuilder().addComponents(
             actionButton('reopen', 'Review now', ButtonStyle.Primary, tag, token),
             actionButton('wait', 'Change follow-up', ButtonStyle.Secondary, tag, token),
-            actionButton('resolve', 'Resolve', ButtonStyle.Success, tag, token),
+            actionButton('resolveask', 'Close case', ButtonStyle.Success, tag, token),
+            actionButton('remove', 'Remove from community', ButtonStyle.Danger, tag, token),
             actionButton('escalate', 'Escalate', ButtonStyle.Danger, tag, token),
-            actionButton('dismiss', 'Dismiss', ButtonStyle.Secondary, tag, token)
         ));
     } else if (item.status === 'watching') {
         components.push(new ActionRowBuilder().addComponents(
             actionButton('reopen', 'Review now', ButtonStyle.Primary, tag, token),
-            actionButton('dismiss', 'No action', ButtonStyle.Secondary, tag, token),
-            actionButton('wait', 'Mark waiting', ButtonStyle.Secondary, tag, token),
-            actionButton('resolve', 'Resolve', ButtonStyle.Success, tag, token),
-            actionButton('escalate', 'Escalate', ButtonStyle.Danger, tag, token)
+            actionButton('dismiss', 'Stop monitoring', ButtonStyle.Secondary, tag, token)
+        ));
+    } else if (removedMonitoring) {
+        components.push(new ActionRowBuilder().addComponents(
+            actionButton('approverejoin', 'Stop rejoin monitoring', ButtonStyle.Secondary, tag, token)
         ));
     } else {
         components.push(new ActionRowBuilder().addComponents(
@@ -625,13 +674,17 @@ function buildCasePayload(item, workspace, config) {
         ));
     }
 
-    components.push(new ActionRowBuilder().addComponents(
-        actionButton('assignment', item.case?.assignedModeratorId || item.case?.handledBy ? 'Reassign' : 'Assign', ButtonStyle.Secondary, tag, token),
+    const coordination = new ActionRowBuilder();
+    if (ACTIVE_CASE_STATUSES.has(item.status)) {
+        coordination.addComponents(actionButton('assignment', item.case?.assignedModeratorId || item.case?.handledBy ? 'Reassign' : 'Assign', ButtonStyle.Secondary, tag, token));
+    }
+    coordination.addComponents(
         actionButton('note', 'Add private note', ButtonStyle.Secondary, tag, token),
         actionButton('evidence', 'War details', ButtonStyle.Secondary, tag, token),
-        actionButton('activity', 'Activity', ButtonStyle.Secondary, tag, token, '0'),
-        actionButton('ignoreask', 'Always ignore', ButtonStyle.Danger, tag, token)
-    ));
+        actionButton('activity', 'Activity', ButtonStyle.Secondary, tag, token, '0')
+    );
+    if (!removedMonitoring && !removalEvasion) coordination.addComponents(actionButton('ignoreask', 'Always ignore', ButtonStyle.Danger, tag, token));
+    components.push(coordination);
     components.push(moderationNavigationRow(), navigationRow());
     return { embeds: [embed], components, flags: EPHEMERAL, allowedMentions: { parse: [] } };
 }
@@ -851,8 +904,31 @@ function modal(title, customId, inputs) {
 }
 
 function buildWatchModal(item) {
-    return modal('Keep watching', buildCustomId('watchform', item.tag, caseToken(item)), [
-        textInput('wars', 'Regular wars to observe (1-8)', item.case?.watchWarTarget || 2, { maxLength: 1 })
+    return modal('Monitor next wars', buildCustomId('watchform', item.tag, caseToken(item)), [
+        textInput('wars', 'Clean wars before monitoring ends (1-8)', item.case?.watchWarTarget || 2, { maxLength: 1 })
+    ]);
+}
+
+function buildRemovalModal(item) {
+    const reason = item.case?.removalReason || (item.signals?.length
+        ? item.signals.map(signal => signal.title).join(', ')
+        : 'Leadership moderation decision');
+    const message = workflow.buildRemovalDmText({
+        playerName: item.player?.name || item.tag,
+        reason
+    });
+    return modal('Remove from community', buildCustomId('removeform', item.tag, caseToken(item)), [
+        textInput('reason', 'Removal reason', reason, { style: TextInputStyle.Paragraph, maxLength: 1000 }),
+        textInput('message', 'Message to the player', message, { style: TextInputStyle.Paragraph, maxLength: 2000 })
+    ]);
+}
+
+function buildResolveModal(item) {
+    return modal('Close moderation case', buildCustomId('resolveform', item.tag, caseToken(item)), [
+        textInput('resolution', 'What resolved this case?', item.case?.resolutionNote || '', {
+            style: TextInputStyle.Paragraph,
+            maxLength: 2000
+        })
     ]);
 }
 
@@ -923,8 +999,8 @@ function buildContactModal(item) {
 }
 
 function buildWaitModal(item) {
-    return modal('Mark case as waiting', buildCustomId('waitform', item.tag, caseToken(item)), [
-        textInput('hours', 'Follow-up hours (0, 24, 48, or 72)', '24', { maxLength: 2 }),
+    return modal('Schedule a follow-up', buildCustomId('waitform', item.tag, caseToken(item)), [
+        textInput('hours', 'Follow-up in hours (24, 48, or 72)', '24', { maxLength: 2 }),
         textInput('reason', 'Waiting for (optional)', item.case?.waitingReason || '', {
             style: TextInputStyle.Paragraph,
             maxLength: 1000,
@@ -1075,7 +1151,7 @@ function buildModeratorSettingsPayload(workspace, guildRecord, userIdRaw, displa
 }
 
 function moderationCaseSummary(workspace, guildRecord, nowRaw = new Date()) {
-    const items = (workspace?.work?.items || []).filter(item => item.status !== 'closed');
+    const items = (workspace?.work?.items || []).filter(item => ACTIVE_CASE_STATUSES.has(item.status));
     const nowMs = nowRaw instanceof Date ? nowRaw.getTime() : new Date(nowRaw).getTime();
     const assigned = items.filter(item => item.case?.assignedModeratorId || item.case?.handledBy);
     const unassigned = items.filter(item => !item.case?.assignedModeratorId && !item.case?.handledBy);
@@ -1132,7 +1208,7 @@ function buildCoveragePayload(workspace, guildRecord, options = {}) {
 function buildMyCasesPayload(workspace, userIdRaw) {
     const userId = toText(userIdRaw).trim();
     const items = (workspace?.work?.items || []).filter(item =>
-        item.status !== 'closed' && item.case?.assignedModeratorId === userId
+        ACTIVE_CASE_STATUSES.has(item.status) && item.case?.assignedModeratorId === userId
     );
     const visibleItems = items.slice(0, 25);
     const lines = visibleItems.map(item => {
@@ -1209,6 +1285,8 @@ module.exports = {
     buildIgnoredPayload,
     buildRulesPayload,
     buildWatchModal,
+    buildRemovalModal,
+    buildResolveModal,
     buildHeroModal,
     buildExtendModal,
     buildNoteModal,

@@ -4,7 +4,7 @@ const { isStaffMember } = require('../permissions/staffPermissions');
 const workflow = require('./workflow');
 const service = require('./service');
 
-const OPEN_CASE_STATUSES = new Set(['needs_review', 'waiting', 'needs_dm', 'hero_down', 'ready', 'watching']);
+const OPEN_CASE_STATUSES = new Set(['needs_review', 'waiting', 'needs_dm', 'removal_pending', 'hero_down', 'ready']);
 const MEMBER_FETCH_CONCURRENCY = 4;
 const INACTIVITY_REASSIGN_MS = 72 * 60 * 60 * 1000;
 const REASSIGNMENT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
@@ -157,6 +157,48 @@ async function synchronizeModerationCases(guild, guildId, workspaceRaw, store, o
         const clanTag = caseClanTag(item);
         const guildRecord = store.getGuild(guildId);
         const eligible = await getEligibleModerators(guild, guildRecord, clanTag, { resolveMember });
+        const currentPlayer = workspace?.work?.directory?.byTag?.[tag] || null;
+
+        if (item.case?.status === 'watching') {
+            if (item.status === 'needs_review' && item.signals?.length) {
+                const chosen = chooseModerator(eligible, workspace.work.items, { nowMs });
+                item = await mutateAndReplace(workspace, item, 'watch_triggered', {
+                    reasonCodes: item.signals.map(signal => signal.reasonCode),
+                    triggerSignalIds: item.signalIds,
+                    evidence: item.watching?.evidence || item.evidence,
+                    ...assignmentPatch(chosen)
+                }, `scheduler:watch-triggered:${tag}:${workflow.buildCaseFingerprint(item)}:${chosen?.discordId || 'unassigned'}`);
+                if (chosen) store.recordModeratorAssignment(guildId, chosen.discordId, item.case?.assignedAt || nowIso);
+                mutations.push({ tag, action: 'watch_triggered', moderatorId: chosen?.discordId || '' });
+            } else if (item.status === 'closed' && item.watching?.ready) {
+                item = await mutateAndReplace(
+                    workspace,
+                    item,
+                    'watch_complete',
+                    {},
+                    `scheduler:watch-complete:${tag}:${item.case.updatedAt}:${item.watching.completedWars}`
+                );
+                mutations.push({ tag, action: 'watch_complete', moderatorId: '' });
+            }
+        }
+
+        if (item?.case?.status === 'removal_pending' && !currentPlayer) {
+            item = await mutateAndReplace(
+                workspace,
+                item,
+                'removal_confirmed',
+                {},
+                `scheduler:removal-confirmed:${tag}:${item.case.updatedAt}`
+            );
+            mutations.push({ tag, action: 'removal_confirmed', moderatorId: item.case?.assignedModeratorId || '' });
+        } else if (item?.case?.status === 'removed' && item.removalRejoinDetected && currentPlayer) {
+            item = await mutateAndReplace(workspace, item, 'removal_rejoined', {
+                rejoinRosterId: currentPlayer.rosterId,
+                rejoinRosterTitle: currentPlayer.rosterTitle,
+                rejoinClanTag: currentPlayer.clanTag
+            }, `scheduler:removal-rejoined:${tag}:${item.case.removalAbsentObservedAt}:${currentPlayer.rosterId || currentPlayer.clanTag}`);
+            mutations.push({ tag, action: 'removal_rejoined', moderatorId: item.case?.assignedModeratorId || '' });
+        }
 
         const virtualAutomaticCase = !item.case && item.signals?.length > 0;
         const reopenedAutomaticCase = item.case && ['closed', 'dismissed'].includes(item.case.status) && item.status === 'needs_review';

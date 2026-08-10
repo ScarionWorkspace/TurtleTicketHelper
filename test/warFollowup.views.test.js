@@ -208,6 +208,18 @@ test('crafted controls cannot bypass lifecycle prerequisites', () => {
         recovery: { ready: true }
     }, 'approve_return'));
     assert.doesNotThrow(() => assertCaseActionAllowed({ status: 'ready' }, 'extend'));
+    assert.throws(
+        () => assertCaseActionAllowed({ status: 'closed', case: { status: 'closed' } }, 'approve_rejoin'),
+        /not under rejoin monitoring/
+    );
+    assert.doesNotThrow(() => assertCaseActionAllowed({ status: 'needs_review', case: { status: 'needs_review' } }, 'resolve'));
+    for (const action of ['contact', 'watch', 'hero_down', 'wait', 'dismiss', 'resolve', 'reopen']) {
+        assert.throws(
+            () => assertCaseActionAllowed({ status: 'needs_review', case: { status: 'removal_evasion' } }, action),
+            /removal workflow/,
+            `${action} must not bypass a removal-evasion decision`
+        );
+    }
     const decision = {
         tag: '#P0LYGQ',
         case: {
@@ -380,6 +392,26 @@ test('moderator settings, coverage, and personal ownership views stay within Dis
     const caseJson = views.buildCasePayload(assignedCase, workspace, { features: {} }).embeds[0].toJSON();
     assert.match(JSON.stringify(caseJson), /Assigned moderator/);
     assert.match(JSON.stringify(caseJson), /Case source snapshot/);
+
+    const monitoringWorkspace = buildWorkspace({
+        tag: '#PLAYER',
+        status: 'watching',
+        sourceRosterId: 'main-roster',
+        sourceRosterTitle: 'Main',
+        sourceClanTag: '#MAIN',
+        assignedModeratorId: '222222222222222222',
+        assignedModeratorName: 'Moderator',
+        watchStartedAt: '2026-08-02T00:00:00.000Z',
+        watchWarTarget: 2,
+        createdAt: '2026-08-01T00:00:00.000Z',
+        updatedAt: '2026-08-01T00:00:00.000Z',
+        activity: []
+    });
+    const myMonitoring = JSON.stringify(serialize(
+        views.buildMyCasesPayload(monitoringWorkspace, '222222222222222222')
+    ));
+    assert.match(myMonitoring, /no open assigned cases/i);
+    assert.doesNotMatch(myMonitoring, /Open one of my cases/);
 });
 
 test('reply-only ephemeral flags are stripped before editing an interaction response', () => {
@@ -395,8 +427,11 @@ test('case views expose every admin lifecycle action in context', () => {
     const review = reviewWorkspace.work.items[0];
     const reviewJson = serialize(views.buildCasePayload(review, reviewWorkspace, config()));
     assert.match(JSON.stringify(reviewJson), /No action/);
-    assert.match(JSON.stringify(reviewJson), /Keep watching/);
+    assert.match(JSON.stringify(reviewJson), /Monitor next wars/);
     assert.match(JSON.stringify(reviewJson), /Hero-down period/);
+    assert.match(JSON.stringify(reviewJson), /Remove from community/);
+    assert.match(JSON.stringify(reviewJson), /Set follow-up/);
+    assert.match(JSON.stringify(reviewJson), /Record resolution/);
     assert.match(JSON.stringify(reviewJson), /Always ignore/);
     assert.match(JSON.stringify(reviewJson), /private note/i);
     assert.match(JSON.stringify(reviewJson), /War details/);
@@ -422,6 +457,24 @@ test('case views expose every admin lifecycle action in context', () => {
     assert.match(JSON.stringify(readyJson), /Approve return/);
     assert.match(JSON.stringify(readyJson), /Extend period/);
     assert.match(JSON.stringify(readyJson), /Close without return/);
+    assert.match(JSON.stringify(readyJson), /Remove from community/);
+
+    const evasion = {
+        ...review,
+        status: 'needs_review',
+        case: {
+            ...review.case,
+            status: 'removal_evasion',
+            removalReason: 'Removed previously.',
+            removalRejoinedAt: '2026-08-10T00:00:00.000Z',
+            rejoinRosterTitle: 'Main'
+        }
+    };
+    const evasionJson = serialize(views.buildCasePayload(evasion, reviewWorkspace, config()));
+    assert.match(JSON.stringify(evasionJson), /Removal evasion/);
+    assert.match(JSON.stringify(evasionJson), /Remove again/);
+    assert.match(JSON.stringify(evasionJson), /Approve rejoin/);
+    assert.doesNotMatch(JSON.stringify(evasionJson), /No action/);
 });
 
 test('all workflow and rule modals serialize with at most five input rows', () => {
@@ -435,10 +488,14 @@ test('all workflow and rule modals serialize with at most five input rows', () =
     const target = workspace.work.directory.rosters[1];
     const modals = [
         views.buildWatchModal(item),
+        views.buildRemovalModal(item),
+        views.buildResolveModal(item),
         views.buildHeroModal(item, target, workspace),
         views.buildExtendModal({ ...item, case: { ...item.case, recoveryWarTarget: 3 } }, target),
         views.buildNoteModal(item),
         views.buildMarkDmModal(item),
+        views.buildContactModal(item),
+        views.buildWaitModal(item),
         views.buildAssignmentModal(item),
         views.buildRegularRulesModal(workspace.work.settings),
         views.buildCwlRulesModal(workspace.work.settings),
@@ -451,7 +508,7 @@ test('all workflow and rule modals serialize with at most five input rows', () =
         assert.ok(json.custom_id.length <= 100);
     }
     assert.match(
-        JSON.stringify(modals[2].toJSON()),
+        JSON.stringify(modals[4].toJSON()),
         /Hero-down/,
         'an extension message is regenerated for the newly selected target roster'
     );

@@ -68,20 +68,44 @@ function assertCurrentCaseView(item, tokenRaw) {
 
 function assertCaseActionAllowed(item, action) {
     const status = item?.status || '';
+    const caseStatus = item?.case?.status || '';
+    const removalLocked = ['removal_pending', 'removal_evasion', 'removed'].includes(caseStatus);
     const allowedStatuses = {
         contact: ['needs_review', 'waiting'],
         watch: ['needs_review'],
         hero_down: ['needs_review'],
+        remove: ['needs_review', 'waiting', 'hero_down', 'ready'],
         mark_dm_sent: ['needs_dm'],
         reopen: ['needs_dm', 'waiting', 'watching', 'closed'],
         extend: ['hero_down', 'ready'],
-        close: ['hero_down', 'ready']
+        close: ['hero_down', 'ready'],
+        removal_no_dm: ['needs_dm'],
+        removal_actioned: ['removal_pending'],
+        cancel_removal: ['needs_dm', 'removal_pending'],
+        approve_rejoin: ['needs_review', 'closed']
     };
-    if (action === 'wait' || action === 'dismiss') {
-        if (!moderation.isOpenItem(item)) throw new Error('This moderation case is already closed.');
+    if (removalLocked && ['contact', 'watch', 'hero_down', 'wait', 'dismiss', 'resolve', 'reopen', 'close'].includes(action)) {
+        throw new Error('Complete, repeat, approve, or cancel the removal workflow first.');
+    }
+    if (action === 'wait') {
+        if (!['needs_review', 'waiting', 'needs_dm'].includes(status) || item?.case?.contactPurpose === 'removal') {
+            throw new Error('This case cannot schedule a follow-up from its current state.');
+        }
         return;
     }
-    if (action === 'resolve' || action === 'escalate') {
+    if (action === 'dismiss') {
+        if (!['needs_review', 'watching'].includes(status)) {
+            throw new Error('This case cannot be closed as no action from its current state.');
+        }
+        return;
+    }
+    if (action === 'resolve') {
+        if (!['needs_review', 'needs_dm', 'waiting'].includes(status) || item?.case?.contactPurpose === 'removal') {
+            throw new Error('This case cannot be recorded as resolved from its current state.');
+        }
+        return;
+    }
+    if (action === 'escalate') {
         if (!moderation.isOpenItem(item)) throw new Error('This moderation case is already closed.');
         return;
     }
@@ -90,6 +114,15 @@ function assertCaseActionAllowed(item, action) {
             throw new Error('This player has not completed the required recovery period.');
         }
         return;
+    }
+    if (action === 'removal_no_dm' && item?.case?.contactPurpose !== 'removal') {
+        throw new Error('This case is not waiting on a removal notice.');
+    }
+    if (action === 'cancel_removal' && item?.case?.contactPurpose !== 'removal') {
+        throw new Error('This case is not in the removal workflow.');
+    }
+    if (action === 'approve_rejoin' && !['removed', 'removal_evasion'].includes(caseStatus)) {
+        throw new Error('This account is not under rejoin monitoring.');
     }
     const allowed = allowedStatuses[action];
     if (allowed && !allowed.includes(status)) {
@@ -102,13 +135,15 @@ function directDmDeliveryKey(itemRaw) {
     const caseValue = item.case && typeof item.case === 'object' ? item.case : {};
     const activity = Array.isArray(caseValue.activity) ? caseValue.activity : [];
     const decisionActivity = activity.slice().reverse().find(entry =>
-        ['hero_down_decision', 'extended'].includes(String(entry?.type || ''))
+        ['hero_down_decision', 'extended', 'contact_prepared', 'removal_decision'].includes(String(entry?.type || ''))
     );
     const decisionRevision = workflow.stableRevision(JSON.stringify({
         decisionActivity: decisionActivity
             ? [decisionActivity.id || '', decisionActivity.at || '', decisionActivity.type || '']
             : [],
         dmText: String(caseValue.dmText || ''),
+        contactPurpose: String(caseValue.contactPurpose || ''),
+        removalStartedAt: String(caseValue.removalStartedAt || ''),
         targetRosterId: String(caseValue.targetRosterId || ''),
         targetClanTag: workflow.normalizeTag(caseValue.targetClanTag),
         recoveryWarTarget: Number(caseValue.recoveryWarTarget) || 0,
@@ -235,6 +270,7 @@ async function handleDirectMessage(interaction, tagRaw, viewTokenRaw) {
     if (item.status !== 'needs_dm') throw new Error('This follow-up is not waiting for a DM.');
     if (!config.features.directMessages) throw new Error('Direct DMs are not opted in for this server.');
     const generalContact = item.case?.contactPurpose === 'general';
+    const removalContact = item.case?.contactPurpose === 'removal';
     if (!item.player?.discordId) throw new Error('This player has no linked Discord ID.');
     const deliveryKey = directDmDeliveryKey(item);
     const scopedDeliveryKey = `${interaction.guildId}:${deliveryKey}`;
@@ -282,7 +318,9 @@ async function handleDirectMessage(interaction, tagRaw, viewTokenRaw) {
         await interaction.followUp({
             content: generalContact
                 ? `Contact message sent to <@${item.player.discordId}>. The case is waiting for a response with a 24-hour follow-up.`
-                : `Decision DM sent to <@${item.player.discordId}> and the recovery period is now active.`,
+                : removalContact
+                    ? `Removal notice sent to <@${item.player.discordId}>. Remove the player in game; the case will stay open until roster data confirms they left.`
+                    : `Decision DM sent to <@${item.player.discordId}> and the recovery period is now active.`,
             flags: views.EPHEMERAL,
             allowedMentions: { parse: [] }
         });
@@ -513,6 +551,19 @@ async function handleButtonOrSelect(interaction, parsed) {
         });
         return;
     }
+    if (action === 'remove' || action === 'resolveask') {
+        await showCachedModal(interaction, workspace => {
+            const item = findItem(workspace, first);
+            assertCurrentCaseView(item, second);
+            if (action === 'remove') {
+                assertCaseActionAllowed(item, 'remove');
+                return views.buildRemovalModal(item);
+            }
+            assertCaseActionAllowed(item, 'resolve');
+            return views.buildResolveModal(item);
+        });
+        return;
+    }
     if (action === 'extend') {
         await renderView(interaction, workspace => {
             const item = findItem(workspace, first);
@@ -620,11 +671,14 @@ async function handleButtonOrSelect(interaction, parsed) {
         return;
     }
     if (action === 'dismiss') return mutateAndRender(interaction, 'dismiss', first, second);
-    if (action === 'resolve') return mutateAndRender(interaction, 'resolve', first, second);
     if (action === 'escalate') return mutateAndRender(interaction, 'escalate', first, second);
     if (action === 'reopen') return mutateAndRender(interaction, 'reopen', first, second);
     if (action === 'approve') return mutateAndRender(interaction, 'approve_return', first, second);
     if (action === 'close') return mutateAndRender(interaction, 'close', first, second, { outcome: 'no_return' });
+    if (action === 'removalnodm') return mutateAndRender(interaction, 'removal_no_dm', first, second);
+    if (action === 'removaldone') return mutateAndRender(interaction, 'removal_actioned', first, second);
+    if (action === 'cancelremoval') return mutateAndRender(interaction, 'cancel_removal', first, second);
+    if (action === 'approverejoin') return mutateAndRender(interaction, 'approve_rejoin', first, second);
     if (action === 'senddm') return handleDirectMessage(interaction, first, second);
     if (action === 'togreg') return handleToggleRule(interaction, 'regularPerformanceEnabled');
     if (action === 'togcwl') return handleToggleRule(interaction, 'cwlPerformanceEnabled');
@@ -674,7 +728,7 @@ async function handleCaseModal(interaction, parsed) {
         mutationAction = 'wait';
         assertCaseActionAllowed(item, mutationAction);
         const followupHours = Number(String(interaction.fields.getTextInputValue('hours') || '').trim());
-        if (![0, 24, 48, 72].includes(followupHours)) throw new Error('Follow-up hours must be 0, 24, 48, or 72.');
+        if (![24, 48, 72].includes(followupHours)) throw new Error('Follow-up hours must be 24, 48, or 72.');
         patch = {
             followupHours,
             waitingReason: String(interaction.fields.getTextInputValue('reason') || '').trim().slice(0, 1000)
@@ -686,6 +740,25 @@ async function handleCaseModal(interaction, parsed) {
             watchWarTarget: numberField(interaction, 'wars', 1, 8, 'Regular wars', true),
             handledBy: item.case?.handledBy || actor
         };
+    } else if (action === 'removeform') {
+        mutationAction = 'remove';
+        assertCaseActionAllowed(item, mutationAction);
+        const removalReason = String(interaction.fields.getTextInputValue('reason') || '').trim();
+        const message = String(interaction.fields.getTextInputValue('message') || '').trim();
+        if (!removalReason) throw new Error('The removal reason cannot be empty.');
+        if (!message) throw new Error('The player notice cannot be empty.');
+        patch = {
+            removalReason,
+            dmText: message,
+            evidence: item.evidence,
+            discordId: item.player?.discordId || item.case?.discordId || ''
+        };
+    } else if (action === 'resolveform') {
+        mutationAction = 'resolve';
+        assertCaseActionAllowed(item, mutationAction);
+        const resolutionNote = String(interaction.fields.getTextInputValue('resolution') || '').trim();
+        if (!resolutionNote) throw new Error('Add a short note explaining what resolved the case.');
+        patch = { resolutionNote };
     } else if (action === 'heroform') {
         assertCaseActionAllowed(item, 'hero_down');
         const target = findRosterByToken(workspace, rosterTokenRaw);

@@ -187,6 +187,55 @@ test('case transitions produce one staff alert after the baseline exists', () =>
     assert.deepEqual(alert.allowedRoleIds, ['555555555555555555']);
 });
 
+test('a removed player rejoining produces one prominent leadership alert', () => {
+    const removalCase = {
+        tag: '#AAA',
+        name: 'Alpha',
+        discordId: '111111111111111111',
+        sourceRosterId: 'main',
+        sourceRosterTitle: 'Main Clan',
+        sourceClanTag: '#MAIN',
+        contactPurpose: 'removal',
+        status: 'removed',
+        outcome: 'removed',
+        removalReason: 'Repeated missed attacks after prior contact.',
+        removalAbsentObservedAt: '2026-08-09T00:00:00.000Z',
+        createdAt: '2026-08-08T00:00:00.000Z',
+        updatedAt: '2026-08-09T00:00:00.000Z',
+        activity: []
+    };
+    const initial = buildWorkspace([removalCase]);
+    initial.rosterData.rosters[0].main = initial.rosterData.rosters[0].main.filter(player => player.tag !== '#AAA');
+    initial.work = workflow.buildWorkItems(initial.rosterData, initial.privateState);
+    const baseline = planner.buildCurrentCaseObservations(initial.work, '2026-08-09T00:00:00.000Z');
+
+    const changed = buildWorkspace([{
+        ...removalCase,
+        status: 'removal_evasion',
+        outcome: '',
+        removalRejoinedAt: '2026-08-10T08:20:00.000Z',
+        rejoinRosterId: 'main',
+        rejoinRosterTitle: 'Main Clan',
+        rejoinClanTag: '#MAIN',
+        updatedAt: '2026-08-10T08:20:00.000Z'
+    }]);
+    const plan = planner.planNotifications({
+        ...changed,
+        config: buildConfig(),
+        record: {
+            deliveries: {},
+            observations: { caseFingerprints: baseline, casesInitializedAt: '2026-08-09T00:00:00.000Z' }
+        },
+        nowRaw: NOW
+    });
+    const alerts = plan.notifications.filter(notification => notification.kind === 'case-alert');
+    assert.equal(alerts.length, 1);
+    assert.equal(alerts[0].embeds[0].title, 'Removed player rejoined');
+    assert.match(alerts[0].embeds[0].description, /Removal evasion/);
+    assert.match(alerts[0].embeds[0].description, /Main Clan/);
+    assert.match(alerts[0].content, /<@&555555555555555555>/);
+});
+
 test('late startup selects only the most urgent reminder window and consumes earlier windows', () => {
     const workspace = buildWorkspace();
     const plan = planner.planNotifications({

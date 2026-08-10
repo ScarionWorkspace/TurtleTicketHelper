@@ -7,7 +7,8 @@ const REMINDER_THRESHOLDS = Object.freeze([
     { minutes: 120, label: '2 hours' },
     { minutes: 30, label: '30 minutes' }
 ]);
-const ACTIONABLE_CASE_STATUSES = new Set(['needs_review', 'needs_dm', 'ready']);
+const ACTIONABLE_CASE_STATUSES = new Set(['needs_review', 'needs_dm', 'removal_pending', 'ready']);
+const OWNED_CASE_STATUSES = new Set(['needs_review', 'waiting', 'needs_dm', 'removal_pending', 'hero_down', 'ready']);
 const MAX_NOTIFICATION_LINES = 40;
 
 function toText(value) {
@@ -174,10 +175,13 @@ function planCaseAlerts(work, config, record, nowIso) {
     const lines = changed.slice(0, MAX_NOTIFICATION_LINES).map((item, index) => {
         const meta = workflow.STATUS_META[item.status] || workflow.STATUS_META.needs_review;
         const identity = changedIdentities[index];
-        const reasons = item.signals?.length
+        const removalEvasion = item.case?.status === 'removal_evasion' || item.removalRejoinDetected === true;
+        const reasons = removalEvasion
+            ? `Removed player rejoined ${safeInline(item.case?.rejoinRosterTitle || item.player?.rosterTitle || 'a connected clan')}`
+            : item.signals?.length
             ? item.signals.map(signal => signal.title).join(', ')
             : meta.next;
-        return `${meta.emoji} ${playerLine(identity, `${meta.label}: ${reasons}`).slice(2)}`;
+        return `${removalEvasion ? '🚨' : meta.emoji} ${playerLine(identity, `${removalEvasion ? 'Removal evasion' : meta.label}: ${reasons}`).slice(2)}`;
     });
     if (changed.length > lines.length) lines.push(`• +${changed.length - lines.length} more; open the panel for the full queue.`);
     const notificationKey = `cases:${semanticKey(changed.map(item => `${item.tag}:${current[item.tag].fingerprint}`))}`;
@@ -188,12 +192,17 @@ function planCaseAlerts(work, config, record, nowIso) {
             key: notificationKey,
             kind: 'case-alert',
             featureKey: 'caseAlerts',
-            content: changed.some(item => !item.case?.assignedModeratorId && !item.case?.handledBy)
+            content: changed.some(item =>
+                item.case?.status === 'removal_evasion' || item.removalRejoinDetected === true ||
+                (!item.case?.assignedModeratorId && !item.case?.handledBy)
+            )
                 ? staffMention(config)
                 : '',
             embeds: [{
-                color: 0xf59e0b,
-                title: 'War follow-up needs attention',
+                color: changed.some(item => item.case?.status === 'removal_evasion' || item.removalRejoinDetected === true) ? 0xed4245 : 0xf59e0b,
+                title: changed.some(item => item.case?.status === 'removal_evasion' || item.removalRejoinDetected === true)
+                    ? 'Removed player rejoined'
+                    : 'War follow-up needs attention',
                 description: lines.join('\n').slice(0, 4000),
                 footer: { text: 'Open the War Follow Up panel to review and take action.' },
                 timestamp: nowIso
@@ -307,7 +316,8 @@ function planModerationOwnershipNotifications(work, config, record, moderators, 
             }
         }
         const moderatorId = toText(caseValue?.assignedModeratorId).trim();
-        if (!moderatorId && !caseValue?.handledBy && caseValue?.assignmentUpdatedAt && !['closed', 'dismissed'].includes(caseValue.status)) {
+        const ownedCaseOpen = OWNED_CASE_STATUSES.has(item.status);
+        if (!moderatorId && !caseValue?.handledBy && caseValue?.assignmentUpdatedAt && ownedCaseOpen) {
             const unassignedKey = `case-unassigned:${semanticKey([item.tag, caseValue.assignmentUpdatedAt])}`;
             if (!record?.deliveries?.[unassignedKey]) {
                 notifications.push({
@@ -326,7 +336,7 @@ function planModerationOwnershipNotifications(work, config, record, moderators, 
                 });
             }
         }
-        if (!moderatorId || !caseValue?.assignmentUpdatedAt || ['closed', 'dismissed'].includes(caseValue.status)) continue;
+        if (!ownedCaseOpen || !moderatorId || !caseValue?.assignmentUpdatedAt) continue;
         const preference = moderatorPreference(moderators, moderatorId);
         if (!preference) continue;
         for (const destination of assignmentDestinations(preference)) {

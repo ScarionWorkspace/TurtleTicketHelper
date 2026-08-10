@@ -5,7 +5,7 @@
 // roster snapshot and the same private Apps Script cases; it does not create a
 // second moderation model.
 const DEFAULT_SETTINGS = Object.freeze({
-    schemaVersion: 2,
+    schemaVersion: 3,
     regularLookbackWars: 8,
     regularMissedThreshold: 2,
     regularPerformanceEnabled: true,
@@ -31,6 +31,7 @@ const STATUS_ORDER = Object.freeze([
     'needs_review',
     'waiting',
     'needs_dm',
+    'removal_pending',
     'hero_down',
     'ready',
     'watching',
@@ -41,9 +42,10 @@ const STATUS_META = Object.freeze({
     waiting: { label: 'Waiting', next: 'Wait for the scheduled follow-up', emoji: '⏳' },
     needs_review: { label: 'Review', next: 'Review the war evidence', emoji: '🔎' },
     needs_dm: { label: 'Needs DM', next: 'Send the decision message', emoji: '✉️' },
+    removal_pending: { label: 'Removal', next: 'Remove the player in game', emoji: '🚫' },
     hero_down: { label: 'Hero-down', next: 'Track hero-down wars', emoji: '🛡️' },
     ready: { label: 'Ready', next: 'Make the return decision', emoji: '✅' },
-    watching: { label: 'Watching', next: 'Wait for more regular wars', emoji: '👀' },
+    watching: { label: 'Monitoring', next: 'Watching for new problematic evidence', emoji: '👀' },
     closed: { label: 'Closed', next: 'No action needed', emoji: '🗃️' }
 });
 
@@ -150,7 +152,7 @@ function sanitizeSettings(raw) {
     )).sort().slice(0, 1000);
 
     return {
-        schemaVersion: 2,
+        schemaVersion: 3,
         regularLookbackWars: Math.floor(clamp(value.regularLookbackWars, 1, 8, DEFAULT_SETTINGS.regularLookbackWars)),
         regularMissedThreshold: Math.floor(clamp(value.regularMissedThreshold, 1, 16, DEFAULT_SETTINGS.regularMissedThreshold)),
         regularPerformanceEnabled: value.regularPerformanceEnabled == null ? true : value.regularPerformanceEnabled === true,
@@ -699,6 +701,7 @@ function normalizeCase(raw) {
         status: 'needs_review',
         outcome: '',
         handledBy: '',
+        discordId: '',
         assignedModeratorId: '',
         assignedModeratorName: '',
         assignedAt: '',
@@ -708,12 +711,22 @@ function normalizeCase(raw) {
         assignmentBlockedUntil: '',
         waitingUntil: '',
         waitingReason: '',
+        resolutionNote: '',
         escalatedAt: '',
         escalatedBy: '',
         openedAt: '',
         triggerSignalIds: [],
         reasonCodes: [],
         dismissedSignalIds: [],
+        removalReason: '',
+        removalStartedAt: '',
+        removalActionedAt: '',
+        removalAbsentObservedAt: '',
+        removalRejoinedAt: '',
+        removalRejoinCount: 0,
+        rejoinRosterId: '',
+        rejoinRosterTitle: '',
+        rejoinClanTag: '',
         mutationLedger: [],
         evidence: { regular: emptyStats(), cwl: emptyStats(), regularEvents: [], cwlEvents: [] },
         activity: [],
@@ -770,14 +783,39 @@ function buildRecoveryProgress(caseRaw, currentEvidenceRaw) {
     };
 }
 
-function buildWatchProgress(caseRaw, currentEvidenceRaw) {
+function buildWatchProgress(caseRaw, currentEvidenceRaw, settingsRaw) {
     const value = normalizeCase(caseRaw);
     const evidence = currentEvidenceRaw && typeof currentEvidenceRaw === 'object' ? currentEvidenceRaw : {};
-    if (!value) return { ready: false, completedWars: 0, targetWars: 0, events: [] };
+    if (!value) return { ready: false, triggered: false, completedWars: 0, targetWars: 0, events: [], signals: [], signalIds: [] };
 
     const events = eventsAfter(evidence.regularEvents, value.watchStartedAt, '');
     const targetWars = Math.max(1, toInt(value.watchWarTarget) || 2);
-    return { ready: events.length >= targetWars, completedWars: events.length, targetWars, events };
+    const totals = emptyStats();
+    for (const event of events) addStats(totals, event.stats);
+    totals.warCount = events.length;
+    const watchEvidence = {
+        capturedAt: toText(evidence.capturedAt).trim(),
+        regular: statsSummary(totals),
+        cwl: emptyStats(),
+        regularEvents: events,
+        cwlEvents: []
+    };
+    const signals = buildSignals(watchEvidence, {
+        ...sanitizeSettings(settingsRaw),
+        cwlPerformanceEnabled: false,
+        cwlMissedThreshold: 8
+    }).filter(signal => signal.reasonCode.startsWith('regular_'));
+    const triggered = signals.length > 0;
+    return {
+        ready: triggered || events.length >= targetWars,
+        triggered,
+        completedWars: events.length,
+        targetWars,
+        events,
+        signals,
+        signalIds: signals.map(signal => signal.id),
+        evidence: watchEvidence
+    };
 }
 
 function buildWorkItems(rosterData, privateStateRaw) {
@@ -798,7 +836,9 @@ function buildWorkItems(rosterData, privateStateRaw) {
         const player = directory.byTag[tag] || null;
         const caseValue = caseByTag[tag] || null;
         if (settings.trustedPlayerTags.includes(tag)) continue;
-        if (!player && directory.missingTags.has(tag)) continue;
+        const trackedRemoval = caseValue && ['needs_dm', 'removal_pending', 'removed', 'removal_evasion'].includes(caseValue.status) &&
+            (caseValue.contactPurpose === 'removal' || caseValue.status !== 'needs_dm');
+        if (!player && directory.missingTags.has(tag) && !trackedRemoval) continue;
 
         const evidenceOwner = player || {
             sourceRosterId: toText(caseValue?.sourceRosterId).trim(),
@@ -818,17 +858,27 @@ function buildWorkItems(rosterData, privateStateRaw) {
         if (status === 'dismissed') status = 'closed';
 
         const recovery = caseValue?.status === 'hero_down' ? buildRecoveryProgress(caseValue, evidence) : null;
-        const watching = caseValue?.status === 'watching' ? buildWatchProgress(caseValue, evidence) : null;
+        const watching = caseValue?.status === 'watching' ? buildWatchProgress(caseValue, evidence, settings) : null;
         if (recovery?.ready) status = 'ready';
-        if (watching?.ready) status = 'needs_review';
+        if (caseValue?.status === 'watching') {
+            if (watching?.triggered) status = 'needs_review';
+            else if (watching?.ready) status = 'closed';
+        }
+        const removalRejoinDetected = Boolean(
+            caseValue?.status === 'removed' && caseValue.removalAbsentObservedAt && player
+        );
+        if (caseValue?.status === 'removed') {
+            status = removalRejoinDetected ? 'needs_review' : 'closed';
+        }
+        if (caseValue?.status === 'removal_evasion') status = 'needs_review';
         if (!status) continue;
 
         const identity = player || {
             tag,
             name: toText(caseValue?.name).trim() || tag,
             discord: toText(caseValue?.discord).trim(),
-            discordId: '',
-            hasDiscord: Boolean(toText(caseValue?.discord).trim()),
+            discordId: toText(caseValue?.discordId).trim(),
+            hasDiscord: Boolean(toText(caseValue?.discordId).trim() || toText(caseValue?.discord).trim()),
             th: 0,
             role: '',
             rosterId: toText(caseValue?.sourceRosterId).trim(),
@@ -837,16 +887,18 @@ function buildWorkItems(rosterData, privateStateRaw) {
             automaticEligible: false
         };
 
+        const itemSignals = watching?.triggered ? watching.signals : signals;
         items.push({
             tag,
             player: identity,
             case: caseValue,
             evidence,
-            signals,
-            signalIds,
+            signals: itemSignals,
+            signalIds: itemSignals.map(signal => signal.id),
             status,
             recovery,
-            watching
+            watching,
+            removalRejoinDetected
         });
     }
 
@@ -907,6 +959,19 @@ function buildDmText(optionsRaw) {
     ].filter(Boolean).join(' ');
 }
 
+function buildRemovalDmText(optionsRaw) {
+    const options = optionsRaw && typeof optionsRaw === 'object' ? optionsRaw : {};
+    const playerName = toText(options.playerName).trim() || 'there';
+    const reason = toText(options.reason).replace(/\s+/g, ' ').trim();
+    return [
+        `Hi ${playerName}.`,
+        'Leadership has decided to remove your account from the TURTLE clan community.',
+        reason ? `Reason: ${reason}` : '',
+        'Please do not rejoin another TURTLE clan unless leadership explicitly approves your return.',
+        'If you believe this is a mistake, reply here or contact a leader.'
+    ].filter(Boolean).join(' ');
+}
+
 function discordIdentityText(playerRaw) {
     const player = playerRaw && typeof playerRaw === 'object' ? playerRaw : {};
     const username = toText(player.discord).trim();
@@ -927,8 +992,9 @@ function buildCaseFingerprint(itemRaw) {
         status: toText(item.status),
         signals: (Array.isArray(item.signalIds) ? item.signalIds : []).slice().sort(),
         recovery: [recovery.completedWars || 0, recovery.targetWars || 0, recovery.ready === true],
-        watching: [watching.completedWars || 0, watching.targetWars || 0, watching.ready === true],
-        decisionUpdatedAt: ['needs_dm', 'hero_down', 'ready', 'closed'].includes(item.status)
+        watching: [watching.completedWars || 0, watching.targetWars || 0, watching.ready === true, watching.triggered === true],
+        removalRejoinDetected: item.removalRejoinDetected === true,
+        decisionUpdatedAt: ['needs_dm', 'removal_pending', 'hero_down', 'ready', 'closed'].includes(item.status)
             ? toText(item.case?.updatedAt)
             : ''
     }));
@@ -959,6 +1025,7 @@ module.exports = {
     buildWatchProgress,
     buildWorkItems,
     buildDmText,
+    buildRemovalDmText,
     discordIdentityText,
     buildCaseFingerprint
 };

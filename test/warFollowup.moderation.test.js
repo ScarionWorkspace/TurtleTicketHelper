@@ -288,3 +288,119 @@ test('a future waiting follow-up pauses inactivity reassignment without masking 
     assert.equal(calls[0].action, 'assign_owner');
     assert.equal(calls[0].patch.assignedModeratorId, MOD_B);
 });
+
+test('monitoring leaves active ownership and scheduler transitions are idempotent', async t => {
+    const workspace = buildWorkspace({
+        tag: '#P0LYGQ',
+        name: 'Player',
+        sourceRosterId: 'main',
+        sourceRosterTitle: 'Main Clan',
+        sourceClanTag: '#CLAN0',
+        status: 'watching',
+        watchStartedAt: '2026-08-01T00:00:00.000Z',
+        watchWarTarget: 2,
+        createdAt: '2026-08-01T00:00:00.000Z',
+        updatedAt: '2026-08-01T00:00:00.000Z',
+        activity: []
+    });
+    workspace.work.items[0] = {
+        ...workspace.work.items[0],
+        status: 'needs_review',
+        signals: [{ id: 'regular_missed:new-war', reasonCode: 'regular_missed', title: 'Regular attacks missed' }],
+        signalIds: ['regular_missed:new-war'],
+        watching: {
+            completedWars: 1,
+            targetWars: 2,
+            triggered: true,
+            ready: true,
+            evidence: { capturedAt: NOW.toISOString(), regular: { possibleAttacks: 2, missedAttacks: 2 }, cwl: {} }
+        }
+    };
+    const calls = [];
+    t.mock.method(service, 'mutateCase', async (item, action, patch) => {
+        calls.push({ action, patch });
+        return {
+            ...item.case,
+            ...patch,
+            tag: item.tag,
+            status: 'needs_review',
+            assignedAt: NOW.toISOString(),
+            assignmentUpdatedAt: NOW.toISOString(),
+            lastMeaningfulActionAt: NOW.toISOString(),
+            openedAt: NOW.toISOString(),
+            updatedAt: NOW.toISOString()
+        };
+    });
+    const store = createStore({ [MOD_A]: moderator(MOD_A) });
+
+    await moderation.synchronizeModerationCases(guildWithEligibility(), GUILD_ID, workspace, store, { now: NOW });
+    await moderation.synchronizeModerationCases(guildWithEligibility(), GUILD_ID, workspace, store, { now: NOW });
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].action, 'watch_triggered');
+    assert.equal(calls[0].patch.assignedModeratorId, MOD_A);
+    assert.deepEqual(calls[0].patch.triggerSignalIds, ['regular_missed:new-war']);
+});
+
+test('removal confirmation and later rejoin detection each run once', async t => {
+    const removedAt = '2026-08-09T00:00:00.000Z';
+    const workspace = buildWorkspace({
+        tag: '#P0LYGQ',
+        name: 'Player',
+        sourceRosterId: 'main',
+        sourceRosterTitle: 'Main Clan',
+        sourceClanTag: '#CLAN0',
+        contactPurpose: 'removal',
+        status: 'removal_pending',
+        assignedModeratorId: MOD_A,
+        assignedModeratorName: 'Leader A',
+        handledBy: 'Leader A',
+        removalReason: 'Repeated missed attacks after prior contact.',
+        createdAt: removedAt,
+        updatedAt: removedAt,
+        lastMeaningfulActionAt: NOW.toISOString(),
+        activity: []
+    });
+    workspace.rosterData.rosters[0].main = [];
+    workspace.work = workflow.buildWorkItems(workspace.rosterData, workspace.privateState);
+    const calls = [];
+    t.mock.method(service, 'mutateCase', async (item, action, patch) => {
+        calls.push({ action, patch });
+        if (action === 'removal_confirmed') {
+            return {
+                ...item.case,
+                tag: item.tag,
+                status: 'removed',
+                outcome: 'removed',
+                removalAbsentObservedAt: NOW.toISOString(),
+                closedAt: NOW.toISOString(),
+                updatedAt: NOW.toISOString()
+            };
+        }
+        return {
+            ...item.case,
+            ...patch,
+            tag: item.tag,
+            status: 'removal_evasion',
+            outcome: '',
+            removalRejoinedAt: NOW.toISOString(),
+            openedAt: NOW.toISOString(),
+            closedAt: '',
+            updatedAt: NOW.toISOString()
+        };
+    });
+    const store = createStore({ [MOD_A]: moderator(MOD_A) });
+
+    await moderation.synchronizeModerationCases(guildWithEligibility(), GUILD_ID, workspace, store, { now: NOW });
+    await moderation.synchronizeModerationCases(guildWithEligibility(), GUILD_ID, workspace, store, { now: NOW });
+    assert.deepEqual(calls.map(call => call.action), ['removal_confirmed']);
+
+    workspace.rosterData.rosters[0].main = [{ tag: '#P0LYGQ', name: 'Player', discord: 'player', th: 18 }];
+    workspace.work = workflow.buildWorkItems(workspace.rosterData, workspace.privateState);
+    await moderation.synchronizeModerationCases(guildWithEligibility(), GUILD_ID, workspace, store, { now: NOW });
+    await moderation.synchronizeModerationCases(guildWithEligibility(), GUILD_ID, workspace, store, { now: NOW });
+
+    assert.deepEqual(calls.map(call => call.action), ['removal_confirmed', 'removal_rejoined']);
+    assert.equal(calls[1].patch.rejoinRosterTitle, 'Main Clan');
+    assert.equal(workspace.work.items[0].case.status, 'removal_evasion');
+});

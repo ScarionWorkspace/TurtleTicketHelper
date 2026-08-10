@@ -127,6 +127,77 @@ test('dismissed evidence stays closed until the evidence revision changes', () =
     assert.equal(reopened.items.find(item => item.tag === initial.tag).status, 'needs_review');
 });
 
+test('monitoring is cleanly separated from active cases and triggers only on post-watch problems', () => {
+    const data = buildRosterData();
+    const settings = {
+        regularMissedThreshold: 2,
+        regularPerformanceEnabled: false,
+        cwlMissedThreshold: 8,
+        cwlPerformanceEnabled: false
+    };
+    const initial = workflow.buildWorkItems(data, { settings, cases: [] });
+    const initialItem = initial.items.find(item => item.tag === '#P0LYGQ');
+    const monitoringCase = {
+        tag: '#P0LYGQ',
+        status: 'watching',
+        watchStartedAt: '2026-08-01T00:00:00.000Z',
+        watchWarTarget: 1,
+        dismissedSignalIds: initialItem.signalIds,
+        assignedModeratorId: '',
+        handledBy: ''
+    };
+    data.playerWarPerformance.byTag['#P0LYGQ'].recentRegularWarForm.unshift(
+        regularEvent('rw-clean', '2026-08-02T00:00:00.000Z', '#MAIN', {
+            possibleAttacks: 2,
+            usedAttacks: 2,
+            countedAttacks: 2,
+            starsTotal: 5,
+            totalDestruction: 180
+        })
+    );
+    const clean = workflow.buildWorkItems(data, { settings, cases: [monitoringCase] });
+    assert.equal(clean.items.find(item => item.tag === '#P0LYGQ').status, 'closed');
+
+    data.playerWarPerformance.byTag['#P0LYGQ'].recentRegularWarForm.unshift(
+        regularEvent('rw-problem', '2026-08-03T00:00:00.000Z', '#MAIN', {
+            possibleAttacks: 2,
+            usedAttacks: 0,
+            attacksMissed: 2
+        })
+    );
+    const problem = workflow.buildWorkItems(data, { settings, cases: [monitoringCase] })
+        .items.find(item => item.tag === '#P0LYGQ');
+    assert.equal(problem.status, 'needs_review');
+    assert.equal(problem.watching.triggered, true);
+    assert.deepEqual(problem.signals.map(signal => signal.reasonCode), ['regular_missed']);
+});
+
+test('confirmed removal cases retain linked identity and reopen when the player rejoins', () => {
+    const data = buildRosterData();
+    data.rosters[0].main = data.rosters[0].main.filter(player => player.tag !== '#P0LYGQ');
+    const removalCase = {
+        tag: '#P0LYGQ',
+        name: 'Player One',
+        discordId: '111111111111111111',
+        sourceRosterId: 'main',
+        sourceRosterTitle: 'Main clan',
+        sourceClanTag: '#MAIN',
+        status: 'removed',
+        outcome: 'removed',
+        contactPurpose: 'removal',
+        removalAbsentObservedAt: '2026-08-02T00:00:00.000Z'
+    };
+    const absent = workflow.buildWorkItems(data, { settings: {}, cases: [removalCase] })
+        .items.find(item => item.tag === '#P0LYGQ');
+    assert.equal(absent.status, 'closed');
+    assert.equal(absent.player.discordId, '111111111111111111');
+
+    data.rosters[1].main.push({ tag: '#P0LYGQ', name: 'Player One', th: 17 });
+    const rejoined = workflow.buildWorkItems(data, { settings: {}, cases: [removalCase] })
+        .items.find(item => item.tag === '#P0LYGQ');
+    assert.equal(rejoined.status, 'needs_review');
+});
+
 test('trusted accounts are excluded from work and Discord gaps', () => {
     const work = workflow.buildWorkItems(buildRosterData(), {
         settings: { trustedPlayerTags: ['#P0LYGQ', '#P0LYGJ'] },
