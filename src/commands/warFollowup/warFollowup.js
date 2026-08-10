@@ -83,10 +83,10 @@ const data = new SlashCommandBuilder()
         .setDescription('Show your currently assigned moderation cases.'))
     .addSubcommand(subcommand => subcommand
         .setName('publish-panel')
-        .setDescription('Publish the self-updating Moderation Hub in an empty channel.')
+        .setDescription('Publish the self-updating Moderation Hub in a staff-only channel.')
         .addChannelOption(option => option
             .setName('channel')
-            .setDescription('A new empty channel reserved only for this panel.')
+            .setDescription('The staff-only channel where the panel should appear.')
             .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
             .setRequired(true)))
     .addSubcommand(subcommand => addSetupOptions(subcommand
@@ -364,21 +364,6 @@ async function executeMine(interaction) {
     )));
 }
 
-function collectionValues(collection) {
-    if (!collection) return [];
-    if (typeof collection.values === 'function') return Array.from(collection.values());
-    if (Array.isArray(collection)) return collection;
-    return [];
-}
-
-async function panelChannelIsEmpty(channel, expectedMessageId = '') {
-    if (!channel?.messages || typeof channel.messages.fetch !== 'function') return false;
-    const recent = await channel.messages.fetch({ limit: 10 });
-    return collectionValues(recent).every(message =>
-        expectedMessageId && String(message?.id || '') === String(expectedMessageId)
-    );
-}
-
 async function executePublishPanel(interaction) {
     await interaction.deferReply({ flags: views.EPHEMERAL });
     const selectedChannel = interaction.options.getChannel('channel', true);
@@ -389,7 +374,7 @@ async function executePublishPanel(interaction) {
     }
     if (selectedChannel.id === existing.config.channelId) {
         await interaction.editReply({
-            content: 'Choose a separate empty channel. Assignment pings and summaries must remain in the existing notification channel.'
+            content: 'Choose a separate staff-only panel channel. Assignment pings and summaries must remain in the existing notification channel.'
         });
         return;
     }
@@ -405,16 +390,6 @@ async function executePublishPanel(interaction) {
         });
         return;
     }
-    const existingMessageId = existing.moderationHub.channelId === selectedChannel.id
-        ? existing.moderationHub.messageId
-        : '';
-    if (!await panelChannelIsEmpty(selectedChannel, existingMessageId)) {
-        await interaction.editReply({
-            content: 'That channel is not empty. Use a new empty channel so the self-updating Moderation Hub remains its only message.'
-        });
-        return;
-    }
-
     const workspace = await service.loadWorkspace({ forcePrivate: true });
     const published = await ensureModerationHub(
         interaction.client,
@@ -574,6 +549,5 @@ module.exports = {
     canWriteChannel,
     canMentionRole,
     everyoneCanViewChannel,
-    panelChannelIsEmpty,
     resolvePlayerInput
 };

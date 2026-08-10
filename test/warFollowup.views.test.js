@@ -323,23 +323,11 @@ test('public Moderation Hub is a clean personalized entry point with stable auto
     assert.notEqual(paused.semanticHash, built.semanticHash, 'changing coverage causes an in-place panel refresh');
 });
 
-test('panel-channel validation permits only an empty channel or its one recorded hub message', async () => {
-    const channel = {
-        messages: {
-            fetch: async () => new Map()
-        }
-    };
-    assert.equal(await command.panelChannelIsEmpty(channel), true);
-    channel.messages.fetch = async () => new Map([
-        ['111111111111111111', { id: '111111111111111111' }]
-    ]);
-    assert.equal(await command.panelChannelIsEmpty(channel, '111111111111111111'), true);
-    assert.equal(await command.panelChannelIsEmpty(channel), false);
-    channel.messages.fetch = async () => new Map([
-        ['111111111111111111', { id: '111111111111111111' }],
-        ['222222222222222222', { id: '222222222222222222' }]
-    ]);
-    assert.equal(await command.panelChannelIsEmpty(channel, '111111111111111111'), false);
+test('the moderation panel accepts an existing staff-only channel', () => {
+    const publishPanel = command.data.toJSON().options.find(option => option.name === 'publish-panel');
+    assert.match(publishPanel.description, /staff-only channel/i);
+    assert.doesNotMatch(JSON.stringify(publishPanel), /empty channel/i);
+    assert.equal(Object.prototype.hasOwnProperty.call(command, 'panelChannelIsEmpty'), false);
 });
 
 test('moderator settings, coverage, and personal ownership views stay within Discord UI limits', () => {
