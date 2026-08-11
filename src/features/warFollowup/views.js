@@ -215,7 +215,7 @@ function buildModerationHubPayload(workspace, guildRecord, options = {}) {
                 ].join('\n')
             }
         )
-        .setFooter({ text: 'Updates automatically' });
+        .setFooter({ text: 'Updates automatically · moderator digests 4h · leadership digests 6h' });
 
     return {
         payload: {
@@ -1101,7 +1101,7 @@ function buildModeratorSettingsPayload(workspace, guildRecord, userIdRaw, displa
         .setColor(preference.accepting ? COLORS.success : COLORS.closed)
         .setTitle('Moderation settings')
         .setDescription([
-            'Choose the clans you help with and where assignment alerts should go.',
+            'Choose the clans you help with and where assignment digests should go.',
             'Turn on new assignments when you are ready. Changes save immediately.'
         ].join('\n'))
         .addFields(
@@ -1112,7 +1112,7 @@ function buildModeratorSettingsPayload(workspace, guildRecord, userIdRaw, displa
                         .map(roster => safeInline(roster.title || roster.clanTag)).join(', ') || 'Saved clans are no longer connected.', 1024)
                     : 'No clans selected'
             },
-            { name: 'Notifications', value: preference.notificationMode === 'both' ? 'Direct message and channel ping' : (preference.notificationMode === 'dm' ? 'Direct message' : 'Channel ping'), inline: true },
+            { name: 'Notifications', value: preference.notificationMode === 'both' ? 'DM and channel digests' : (preference.notificationMode === 'dm' ? 'DM digest' : 'Channel digest'), inline: true },
             { name: 'New assignments', value: preference.accepting ? 'On — accepting cases' : 'Paused', inline: true }
         );
     const components = [];

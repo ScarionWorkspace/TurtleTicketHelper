@@ -180,7 +180,8 @@ function buildNotificationPayload(notification) {
         'case-assignment',
         'case-inactivity-reminder',
         'case-unassigned',
-        'case-escalation'
+        'case-escalation',
+        'moderation-digest'
     ].includes(notification.kind) && notification.destination !== 'dm';
     const components = opensFollowup || notification.kind === 'missing-discord-digest'
         ? [new ActionRowBuilder().addComponents(

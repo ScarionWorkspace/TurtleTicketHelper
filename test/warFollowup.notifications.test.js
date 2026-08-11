@@ -263,8 +263,8 @@ test('late startup selects only the most urgent reminder window and consumes ear
     );
     assert.deepEqual(
         reminders.find(notification => notification.kind === 'regular-attack-reminder').allowedRoleIds,
-        ['555555555555555555'],
-        'staff is tagged when a pending attacker has no taggable Discord ID'
+        [],
+        'routine attack reminders report unlinked players without pinging the leadership role'
     );
     assert.deepEqual(
         reminders.find(notification => notification.kind === 'cwl-attack-reminder').allowedUserIds,
@@ -305,9 +305,11 @@ test('regular and CWL end summaries include missed attackers but never replay pr
     assert.equal(regular.length, 1, 'only the post-opt-in regular war should be summarized');
     assert.match(regular[0].embeds[0].fields[0].value, /\{\{wfu-user:111111111111111111\}\}/);
     assert.deepEqual(regular[0].allowedUserIds, ['111111111111111111']);
+    assert.deepEqual(regular[0].allowedRoleIds, []);
     assert.equal(cwl.length, 1);
     assert.match(cwl[0].embeds[0].fields[0].value, /\{\{wfu-user:333333333333333333\}\}/);
     assert.deepEqual(cwl[0].allowedUserIds, ['333333333333333333']);
+    assert.deepEqual(cwl[0].allowedRoleIds, []);
 });
 
 test('a maximum-size CWL report includes every missed attacker within Discord embed limits', () => {
@@ -402,7 +404,7 @@ test('an active-war pointer without lineup stats is never treated as all-clear',
     assert.equal(plan.notifications.some(notification => notification.kind.endsWith('all-clear')), false);
 });
 
-test('daily Discord-gap digest is bounded, staff-tagged, and date-deduplicated', () => {
+test('daily Discord-gap digest is bounded, silent for leadership, and date-deduplicated', () => {
     const workspace = buildWorkspace();
     const plan = planner.planNotifications({
         ...workspace,
@@ -416,7 +418,7 @@ test('daily Discord-gap digest is bounded, staff-tagged, and date-deduplicated',
     assert.match(digest.embeds[0].footer.text, /cannot receive automatic tags/);
     assert.equal(plan.missingDiscordDigestDate, '2026-08-10');
     const payload = buildNotificationPayload(digest);
-    assert.deepEqual(payload.allowedMentions.roles, ['555555555555555555']);
+    assert.deepEqual(payload.allowedMentions.roles, []);
 
     const repeated = planner.planNotifications({
         ...workspace,

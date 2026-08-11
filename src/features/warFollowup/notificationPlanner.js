@@ -416,14 +416,12 @@ function planAttackReminder({ roster, rosterData, config, record, nowMs, mode })
     const userIds = unique(pending.map(entry => entry.identity.discordId));
     const unlinkedCount = pending.filter(entry => !entry.identity.discordId).length;
     const modeLabel = mode === 'cwl' ? 'CWL war' : 'regular war';
-    const staff = unlinkedCount > 0 ? staffMention(config) : '';
-
     return {
         key,
         consumeKeys: reminderKeys(prefix, threshold.minutes),
         kind: `${mode}-attack-reminder`,
         featureKey: 'attackReminders',
-        content: [...userIds.map(id => `<@${id}>`), staff].filter(Boolean).join(' '),
+        content: userIds.map(id => `<@${id}>`).join(' '),
         embeds: [{
             color: 0xed4245,
             title: `${rosterTitle(roster)} · attacks still open`,
@@ -436,7 +434,7 @@ function planAttackReminder({ roster, rosterData, config, record, nowMs, mode })
             footer: { text: `Reminder window: ${threshold.label}` }
         }],
         allowedUserIds: userIds,
-        allowedRoleIds: staff && config.staffRoleId ? [config.staffRoleId] : [],
+        allowedRoleIds: [],
         displayNameFallbacks: displayNameFallbacks(pending.slice(0, MAX_NOTIFICATION_LINES).map(entry => entry.identity))
     };
 }
@@ -574,7 +572,7 @@ function planRegularWarSummaries(rosterData, config, record, nowIso) {
                 key,
                 kind: 'regular-war-summary',
                 featureKey: 'regularWarSummaries',
-                content: [staffMention(config), ...missedUserIds.map(id => `<@${id}>`)].filter(Boolean).join(' '),
+                content: missedUserIds.map(id => `<@${id}>`).join(' '),
                 embeds: [{
                     color: summary.missed.length ? 0xf59e0b : 0x57f287,
                     title: `${rosterTitle(roster)} · regular war summary`,
@@ -583,7 +581,7 @@ function planRegularWarSummaries(rosterData, config, record, nowIso) {
                     timestamp: new Date(finalizedAt).toISOString()
                 }],
                 allowedUserIds: missedUserIds,
-                allowedRoleIds: config.staffRoleId ? [config.staffRoleId] : [],
+                allowedRoleIds: [],
                 displayNameFallbacks: displayNameFallbacks(summary.rows.map(row => row.identity))
             });
         }
@@ -620,7 +618,7 @@ function planCwlEndSummaries(rosterData, config, record, nowIso) {
             key,
             kind: 'cwl-end-summary',
             featureKey: 'cwlEndSummaries',
-            content: [staffMention(config), ...missedUserIds.map(id => `<@${id}>`)].filter(Boolean).join(' '),
+            content: missedUserIds.map(id => `<@${id}>`).join(' '),
             embeds: [{
                 color: totalMisses ? 0x9b59b6 : 0x57f287,
                 title: `${rosterTitle(roster)} · CWL complete`,
@@ -629,7 +627,7 @@ function planCwlEndSummaries(rosterData, config, record, nowIso) {
                 timestamp: nowIso
             }],
             allowedUserIds: missedUserIds,
-            allowedRoleIds: config.staffRoleId ? [config.staffRoleId] : [],
+            allowedRoleIds: [],
             displayNameFallbacks: displayNameFallbacks(summary.rows.map(row => row.identity))
         });
     }
@@ -670,7 +668,7 @@ function planMissingDiscordDigest(work, config, record, now) {
             key: `discord-gaps:${parts.dateKey}:${workflow.stableRevision(gaps.map(player => player.tag).join('|'))}`,
             kind: 'missing-discord-digest',
             featureKey: 'missingDiscordDigest',
-            content: staffMention(config),
+            content: '',
             embeds: [{
                 color: 0x5865f2,
                 title: 'Daily Discord-link gaps',
@@ -678,7 +676,7 @@ function planMissingDiscordDigest(work, config, record, now) {
                 footer: { text: `${gaps.length} roster account${gaps.length === 1 ? '' : 's'} cannot receive automatic tags.` }
             }],
             allowedUserIds: [],
-            allowedRoleIds: config.staffRoleId ? [config.staffRoleId] : []
+            allowedRoleIds: []
         }
     };
 }

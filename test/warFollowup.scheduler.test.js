@@ -8,7 +8,13 @@ const { afterEach, test } = require('node:test');
 const workflow = require('../src/features/warFollowup/workflow');
 const { getStaffRoleIds } = require('../src/features/permissions/staffPermissions');
 const { createWarFollowupStateStore } = require('../src/features/warFollowup/stateStore');
-const { processGuild, runWarFollowupTick } = require('../src/features/warFollowup/scheduler');
+const {
+    MODERATOR_DIGEST_INTERVAL_MS,
+    LEADERSHIP_DIGEST_INTERVAL_MS,
+    prepareNotificationQueue,
+    processGuild,
+    runWarFollowupTick
+} = require('../src/features/warFollowup/scheduler');
 const { ensureModerationHub, retireDashboard } = require('../src/features/warFollowup/dashboard');
 
 const temporaryDirectories = [];
@@ -106,6 +112,156 @@ afterEach(() => {
     while (temporaryDirectories.length) {
         fs.rmSync(temporaryDirectories.pop(), { recursive: true, force: true });
     }
+});
+
+test('moderation notifications are grouped per recipient and respect digest cooldowns', () => {
+    const moderatorId = '666666666666666666';
+    const assignments = Array.from({ length: 10 }, (_, index) => ({
+        key: `assignment-${index}`,
+        kind: 'case-assignment',
+        destination: 'channel',
+        recipientUserId: moderatorId,
+        content: `<@${moderatorId}>`,
+        embeds: [{ title: 'New moderation case assigned', description: `Player ${index} · Main Clan` }],
+        allowedUserIds: [moderatorId],
+        allowedRoleIds: []
+    }));
+
+    const first = prepareNotificationQueue(assignments, { deliveries: {} }, NOW);
+    assert.equal(first.notifications.length, 1);
+    assert.equal(first.notifications[0].kind, 'moderation-digest');
+    assert.equal(first.notifications[0].content, `<@${moderatorId}>`);
+    assert.equal(first.notifications[0].consumeKeys.length, 10);
+    assert.match(first.notifications[0].embeds[0].title, /10 updates/);
+
+    const cadenceKey = first.notifications[0].cadenceKey;
+    const coolingDown = prepareNotificationQueue(assignments, {
+        deliveries: { [cadenceKey]: { at: NOW.toISOString() } }
+    }, new Date(NOW.getTime() + MODERATOR_DIGEST_INTERVAL_MS - 1));
+    assert.equal(coolingDown.notifications.length, 0);
+    assert.equal(coolingDown.deferred.length, 1);
+
+    const readyAgain = prepareNotificationQueue(assignments, {
+        deliveries: { [cadenceKey]: { at: NOW.toISOString() } }
+    }, new Date(NOW.getTime() + MODERATOR_DIGEST_INTERVAL_MS));
+    assert.equal(readyAgain.notifications.length, 1);
+});
+
+test('leadership and war alerts produce at most one ping per digest wave', () => {
+    const roleId = '555555555555555555';
+    const userId = '444444444444444444';
+    const planned = [
+        {
+            key: 'escalation-a',
+            kind: 'case-escalation',
+            destination: 'channel',
+            content: `<@&${roleId}>`,
+            embeds: [{ title: 'Leadership review requested', description: 'Player A · #AAA' }],
+            allowedUserIds: [],
+            allowedRoleIds: [roleId]
+        },
+        {
+            key: 'unassigned-b',
+            kind: 'case-unassigned',
+            destination: 'channel',
+            content: `<@&${roleId}>`,
+            embeds: [{ title: 'Moderation case is unassigned', description: 'Player B · #BBB' }],
+            allowedUserIds: [],
+            allowedRoleIds: [roleId]
+        },
+        {
+            key: 'case-alert-c',
+            kind: 'case-alert',
+            destination: 'channel',
+            content: `<@&${roleId}>`,
+            embeds: [{ title: 'War follow-up needs attention', description: 'Player C · removal evasion' }],
+            allowedUserIds: [],
+            allowedRoleIds: [roleId]
+        },
+        ...['regular', 'cwl'].map(mode => ({
+            key: `attack-${mode}`,
+            kind: `${mode}-attack-reminder`,
+            destination: 'channel',
+            content: `<@${userId}>`,
+            embeds: [{ title: `${mode} attacks still open`, description: 'One attack remains.' }],
+            allowedUserIds: [userId],
+            allowedRoleIds: []
+        }))
+    ];
+
+    const prepared = prepareNotificationQueue(planned, { deliveries: {} }, NOW);
+    assert.equal(prepared.notifications.length, 2);
+    const leadership = prepared.notifications.find(notification => notification.kind === 'moderation-digest');
+    const reminders = prepared.notifications.find(notification => notification.kind === 'war-reminder-digest');
+    assert.equal((leadership.content.match(new RegExp(`<@&${roleId}>`, 'g')) || []).length, 1);
+    assert.equal((reminders.content.match(new RegExp(`<@${userId}>`, 'g')) || []).length, 1);
+    assert.equal(leadership.cadenceMs, LEADERSHIP_DIGEST_INTERVAL_MS);
+    const deferred = prepareNotificationQueue(planned, {
+        deliveries: { [leadership.cadenceKey]: { at: NOW.toISOString() } }
+    }, new Date(NOW.getTime() + 60 * 60 * 1000));
+    assert.equal(deferred.deferredCaseAlert, true);
+});
+
+test('scheduler persists moderator cooldown and later sends all accumulated cases together', async () => {
+    const store = createStore();
+    const moderatorId = '666666666666666666';
+    const staffRoleId = getStaffRoleIds()[0];
+    const guild = {
+        members: {
+            fetch: async ({ user }) => ({
+                id: user,
+                displayName: 'Assigned Leader',
+                user: { username: 'assigned-leader' },
+                roles: { cache: { has: roleId => roleId === staffRoleId } }
+            })
+        }
+    };
+    const harness = createDiscordHarness({ guild });
+    store.patchConfig(GUILD_ID, {
+        enabled: true,
+        channelId: CHANNEL_ID
+    }, new Date('2026-08-10T07:00:00.000Z'));
+    store.upsertModerator(GUILD_ID, moderatorId, {
+        displayName: 'Assigned Leader',
+        clanTags: ['#MAIN'],
+        notificationMode: 'channel',
+        accepting: true
+    }, NOW);
+    const workspace = buildWorkspace();
+    const assignedCase = (tag, name, at) => ({
+        tag,
+        name,
+        sourceRosterId: 'main',
+        sourceRosterTitle: 'Main Clan',
+        sourceClanTag: '#MAIN',
+        status: 'needs_review',
+        assignedModeratorId: moderatorId,
+        assignedModeratorName: 'Assigned Leader',
+        handledBy: 'Assigned Leader',
+        assignedAt: at,
+        assignmentUpdatedAt: at,
+        lastMeaningfulActionAt: at,
+        openedAt: at,
+        createdAt: at,
+        updatedAt: at,
+        activity: []
+    });
+    workspace.privateState.cases = [assignedCase('#P0LYGQ', 'Alpha', NOW.toISOString())];
+    workspace.work = workflow.buildWorkItems(workspace.rosterData, workspace.privateState);
+
+    await processGuild(harness.client, { guildId: GUILD_ID }, workspace, { store, now: NOW });
+    assert.equal(harness.sends.filter(send => send.title.includes('Your moderation work')).length, 1);
+
+    const secondAt = new Date(NOW.getTime() + 60 * 60 * 1000);
+    workspace.privateState.cases.push(assignedCase('#P2QUL292G', 'Bravo', secondAt.toISOString()));
+    workspace.work = workflow.buildWorkItems(workspace.rosterData, workspace.privateState);
+    const deferred = await processGuild(harness.client, { guildId: GUILD_ID }, workspace, { store, now: secondAt });
+    assert.equal(deferred.deferred, 1);
+    assert.equal(harness.sends.filter(send => send.title.includes('Your moderation work')).length, 1);
+
+    const digestAt = new Date(NOW.getTime() + MODERATOR_DIGEST_INTERVAL_MS);
+    await processGuild(harness.client, { guildId: GUILD_ID }, workspace, { store, now: digestAt });
+    assert.equal(harness.sends.filter(send => send.title.includes('Your moderation work')).length, 2);
 });
 
 test('scheduler records a delivery only after Discord accepts it and retries a failed send', async t => {
