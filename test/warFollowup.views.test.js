@@ -323,6 +323,82 @@ test('public Moderation Hub is a clean personalized entry point with stable auto
     assert.notEqual(paused.semanticHash, built.semanticHash, 'changing coverage causes an in-place panel refresh');
 });
 
+test('Moderation Hub separates actionable work from cases awaiting player replies', () => {
+    const workspace = buildWorkspace();
+    const assignedModeratorId = '222222222222222222';
+    const waitingCases = Array.from({ length: 4 }, (_, index) => ({
+        tag: `#WAIT${index}`,
+        status: 'waiting',
+        case: {
+            status: 'waiting',
+            contactPurpose: 'general',
+            dmSentAt: '2026-08-10T10:00:00.000Z',
+            waitingUntil: '2026-08-11T10:00:00.000Z',
+            assignedModeratorId,
+            assignedAt: '2026-08-10T10:00:00.000Z',
+            lastMeaningfulActionAt: '2026-08-10T10:00:00.000Z'
+        }
+    }));
+    workspace.work.items = [
+        ...waitingCases,
+        {
+            tag: '#HERO1',
+            status: 'hero_down',
+            case: {
+                status: 'hero_down',
+                assignedModeratorId,
+                assignedAt: '2026-08-10T10:00:00.000Z',
+                lastMeaningfulActionAt: '2026-08-10T10:00:00.000Z'
+            }
+        }
+    ];
+    const guildRecord = {
+        moderators: {
+            [assignedModeratorId]: {
+                discordId: assignedModeratorId,
+                displayName: 'Leader',
+                clanTags: ['#MAIN', '#HERO'],
+                accepting: true
+            }
+        }
+    };
+
+    const payload = serialize(views.buildModerationHubPayload(workspace, guildRecord, {
+        now: new Date('2026-08-10T12:00:00.000Z')
+    }).payload);
+    const rendered = JSON.stringify(payload);
+
+    assert.match(rendered, /5 tracked/);
+    assert.match(rendered, /0 actionable/);
+    assert.match(rendered, /4 awaiting player replies/);
+    assert.match(rendered, /1 in progress/);
+    assert.match(rendered, /5 assigned/);
+    assert.doesNotMatch(rendered, /5 open/);
+});
+
+test('a due waiting case is actionable instead of being reported as still waiting', () => {
+    const workspace = buildWorkspace();
+    workspace.work.items = [{
+        tag: '#DUE1',
+        status: 'waiting',
+        case: {
+            status: 'waiting',
+            contactPurpose: 'general',
+            dmSentAt: '2026-08-08T10:00:00.000Z',
+            waitingUntil: '2026-08-09T10:00:00.000Z',
+            assignedModeratorId: '222222222222222222',
+            lastMeaningfulActionAt: '2026-08-08T10:00:00.000Z'
+        }
+    }];
+
+    const summary = views.moderationCaseSummary(workspace, {}, new Date('2026-08-10T12:00:00.000Z'));
+
+    assert.equal(summary.actionable.length, 1);
+    assert.equal(summary.waiting.length, 0);
+    assert.equal(summary.awaitingPlayer.length, 0);
+    assert.equal(summary.overdue.length, 1);
+});
+
 test('the moderation panel accepts an existing staff-only channel', () => {
     const publishPanel = command.data.toJSON().options.find(option => option.name === 'publish-panel');
     assert.match(publishPanel.description, /staff-only channel/i);

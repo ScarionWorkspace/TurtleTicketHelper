@@ -159,7 +159,12 @@ function buildModerationHubPayload(workspace, guildRecord, options = {}) {
         (moderator.clanTags || []).map(workflow.normalizeTag).includes(workflow.normalizeTag(roster.clanTag))
     )).length;
     const snapshot = workflow.discordRelativeTimestamp(workspace?.rosterData?.lastUpdatedAt);
-    const attention = summary.unassigned.length + summary.overdue.length;
+    const attention = summary.actionable.length + summary.unassigned.length + summary.overdue.length;
+    const stateParts = [
+        summary.awaitingPlayer.length ? `**${summary.awaitingPlayer.length} awaiting player repl${summary.awaitingPlayer.length === 1 ? 'y' : 'ies'}**` : '',
+        summary.scheduledWaiting.length ? `**${summary.scheduledWaiting.length} scheduled follow-up${summary.scheduledWaiting.length === 1 ? '' : 's'}**` : '',
+        summary.inProgress.length ? `**${summary.inProgress.length} in progress**` : ''
+    ].filter(Boolean);
     const regularStatus = pending.regularAttacks
         ? `**${pending.regularAttacks} attack${pending.regularAttacks === 1 ? '' : 's'} pending** · ${pending.regularPlayers} player${pending.regularPlayers === 1 ? '' : 's'}`
         : '**No attacks pending**';
@@ -174,9 +179,13 @@ function buildModerationHubPayload(workspace, guildRecord, options = {}) {
             moderator.clanTags
         ]).sort((left, right) => left[0].localeCompare(right[0])),
         cases: {
+            tracked: summary.items.length,
+            actionable: summary.actionable.length,
             assigned: summary.assigned.length,
             unassigned: summary.unassigned.length,
-            waiting: summary.waiting.length,
+            awaitingPlayer: summary.awaitingPlayer.length,
+            scheduledWaiting: summary.scheduledWaiting.length,
+            inProgress: summary.inProgress.length,
             overdue: summary.overdue.length
         },
         pending,
@@ -198,8 +207,9 @@ function buildModerationHubPayload(workspace, guildRecord, options = {}) {
             {
                 name: 'Current workload',
                 value: [
-                    `Cases: **${summary.items.length} open** · **${summary.assigned.length} assigned**`,
-                    `Attention: **${summary.unassigned.length} unassigned** · **${summary.overdue.length} overdue** · **${summary.waiting.length} waiting**`,
+                    `Cases: **${summary.items.length} tracked** · **${summary.actionable.length} actionable**`,
+                    `State: ${stateParts.join(' · ') || '**Nothing waiting or in progress**'}`,
+                    `Ownership: **${summary.assigned.length} assigned** · **${summary.unassigned.length} unassigned** · **${summary.overdue.length} overdue**`,
                     `Coverage: **${activeModerators.length} active leader${activeModerators.length === 1 ? '' : 's'}** · **${coveredClanCount}/${rosters.length} clans**`
                 ].join('\n')
             },
@@ -1167,14 +1177,33 @@ function moderationCaseSummary(workspace, guildRecord, nowRaw = new Date()) {
     const nowMs = nowRaw instanceof Date ? nowRaw.getTime() : new Date(nowRaw).getTime();
     const assigned = items.filter(item => item.case?.assignedModeratorId || item.case?.handledBy);
     const unassigned = items.filter(item => !item.case?.assignedModeratorId && !item.case?.handledBy);
-    const waiting = items.filter(item => item.status === 'waiting');
+    const waitingIsDue = item => {
+        const dueMs = workflow.parseMs(item.case?.waitingUntil);
+        return item.status === 'waiting' && dueMs > 0 && dueMs <= nowMs;
+    };
+    const waiting = items.filter(item => item.status === 'waiting' && !waitingIsDue(item));
+    const awaitingPlayer = waiting.filter(item =>
+        item.case?.contactPurpose === 'general' && workflow.parseMs(item.case?.dmSentAt) > 0
+    );
+    const scheduledWaiting = waiting.filter(item => !awaitingPlayer.includes(item));
+    const actionable = items.filter(item =>
+        item.status === 'needs_review' ||
+        item.status === 'needs_dm' ||
+        item.status === 'ready' ||
+        (item.status === 'removal_pending' && !item.case?.removalActionedAt) ||
+        waitingIsDue(item)
+    );
+    const inProgress = items.filter(item =>
+        item.status === 'hero_down' ||
+        (item.status === 'removal_pending' && Boolean(item.case?.removalActionedAt))
+    );
     const overdue = items.filter(item => {
         const dueMs = workflow.parseMs(item.case?.waitingUntil);
         const anchorMs = workflow.parseMs(item.case?.lastMeaningfulActionAt || item.case?.assignedAt || item.case?.updatedAt);
         if (item.status === 'waiting' && dueMs > 0) return dueMs <= nowMs;
         return Boolean(item.case?.assignedModeratorId && anchorMs > 0 && nowMs - anchorMs >= 24 * 60 * 60 * 1000);
     });
-    return { items, assigned, unassigned, waiting, overdue };
+    return { items, actionable, assigned, unassigned, waiting, awaitingPlayer, scheduledWaiting, inProgress, overdue };
 }
 
 function buildCoveragePayload(workspace, guildRecord, options = {}) {
@@ -1202,8 +1231,12 @@ function buildCoveragePayload(workspace, guildRecord, options = {}) {
         .setDescription(truncate(coverageLines.join('\n') || 'No connected clans are available.', 4000))
         .addFields(
             { name: 'No active coverage', value: uncovered.length ? truncate(uncovered.map(roster => safeInline(roster.title || roster.clanTag)).join(', '), 1024) : 'None' },
-            { name: 'Open cases', value: `Assigned **${summary.assigned.length}** · Unassigned **${summary.unassigned.length}**`, inline: true },
-            { name: 'Attention', value: `Waiting **${summary.waiting.length}** · Overdue **${summary.overdue.length}**`, inline: true }
+            { name: 'Case ownership', value: `Assigned **${summary.assigned.length}** · Unassigned **${summary.unassigned.length}**`, inline: true },
+            {
+                name: 'Case status',
+                value: `Actionable **${summary.actionable.length}** · Awaiting replies **${summary.awaitingPlayer.length}** · Scheduled **${summary.scheduledWaiting.length}** · In progress **${summary.inProgress.length}** · Overdue **${summary.overdue.length}**`,
+                inline: true
+            }
         );
     return {
         embeds: [embed],
