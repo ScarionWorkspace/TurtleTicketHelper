@@ -30,9 +30,20 @@ function setup(t, workspace, options = {}) {
     const deliveries = new Set();
     const mutations = [];
     const moderatorMessages = [];
+    const directMessages = [];
     const channelMessages = [];
     const playerMessages = [];
     const guildId = '111111111111111111';
+    const moderators = {
+        '333333333333333333': {
+            discordId: '333333333333333333',
+            notificationMode: options.mode || 'dm',
+            displayName: 'Moderator'
+        },
+        ...(options.senderModerator ? {
+            [options.senderModerator.discordId]: options.senderModerator
+        } : {})
+    };
     t.mock.method(warFollowupStateStore, 'listEnabledGuilds', () => [{
         guildId,
         config: {
@@ -41,13 +52,7 @@ function setup(t, workspace, options = {}) {
             staffRoleId: '555555555555555555',
             features: { playerReplies: options.enabled !== false }
         },
-        moderators: {
-            '333333333333333333': {
-                discordId: '333333333333333333',
-                notificationMode: options.mode || 'dm',
-                displayName: 'Moderator'
-            }
-        }
+        moderators
     }]);
     t.mock.method(warFollowupStateStore, 'getGuild', () => ({
         config: {
@@ -56,13 +61,7 @@ function setup(t, workspace, options = {}) {
             staffRoleId: '555555555555555555',
             features: { playerReplies: true }
         },
-        moderators: {
-            '333333333333333333': {
-                discordId: '333333333333333333',
-                notificationMode: options.mode || 'dm',
-                displayName: 'Moderator'
-            }
-        }
+        moderators
     }));
     t.mock.method(warFollowupStateStore, 'hasDelivery', (_guildId, key) => deliveries.has(key));
     t.mock.method(warFollowupStateStore, 'recordDeliveries', (_guildId, keys) => {
@@ -95,8 +94,12 @@ function setup(t, workspace, options = {}) {
     const client = {
         channels: { cache: new Map([[channel.id, channel]]) },
         users: {
-            fetch: async () => ({
-                send: async payload => moderatorMessages.push(payload)
+            fetch: async discordId => ({
+                send: async payload => {
+                    if (options.failingDmId === discordId) throw new Error('Discord rejected this moderator DM');
+                    moderatorMessages.push(payload);
+                    directMessages.push({ discordId, payload });
+                }
             })
         }
     };
@@ -109,7 +112,7 @@ function setup(t, workspace, options = {}) {
             send: async payload => playerMessages.push(payload)
         }
     };
-    return { client, message, mutations, moderatorMessages, channelMessages, playerMessages };
+    return { client, message, mutations, moderatorMessages, directMessages, channelMessages, playerMessages };
 }
 
 test('captures an opted-in player reply, moves the case back to review, and privately notifies the moderator', async t => {
@@ -195,4 +198,70 @@ test('a Discord message reply identifies the correct case when one player has tw
     assert.deepEqual(result, { handled: true, captured: true });
     assert.equal(setupState.mutations.length, 1);
     assert.equal(setupState.mutations[0][0].tag, '#P0LYGQ');
+});
+
+test('the contact sender always receives the player response even when another moderator owns the case', async t => {
+    const workspace = baseWorkspace();
+    workspace.work.items[0].case.dmSentByDiscordId = '666666666666666666';
+    workspace.work.items[0].case.dmSentByName = 'Contact Sender';
+    const setupState = setup(t, workspace, {
+        mode: 'dm',
+        senderModerator: {
+            discordId: '666666666666666666',
+            notificationMode: 'channel',
+            displayName: 'Contact Sender'
+        }
+    });
+
+    await handleWarFollowupPlayerReply(setupState.message, setupState.client);
+
+    assert.deepEqual(
+        setupState.directMessages.map(entry => entry.discordId).sort(),
+        ['333333333333333333', '666666666666666666']
+    );
+    const senderDm = setupState.directMessages.find(entry => entry.discordId === '666666666666666666');
+    assert.match(senderDm.payload.embeds[0].description, /contact DM you sent/i);
+    assert.match(senderDm.payload.embeds[0].description, /family emergency/i);
+});
+
+test('existing contact cases resolve the sender only from one exact moderator name match', () => {
+    const workspace = baseWorkspace();
+    workspace.work.items[0].case.activity = [{
+        type: 'dm_sent',
+        actor: 'Contact Sender'
+    }];
+    const { legacyDmSenderId } = require('../src/features/warFollowup/playerReply');
+
+    assert.equal(legacyDmSenderId(workspace.work.items[0], {
+        moderators: {
+            '666666666666666666': { discordId: '666666666666666666', displayName: 'Contact Sender' }
+        }
+    }), '666666666666666666');
+    assert.equal(legacyDmSenderId(workspace.work.items[0], {
+        moderators: {
+            '666666666666666666': { discordId: '666666666666666666', displayName: 'Contact Sender' },
+            '777777777777777777': { discordId: '777777777777777777', displayName: 'Contact Sender' }
+        }
+    }), '');
+});
+
+test('a blocked sender DM falls back to a private-content-safe channel ping', async t => {
+    const workspace = baseWorkspace();
+    workspace.work.items[0].case.dmSentByDiscordId = '666666666666666666';
+    const setupState = setup(t, workspace, {
+        mode: 'channel',
+        failingDmId: '666666666666666666',
+        senderModerator: {
+            discordId: '666666666666666666',
+            notificationMode: 'dm',
+            displayName: 'Contact Sender'
+        }
+    });
+
+    await handleWarFollowupPlayerReply(setupState.message, setupState.client);
+
+    assert.equal(setupState.channelMessages.length, 2);
+    const senderFallback = setupState.channelMessages.find(payload => payload.content === '<@666666666666666666>');
+    assert.ok(senderFallback);
+    assert.doesNotMatch(senderFallback.embeds[0].description, /family emergency/i);
 });

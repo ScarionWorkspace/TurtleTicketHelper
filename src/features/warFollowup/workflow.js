@@ -716,6 +716,8 @@ function normalizeCase(raw) {
         playerResponseMessageId: '',
         dmDeliveryMode: '',
         dmMessageId: '',
+        dmSentByDiscordId: '',
+        dmSentByName: '',
         resolutionNote: '',
         escalatedAt: '',
         escalatedBy: '',

@@ -56,26 +56,64 @@ function matchingCases(workspace, discordId, referencedMessageId = '') {
         : candidates;
 }
 
-function notificationDestinations(preference, hasOwner) {
-    if (!hasOwner) return ['channel'];
+function notificationDestinations(preference) {
     const mode = text(preference?.notificationMode).trim().toLowerCase();
     if (mode === 'dm') return ['dm'];
     if (mode === 'both') return ['channel', 'dm'];
     return ['channel'];
 }
 
-function responseNotification(item, guildRecord, destination, staffRoleId) {
+function normalizeDisplayName(value) {
+    return text(value).replace(/\s+/g, ' ').trim().toLocaleLowerCase('en');
+}
+
+function legacyDmSenderId(item, guildRecord) {
+    const explicitId = text(item.case?.dmSentByDiscordId).trim();
+    if (DISCORD_USER_ID_PATTERN.test(explicitId)) return explicitId;
+    const activity = Array.isArray(item.case?.activity) ? item.case.activity : [];
+    const dmActivity = [...activity].reverse().find(entry => entry?.type === 'dm_sent');
+    const senderName = normalizeDisplayName(item.case?.dmSentByName || dmActivity?.actor);
+    if (!senderName) return '';
+    const matches = Object.values(guildRecord?.moderators || {}).filter(moderator =>
+        DISCORD_USER_ID_PATTERN.test(text(moderator?.discordId).trim()) &&
+        normalizeDisplayName(moderator?.displayName) === senderName
+    );
+    return matches.length === 1 ? text(matches[0].discordId).trim() : '';
+}
+
+function replyNotificationPlan(item, guildRecord) {
+    const plans = new Map();
+    const ownerId = text(item.case?.assignedModeratorId).trim();
+    const senderId = legacyDmSenderId(item, guildRecord);
+    if (DISCORD_USER_ID_PATTERN.test(ownerId)) {
+        const preference = guildRecord?.moderators?.[ownerId] || {};
+        for (const destination of notificationDestinations(preference)) {
+            plans.set(`${ownerId}:${destination}`, { recipientId: ownerId, destination, role: 'owner' });
+        }
+    } else {
+        plans.set('leadership:channel', { recipientId: '', destination: 'channel', role: 'leadership' });
+    }
+    if (DISCORD_USER_ID_PATTERN.test(senderId)) {
+        plans.set(`${senderId}:dm`, { recipientId: senderId, destination: 'dm', role: 'sender' });
+    }
+    return Array.from(plans.values());
+}
+
+function responseNotification(item, plan, staffRoleId) {
     const caseValue = item.case || {};
-    const moderatorId = text(caseValue.assignedModeratorId).trim();
-    const owner = DISCORD_USER_ID_PATTERN.test(moderatorId);
-    const preference = guildRecord?.moderators?.[moderatorId] || {};
+    const recipientId = text(plan?.recipientId).trim();
+    const hasRecipient = DISCORD_USER_ID_PATTERN.test(recipientId);
+    const destination = plan?.destination === 'dm' ? 'dm' : 'channel';
     const response = text(caseValue.playerResponse).trim();
     const name = cleanInline(item.player?.name || caseValue.name || item.tag);
     const tag = workflow.normalizeTag(item.tag);
-    const mention = owner ? `<@${moderatorId}>` : (DISCORD_USER_ID_PATTERN.test(staffRoleId) ? `<@&${staffRoleId}>` : '');
+    const mention = hasRecipient ? `<@${recipientId}>` : (DISCORD_USER_ID_PATTERN.test(staffRoleId) ? `<@&${staffRoleId}>` : '');
+    const replyContext = plan?.role === 'sender'
+        ? 'The player replied to a contact DM you sent.'
+        : 'The player replied to the contact DM.';
     const privateDescription = [
         `**${name}** · \`${tag}\``,
-        'The player replied to the contact DM.',
+        replyContext,
         '',
         `**Player response:**\n${response}`,
         '',
@@ -96,25 +134,26 @@ function responseNotification(item, guildRecord, destination, staffRoleId) {
         }],
         allowedMentions: destination === 'channel'
             ? {
-                users: owner ? [moderatorId] : [],
-                roles: !owner && DISCORD_USER_ID_PATTERN.test(staffRoleId) ? [staffRoleId] : []
+                users: hasRecipient ? [recipientId] : [],
+                roles: !hasRecipient && DISCORD_USER_ID_PATTERN.test(staffRoleId) ? [staffRoleId] : []
             }
             : { parse: [] },
-        preference
     };
 }
 
-async function sendReplyNotification(client, guildState, item, message, destination) {
+async function sendReplyNotification(client, guildState, item, message, plan) {
     const guildId = guildState.guildId;
     const record = warFollowupStateStore.getGuild(guildId);
-    const moderatorId = text(item.case?.assignedModeratorId).trim();
-    const key = `player-response:${guildId}:${text(message.id).trim()}:${destination}`;
+    const recipientKey = text(plan?.recipientId).trim() || 'leadership';
+    const destination = plan?.destination === 'dm' ? 'dm' : 'channel';
+    const key = `player-response:${guildId}:${text(message.id).trim()}:${recipientKey}:${destination}`;
     if (warFollowupStateStore.hasDelivery(guildId, key)) return false;
     warFollowupStateStore.recordDeliveries(guildId, key, { disposition: 'player-response-pending' });
     try {
-        const payload = responseNotification(item, record, destination, record.config.staffRoleId);
+        const payload = responseNotification(item, plan, record.config.staffRoleId);
         if (destination === 'dm') {
-            if (!DISCORD_USER_ID_PATTERN.test(moderatorId)) throw new Error('The response case has no reachable moderator.');
+            const moderatorId = text(plan?.recipientId).trim();
+            if (!DISCORD_USER_ID_PATTERN.test(moderatorId)) throw new Error('The response notification has no reachable moderator.');
             const moderator = await client.users.fetch(moderatorId);
             if (!moderator || typeof moderator.send !== 'function') throw new Error('The assigned moderator could not be reached by DM.');
             await moderator.send(payload);
@@ -169,19 +208,33 @@ async function handleWarFollowupPlayerReply(message, client) {
                 status: updated?.status || item.status,
                 case: updated || item.case
             };
-            const destinations = notificationDestinations(
-                guildState.moderators?.[updated?.assignedModeratorId || item.case?.assignedModeratorId],
-                Boolean(updated?.assignedModeratorId || item.case?.assignedModeratorId)
-            );
-            for (const destination of destinations) {
+            const freshGuildRecord = warFollowupStateStore.getGuild(guildState.guildId);
+            const plans = replyNotificationPlan(updatedItem, freshGuildRecord);
+            for (const plan of plans) {
                 try {
-                    await sendReplyNotification(client, guildState, updatedItem, message, destination);
+                    await sendReplyNotification(client, guildState, updatedItem, message, plan);
                 } catch (error) {
                     console.error('War Follow Up player response notification failed:', {
                         guildId: guildState.guildId,
-                        destination,
+                        destination: plan.destination,
+                        recipientId: plan.recipientId || '',
                         error: error?.message || String(error)
                     });
+                    if (plan.role === 'sender' && plan.destination === 'dm') {
+                        try {
+                            await sendReplyNotification(client, guildState, updatedItem, message, {
+                                recipientId: plan.recipientId,
+                                destination: 'channel',
+                                role: 'sender-fallback'
+                            });
+                        } catch (fallbackError) {
+                            console.error('War Follow Up player response sender fallback failed:', {
+                                guildId: guildState.guildId,
+                                recipientId: plan.recipientId,
+                                error: fallbackError?.message || String(fallbackError)
+                            });
+                        }
+                    }
                 }
             }
             break;
@@ -204,5 +257,7 @@ async function handleWarFollowupPlayerReply(message, client) {
 module.exports = {
     handleWarFollowupPlayerReply,
     responseText,
-    matchingCases
+    matchingCases,
+    legacyDmSenderId,
+    replyNotificationPlan
 };

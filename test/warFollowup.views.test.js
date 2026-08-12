@@ -448,6 +448,36 @@ test('My cases separates immediate work from replies and active recovery or remo
     assert.doesNotMatch(rendered, /in progress/i);
 });
 
+test('assignment picker makes taking ownership explicit while retaining manual reassignment', () => {
+    const workspace = buildWorkspace({
+        tag: '#PLAYER',
+        status: 'needs_review',
+        assignedModeratorId: '999999999999999999',
+        assignedModeratorName: 'Previous owner',
+        updatedAt: '2026-08-10T10:00:00.000Z'
+    });
+    const item = workspace.work.items[0];
+    const payload = serialize(views.buildReassignmentPayload(item, [{
+        discordId: '222222222222222222',
+        displayName: 'Current leader',
+        notificationMode: 'channel'
+    }, {
+        discordId: '333333333333333333',
+        displayName: 'Another leader',
+        notificationMode: 'dm'
+    }], {
+        currentModeratorId: '222222222222222222',
+        currentModeratorName: 'Current leader'
+    }));
+    const rendered = JSON.stringify(payload);
+
+    assert.match(rendered, /Take ownership/);
+    assert.match(rendered, /Another leader/);
+    assert.match(rendered, /Assign automatically/);
+    assert.match(rendered, /reassign the case/i);
+    assert.match(JSON.stringify(serialize(views.buildCasePayload(item, workspace, config()))), /Change owner/);
+});
+
 test('the moderation panel accepts an existing staff-only channel', () => {
     const publishPanel = command.data.toJSON().options.find(option => option.name === 'publish-panel');
     assert.match(publishPanel.description, /staff-only channel/i);
@@ -545,6 +575,7 @@ test('case views expose every admin lifecycle action in context', () => {
     assert.match(JSON.stringify(reviewJson), /Remove from community/);
     assert.match(JSON.stringify(reviewJson), /Set follow-up/);
     assert.match(JSON.stringify(reviewJson), /Record resolution/);
+    assert.match(JSON.stringify(reviewJson), /Assign owner/);
     assert.match(JSON.stringify(reviewJson), /Always ignore/);
     assert.match(JSON.stringify(reviewJson), /private note/i);
     assert.match(JSON.stringify(reviewJson), /War details/);

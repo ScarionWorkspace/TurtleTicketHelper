@@ -700,7 +700,13 @@ function buildCasePayload(item, workspace, config) {
 
     const coordination = new ActionRowBuilder();
     if (ACTIVE_CASE_STATUSES.has(item.status)) {
-        coordination.addComponents(actionButton('assignment', item.case?.assignedModeratorId || item.case?.handledBy ? 'Reassign' : 'Assign', ButtonStyle.Secondary, tag, token));
+        coordination.addComponents(actionButton(
+            'assignment',
+            item.case?.assignedModeratorId || item.case?.handledBy ? 'Change owner' : 'Assign owner',
+            ButtonStyle.Secondary,
+            tag,
+            token
+        ));
     }
     coordination.addComponents(
         actionButton('note', 'Add private note', ButtonStyle.Secondary, tag, token),
@@ -1044,15 +1050,27 @@ function buildAssignmentModal(item) {
     ]);
 }
 
-function buildReassignmentPayload(item, moderatorsRaw) {
+function buildReassignmentPayload(item, moderatorsRaw, optionsRaw = {}) {
     const moderators = Array.isArray(moderatorsRaw) ? moderatorsRaw : [];
+    const optionsValue = optionsRaw && typeof optionsRaw === 'object' ? optionsRaw : {};
+    const currentModeratorId = toText(optionsValue.currentModeratorId).trim();
+    const currentModeratorName = toText(optionsValue.currentModeratorName).trim();
+    const canTakeOwnership = moderators.some(moderator => moderator.discordId === currentModeratorId);
     const options = [
         new StringSelectMenuOptionBuilder()
             .setLabel('Assign automatically')
             .setDescription('Use current clan coverage and workload balancing.')
             .setValue('__auto__')
     ];
-    for (const moderator of moderators.slice(0, 24)) {
+    if (currentModeratorId && currentModeratorId !== item.case?.assignedModeratorId) {
+        options.push(new StringSelectMenuOptionBuilder()
+            .setLabel(truncate(`Take ownership${currentModeratorName ? ` · ${currentModeratorName}` : ''}`, 100))
+            .setDescription(canTakeOwnership
+                ? 'Assign this case directly to you.'
+                : 'Select this clan and accept assignments first.')
+            .setValue('__self__'));
+    }
+    for (const moderator of moderators.filter(moderator => moderator.discordId !== currentModeratorId).slice(0, 23)) {
         options.push(new StringSelectMenuOptionBuilder()
             .setLabel(truncate(moderator.displayName || moderator.discordId, 100))
             .setDescription(truncate(`${moderator.notificationMode || 'channel'} notifications · accepting`, 100))
@@ -1063,7 +1081,10 @@ function buildReassignmentPayload(item, moderatorsRaw) {
         embeds: [new EmbedBuilder()
             .setColor(COLORS.neutral)
             .setTitle(`Assign · ${truncate(item.player?.name || item.tag, 220)}`)
-            .setDescription(`Eligible moderators for **${safeInline(item.case?.sourceRosterTitle || item.player?.rosterTitle || 'this clan')}** are shown below.`)],
+            .setDescription([
+                `Eligible moderators for **${safeInline(item.case?.sourceRosterTitle || item.player?.rosterTitle || 'this clan')}** are shown below.`,
+                'Choose a person to reassign the case, take ownership yourself, or use automatic balancing.'
+            ].join('\n'))],
         components: [
             new ActionRowBuilder().addComponents(
                 new StringSelectMenuBuilder()

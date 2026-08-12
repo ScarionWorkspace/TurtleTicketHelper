@@ -5,6 +5,7 @@ const { test } = require('node:test');
 const workflow = require('../src/features/warFollowup/workflow');
 const views = require('../src/features/warFollowup/views');
 const service = require('../src/features/warFollowup/service');
+const moderation = require('../src/features/warFollowup/moderation');
 const { warFollowupStateStore } = require('../src/features/warFollowup/stateStore');
 const { buildCustomId } = require('../src/features/warFollowup/customIds');
 const { handleWarFollowupInteraction } = require('../src/features/warFollowup/interaction');
@@ -258,6 +259,7 @@ test('a delivered DM with a failed backend mutation retires the send controls an
     const { interaction, calls } = baseInteraction(
         buildCustomId('senddm', item.tag, views.caseToken(item)),
         {
+            user: { id: '333333333333333333', username: 'moderator' },
             client: {
                 users: {
                     fetch: async () => ({
@@ -280,6 +282,8 @@ test('a delivered DM with a failed backend mutation retires the send controls an
     assert.equal(mutations.length, 1);
     assert.equal(mutations[0][2].dmDeliveryMode, 'bot');
     assert.equal(mutations[0][2].dmMessageId, '555555555555555555');
+    assert.equal(mutations[0][2].dmSentByDiscordId, '333333333333333333');
+    assert.equal(mutations[0][2].dmSentByName, 'Moderator');
     assert.equal(calls.edits.length, 2);
     assert.match(calls.edits[0].content, /Sending DM/);
     assert.match(calls.edits[1].content, /DM was delivered/);
@@ -371,6 +375,54 @@ test('moderators can persist their own clan subscriptions and assignment availab
     assert.equal(await handleWarFollowupInteraction(toggle.interaction), true);
     assert.equal(patches[1].accepting, true);
     assert.equal(toggle.calls.edits.length, 2);
+});
+
+test('an eligible moderator can explicitly take ownership of another moderators case', async t => {
+    const workspace = buildWorkspace({
+        tag: '#P0LYGQ',
+        status: 'needs_review',
+        sourceClanTag: '#2LUCULP',
+        assignedModeratorId: '999999999999999999',
+        assignedModeratorName: 'Previous owner',
+        updatedAt: '2026-08-01T00:00:00.000Z'
+    });
+    const item = workspace.work.items[0];
+    const moderatorId = '222222222222222222';
+    const mutations = [];
+    const assignmentRecords = [];
+    t.mock.method(service, 'loadWorkspace', async () => workspace);
+    t.mock.method(service, 'mutateCase', async (...args) => {
+        mutations.push(args);
+        return { ...item.case, assignedAt: '2026-08-12T12:00:00.000Z' };
+    });
+    t.mock.method(moderation, 'getEligibleModerators', async () => [{
+        discordId: moderatorId,
+        displayName: 'Moderator',
+        notificationMode: 'channel',
+        accepting: true,
+        clanTags: ['#2LUCULP']
+    }]);
+    t.mock.method(warFollowupStateStore, 'getGuild', () => ({
+        config: { enabled: false, channelId: '', features: {} },
+        moderationHub: {},
+        moderators: {}
+    }));
+    t.mock.method(warFollowupStateStore, 'recordModeratorAssignment', (...args) => assignmentRecords.push(args));
+    const { interaction, calls } = baseInteraction(
+        buildCustomId('assignpick', item.tag, views.caseToken(item)),
+        {
+            user: { id: moderatorId, username: 'moderator' },
+            values: ['__self__']
+        }
+    );
+
+    assert.equal(await handleWarFollowupInteraction(interaction), true);
+    assert.equal(mutations.length, 1);
+    assert.equal(mutations[0][1], 'assign_owner');
+    assert.equal(mutations[0][2].assignedModeratorId, moderatorId);
+    assert.equal(mutations[0][2].assignedModeratorName, 'Moderator');
+    assert.equal(assignmentRecords.length, 1);
+    assert.equal(calls.edits.length, 2);
 });
 
 test('public Moderation Hub controls always open a private personalized response', async t => {

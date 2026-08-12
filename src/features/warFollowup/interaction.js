@@ -475,7 +475,9 @@ async function handleDirectMessage(interaction, tagRaw, viewTokenRaw) {
         await service.mutateCase(item, 'mark_dm_sent', {
             dmText: message,
             dmDeliveryMode: 'bot',
-            dmMessageId: dmMessage?.id || ''
+            dmMessageId: dmMessage?.id || '',
+            dmSentByDiscordId: interaction.user?.id || interaction.member?.id || '',
+            dmSentByName: service.getActorName(interaction)
         }, {
             actor: service.getActorName(interaction),
             seed: `${interaction.id}:send-dm:${item.tag}`
@@ -775,7 +777,11 @@ async function handleButtonOrSelect(interaction, parsed) {
             warFollowupStateStore.getGuild(interaction.guildId),
             moderation.caseClanTag(item)
         );
-        const payload = addStaleDataNotice(views.buildReassignmentPayload(item, eligible), workspace);
+        const identity = moderatorIdentity(interaction);
+        const payload = addStaleDataNotice(views.buildReassignmentPayload(item, eligible, {
+            currentModeratorId: identity.discordId,
+            currentModeratorName: identity.displayName
+        }), workspace);
         await interaction.editReply(views.asEditPayload(payload));
         return;
     }
@@ -814,6 +820,7 @@ async function handleButtonOrSelect(interaction, parsed) {
             moderation.caseClanTag(item)
         );
         const selected = String(interaction.values?.[0] || '');
+        const identity = moderatorIdentity(interaction);
         const chosen = selected === '__auto__'
             ? moderation.chooseModerator(eligible, workspace.work.items, {
                 avoidModeratorId: item.case?.assignedModeratorId,
@@ -821,6 +828,8 @@ async function handleButtonOrSelect(interaction, parsed) {
                 blockedUntil: item.case?.assignmentBlockedUntil,
                 nowMs: Date.now()
             })
+            : selected === '__self__'
+                ? eligible.find(candidate => candidate.discordId === identity.discordId) || null
             : eligible.find(candidate => candidate.discordId === selected) || null;
         let mutationAction = 'assign_owner';
         let patch = moderation.assignmentPatch(chosen);
@@ -828,7 +837,9 @@ async function handleButtonOrSelect(interaction, parsed) {
             mutationAction = 'unassign_owner';
             patch = {};
         } else if (!chosen) {
-            throw new Error('No eligible moderator is currently available for that assignment.');
+            throw new Error(selected === '__self__'
+                ? 'To take ownership, first select this clan in your moderation settings and turn on new assignments.'
+                : 'No eligible moderator is currently available for that assignment.');
         }
         const result = await service.mutateCase(item, mutationAction, patch, {
             actor: service.getActorName(interaction),
@@ -979,7 +990,9 @@ async function handleCaseModal(interaction, parsed) {
         patch = {
             dmText: String(interaction.fields.getTextInputValue('message') || '').trim(),
             dmDeliveryMode: 'manual',
-            dmMessageId: ''
+            dmMessageId: '',
+            dmSentByDiscordId: interaction.user?.id || interaction.member?.id || '',
+            dmSentByName: actor
         };
         if (!patch.dmText) throw new Error('The decision message cannot be empty.');
     } else if (action === 'assignform') {
