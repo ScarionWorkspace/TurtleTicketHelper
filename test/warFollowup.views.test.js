@@ -715,6 +715,41 @@ test('private activity remains available beyond the five-entry case summary', ()
     assert.match(JSON.stringify(secondPage), /Private activity 1\D/);
 });
 
+test('case and conversation views show outgoing DMs and player replies in chronological context', () => {
+    const conversation = Array.from({ length: 9 }, (_, index) => ({
+        id: `message-${index}`,
+        direction: index % 2 === 0 ? 'staff' : 'player',
+        at: `2026-08-${String(index + 1).padStart(2, '0')}T12:00:00.000Z`,
+        actor: index % 2 === 0 ? 'Moderator' : 'Player',
+        text: index === 0
+            ? 'Could you explain why the attack was missed?'
+            : index === 8
+                ? 'Thanks, that explains what happened.'
+                : `Conversation message ${index + 1}`,
+        messageId: `${String(index + 1).padStart(18, '1')}`,
+        deliveryMode: index % 2 === 0 ? 'bot' : 'manual'
+    }));
+    const workspace = buildWorkspace({
+        tag: '#PLAYER',
+        status: 'needs_review',
+        conversation,
+        updatedAt: '2026-08-10T01:00:00.000Z'
+    });
+    const item = workspace.work.items[0];
+    const caseView = JSON.stringify(serialize(views.buildCasePayload(item, workspace, config())));
+    const latestConversation = JSON.stringify(serialize(views.buildConversationPayload(item, 'latest')));
+
+    assert.match(caseView, /Recent conversation/);
+    assert.match(caseView, /Conversation \(9\)/);
+    assert.match(caseView, /Reply to player/);
+    assert.match(caseView, /Thanks, that explains/);
+    assert.match(latestConversation, /Private conversation/);
+    assert.match(latestConversation, /Sent by Moderator/);
+    assert.match(latestConversation, /Player replied/);
+    assert.match(latestConversation, /Thanks, that explains/);
+    assert.match(latestConversation, /Back to follow-up/);
+});
+
 test('large Discord-gap and ignored-account lists remain fully pageable', () => {
     const players = Array.from({ length: 55 }, (_, index) => ({
         tag: `#TAG${index}`,

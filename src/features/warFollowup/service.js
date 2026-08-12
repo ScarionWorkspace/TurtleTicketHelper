@@ -276,6 +276,7 @@ async function recordPlayerResponse(item, responseText, responseMessageId, optio
         action: 'player_response',
         responseText: String(responseText || '').trim(),
         responseMessageId: String(responseMessageId || '').trim(),
+        responseToMessageId: String(options.responseToMessageId || '').trim(),
         mutationId: options.mutationId || mutationId(options.seed || `player-response:${item?.tag}:${responseMessageId}`)
     };
     const result = await rosterBackend.mutateWarFollowupCase(request, options);

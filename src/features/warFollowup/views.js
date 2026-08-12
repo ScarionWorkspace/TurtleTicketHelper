@@ -44,6 +44,16 @@ function safeInline(value) {
         .trim();
 }
 
+function safeMultiline(value) {
+    return toText(value)
+        .replace(/[`*_~|>\[\]\\]/g, '\\$&')
+        .replace(/@/g, '@\u200b')
+        .replace(/\r\n?/g, '\n')
+        .replace(/[ \t]+/g, ' ')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+}
+
 function rosterToken(rosterIdRaw) {
     return workflow.stableRevision(toText(rosterIdRaw).trim());
 }
@@ -410,6 +420,45 @@ function activityValue(item) {
     }).join('\n').slice(0, 1024);
 }
 
+function conversationEntries(item) {
+    return Array.isArray(item?.case?.conversation) ? item.case.conversation : [];
+}
+
+function conversationBlock(entry, maxTextLength = 2000) {
+    const staff = entry?.direction === 'staff';
+    const speaker = staff
+        ? `Sent by ${safeInline(entry.actor || 'Staff')}`
+        : 'Player replied';
+    const meta = [speaker, workflow.formatDate(entry?.at)].filter(Boolean).join(' / ');
+    return `**${meta}**\n${truncate(safeMultiline(entry?.text), maxTextLength)}`;
+}
+
+function recentConversationValue(item) {
+    const entries = conversationEntries(item).slice(-2);
+    if (!entries.length) return '';
+    return entries.map(entry => conversationBlock(entry, 380)).join('\n\n').slice(0, 1024);
+}
+
+function conversationPages(entriesRaw) {
+    const entries = Array.isArray(entriesRaw) ? entriesRaw : [];
+    const pages = [];
+    let current = [];
+    let currentLength = 0;
+    for (const entry of entries) {
+        const block = conversationBlock(entry, 2000);
+        const addition = block.length + (current.length ? 2 : 0);
+        if (current.length && currentLength + addition > 3800) {
+            pages.push(current);
+            current = [];
+            currentLength = 0;
+        }
+        current.push({ entry, block });
+        currentLength += block.length + (current.length > 1 ? 2 : 0);
+    }
+    if (current.length) pages.push(current);
+    return pages.length ? pages : [[]];
+}
+
 function hasEvidenceData(evidenceRaw) {
     const evidence = evidenceRaw && typeof evidenceRaw === 'object' ? evidenceRaw : {};
     return Boolean(
@@ -503,7 +552,48 @@ function buildActivityPayload(item, pageRaw = 0) {
             new ActionRowBuilder().addComponents(
                 actionButton('activity', 'Previous', ButtonStyle.Secondary, item.tag, token, String(page - 1)).setDisabled(page <= 0),
                 actionButton('case', 'Back to follow-up', ButtonStyle.Primary, item.tag),
-                actionButton('activity', 'Next', ButtonStyle.Secondary, item.tag, token, String(page + 1)).setDisabled(page >= pageCount - 1)
+                actionButton('activity', 'Next', ButtonStyle.Secondary, item.tag, token, String(page + 1)).setDisabled(page >= pageCount - 1),
+                actionButton('conversation', 'Conversation', ButtonStyle.Secondary, item.tag, token, 'latest')
+                    .setDisabled(conversationEntries(item).length === 0)
+            ),
+            navigationRow()
+        ],
+        flags: EPHEMERAL,
+        allowedMentions: { parse: [] }
+    };
+}
+
+function buildConversationPayload(item, pageRaw = 'latest') {
+    if (!item) return buildCasePayload(null);
+    const entries = conversationEntries(item);
+    const pages = conversationPages(entries);
+    const requestedPage = pageRaw === 'latest' ? pages.length - 1 : Number(pageRaw);
+    const page = Math.min(Math.max(0, Number.isFinite(requestedPage) ? requestedPage : pages.length - 1), pages.length - 1);
+    const visible = pages[page];
+    const firstIndex = visible.length ? entries.indexOf(visible[0].entry) + 1 : 0;
+    const lastIndex = visible.length ? firstIndex + visible.length - 1 : 0;
+    const trimmed = Math.max(0, Number(item.case?.conversationTrimmedCount) || 0);
+    const description = visible.length
+        ? visible.map(value => value.block).join('\n\n')
+        : 'No sent messages or player replies have been recorded for this case yet.';
+    const token = caseToken(item);
+    const footerParts = [
+        visible.length ? `Messages ${firstIndex}-${lastIndex} of ${entries.length}` : 'No messages',
+        `page ${page + 1}/${pages.length}`,
+        trimmed ? `${trimmed} oldest message${trimmed === 1 ? '' : 's'} archived by the storage limit` : ''
+    ].filter(Boolean);
+    return {
+        embeds: [new EmbedBuilder()
+            .setColor(COLORS.neutral)
+            .setTitle(truncate(`Private conversation - ${item.player?.name || item.tag}`, 256))
+            .setDescription(description)
+            .setFooter({ text: footerParts.join(' / ') })],
+        components: [
+            new ActionRowBuilder().addComponents(
+                actionButton('conversation', 'Previous', ButtonStyle.Secondary, item.tag, token, String(page - 1)).setDisabled(page <= 0),
+                actionButton('case', 'Back to follow-up', ButtonStyle.Primary, item.tag),
+                actionButton('conversation', 'Next', ButtonStyle.Secondary, item.tag, token, String(page + 1)).setDisabled(page >= pages.length - 1),
+                actionButton('activity', 'Audit log', ButtonStyle.Secondary, item.tag, token, '0')
             ),
             navigationRow()
         ],
@@ -598,18 +688,19 @@ function buildCasePayload(item, workspace, config) {
         embed.addFields({ name: 'Rejoin monitoring', value: 'Active. If this account appears in any connected clan again, a new removal review will open automatically.' });
     }
     if (item.case?.dmText && item.status === 'needs_dm') {
-        embed.addFields({ name: 'Decision message', value: truncate(toText(item.case.dmText).replace(/`/g, "'"), 1000) });
+        embed.addFields({ name: 'Prepared message (not sent yet)', value: truncate(safeMultiline(item.case.dmText), 1000) });
     }
-    if (item.case?.playerResponse) {
+    const recentConversation = recentConversationValue(item);
+    if (recentConversation) {
         embed.addFields({
-            name: `Player response${item.case.playerResponseAt ? ` · ${workflow.formatDate(item.case.playerResponseAt)}` : ''}`,
-            value: truncate(toText(item.case.playerResponse).replace(/`/g, "'"), 1000)
+            name: `Recent conversation · ${conversationEntries(item).length} message${conversationEntries(item).length === 1 ? '' : 's'}`,
+            value: recentConversation
         });
     }
     if (item.status === 'waiting' && item.case?.contactPurpose === 'general' && item.case?.dmDeliveryMode === 'bot' && item.case?.dmMessageId && config?.features?.playerReplies === true) {
         embed.addFields({
             name: 'Reply capture',
-            value: 'Replies to the bot DM are captured and forwarded privately to the assigned moderator. No automatic decision is made.'
+            value: 'Player messages are added to the private conversation for 72 hours after the bot DM. Replies are forwarded privately; no automatic decision is made.'
         });
     }
     if (item.case) embed.addFields({ name: 'Recent private activity', value: activityValue(item) });
@@ -631,7 +722,13 @@ function buildCasePayload(item, workspace, config) {
             actionButton('remove', 'Remove from community', ButtonStyle.Danger, tag, token)
         ));
         components.push(new ActionRowBuilder().addComponents(
-            actionButton('contact', 'Contact player', ButtonStyle.Primary, tag, token),
+            actionButton(
+                'contact',
+                conversationEntries(item).some(entry => entry.direction === 'player') ? 'Reply to player' : 'Contact player',
+                ButtonStyle.Primary,
+                tag,
+                token
+            ),
             actionButton('wait', 'Set follow-up', ButtonStyle.Secondary, tag, token),
             actionButton('resolveask', 'Record resolution', ButtonStyle.Success, tag, token),
             actionButton('escalate', 'Escalate', ButtonStyle.Danger, tag, token)
@@ -711,7 +808,9 @@ function buildCasePayload(item, workspace, config) {
     coordination.addComponents(
         actionButton('note', 'Add private note', ButtonStyle.Secondary, tag, token),
         actionButton('evidence', 'War details', ButtonStyle.Secondary, tag, token),
-        actionButton('activity', 'Activity', ButtonStyle.Secondary, tag, token, '0')
+        conversationEntries(item).length
+            ? actionButton('conversation', `Conversation (${conversationEntries(item).length})`, ButtonStyle.Secondary, tag, token, 'latest')
+            : actionButton('activity', 'Activity', ButtonStyle.Secondary, tag, token, '0')
     );
     if (!removedMonitoring && !removalEvasion) coordination.addComponents(actionButton('ignoreask', 'Always ignore', ButtonStyle.Danger, tag, token));
     components.push(coordination);
@@ -1020,8 +1119,11 @@ function buildMarkDmModal(item) {
 
 function buildContactModal(item) {
     const playerName = safeInline(item.player?.name || item.tag);
-    return modal('Prepare player contact', buildCustomId('contactform', item.tag, caseToken(item)), [
-        textInput('message', 'Message to the player', `Hi ${playerName}. A leader is reviewing your recent war activity and would like to follow up with you.`, {
+    const isReply = conversationEntries(item).some(entry => entry.direction === 'player');
+    return modal(isReply ? 'Prepare reply to player' : 'Prepare player contact', buildCustomId('contactform', item.tag, caseToken(item)), [
+        textInput('message', 'Message to the player', isReply
+            ? `Hi ${playerName}. Thanks for getting back to us. We would like to follow up about your recent war activity.`
+            : `Hi ${playerName}. A leader is reviewing your recent war activity and would like to follow up with you.`, {
             style: TextInputStyle.Paragraph,
             maxLength: 2000
         })
@@ -1407,6 +1509,7 @@ module.exports = {
     buildCasePayload,
     buildEvidencePayload,
     buildActivityPayload,
+    buildConversationPayload,
     buildConfirmationPayload,
     buildHeroRosterPicker,
     buildGapsPayload,

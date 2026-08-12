@@ -31,6 +31,7 @@ const BUSY_LABELS = Object.freeze({
     case: 'Loading case\u2026',
     evidence: 'Loading evidence\u2026',
     activity: 'Loading activity\u2026',
+    conversation: 'Loading conversation\u2026',
     hero: 'Loading recovery rosters\u2026',
     extend: 'Loading recovery rosters\u2026',
     assignment: 'Loading moderators\u2026',
@@ -694,6 +695,14 @@ async function handleButtonOrSelect(interaction, parsed) {
             const item = findItem(workspace, first);
             assertCurrentCaseView(item, second);
             return views.buildActivityPayload(item, third);
+        });
+        return;
+    }
+    if (action === 'conversation') {
+        await renderView(interaction, workspace => {
+            const item = findItem(workspace, first);
+            assertCurrentCaseView(item, second);
+            return views.buildConversationPayload(item, third);
         });
         return;
     }

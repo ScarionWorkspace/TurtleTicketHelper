@@ -74,11 +74,20 @@ function setup(t, workspace, options = {}) {
     t.mock.method(service, 'recordPlayerResponse', async (...args) => {
         mutations.push(args);
         const current = workspace.work.items[0].case;
+        const at = '2026-08-12T12:00:00.000Z';
         return {
             ...current,
             status: 'needs_review',
             playerResponse: args[1],
-            playerResponseAt: '2026-08-12T12:00:00.000Z'
+            playerResponseAt: at,
+            conversation: (current.conversation || []).concat([{
+                id: `player:${args[2]}`,
+                direction: 'player',
+                at,
+                actor: 'Player',
+                text: args[1],
+                messageId: args[2]
+            }])
         };
     });
     const channel = {
@@ -125,10 +134,44 @@ test('captures an opted-in player reply, moves the case back to review, and priv
     assert.equal(setupState.mutations.length, 1);
     assert.equal(setupState.mutations[0][1], 'I had a family emergency and could not attack.');
     assert.equal(setupState.mutations[0][2], '777777777777777777');
+    assert.equal(setupState.mutations[0][3].responseToMessageId, '');
     assert.equal(setupState.moderatorMessages.length, 1);
     assert.match(setupState.moderatorMessages[0].embeds[0].description, /family emergency/);
     assert.equal(setupState.channelMessages.length, 0);
     assert.match(setupState.playerMessages[0].content, /forwarded to the moderation team/);
+});
+
+test('moderator notifications include the outgoing message and latest player reply as conversation context', async t => {
+    const workspace = baseWorkspace();
+    workspace.work.items[0].case.conversation = [{
+        id: 'staff:888888888888888888',
+        direction: 'staff',
+        at: '2026-08-12T10:00:00.000Z',
+        actor: 'Contact Sender',
+        text: 'Could you tell us why your CWL attack was missed?',
+        messageId: '888888888888888888',
+        deliveryMode: 'bot'
+    }];
+    const setupState = setup(t, workspace, { mode: 'dm' });
+
+    await handleWarFollowupPlayerReply(setupState.message, setupState.client);
+
+    const description = setupState.moderatorMessages[0].embeds[0].description;
+    assert.match(description, /Could you tell us why/i);
+    assert.match(description, /family emergency/i);
+    assert.ok(description.indexOf('Could you tell us why') < description.indexOf('family emergency'));
+});
+
+test('a follow-up player message is appended while the 72-hour capture window remains open', async t => {
+    const workspace = baseWorkspace('needs_review');
+    workspace.work.items[0].case.replyCaptureUntil = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    workspace.work.items[0].case.playerResponse = 'First part of my explanation.';
+    const setupState = setup(t, workspace, { mode: 'dm' });
+
+    const result = await handleWarFollowupPlayerReply(setupState.message, setupState.client);
+
+    assert.deepEqual(result, { handled: true, captured: true });
+    assert.equal(setupState.mutations.length, 1);
 });
 
 test('channel notification mode sends one private-content-safe moderator ping', async t => {
@@ -198,6 +241,7 @@ test('a Discord message reply identifies the correct case when one player has tw
     assert.deepEqual(result, { handled: true, captured: true });
     assert.equal(setupState.mutations.length, 1);
     assert.equal(setupState.mutations[0][0].tag, '#P0LYGQ');
+    assert.equal(setupState.mutations[0][3].responseToMessageId, '888888888888888888');
 });
 
 test('the contact sender always receives the player response even when another moderator owns the case', async t => {

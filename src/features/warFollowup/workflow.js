@@ -691,10 +691,55 @@ function buildSignals(evidenceRaw, settingsRaw) {
     return signals;
 }
 
+function normalizeConversation(caseRaw) {
+    const value = caseRaw && typeof caseRaw === 'object' ? caseRaw : {};
+    const messages = (Array.isArray(value.conversation) ? value.conversation : [])
+        .map((entry, index) => {
+            const direction = String(entry?.direction || '').trim().toLowerCase();
+            const atMs = parseMs(entry?.at);
+            const messageText = String(entry?.text || '').trim().slice(0, 2000);
+            if (!['staff', 'player'].includes(direction) || !atMs || !messageText) return null;
+            return {
+                id: String(entry?.id || `${direction}:${entry?.messageId || entry?.at}:${index}`).trim().slice(0, 160),
+                direction,
+                at: new Date(atMs).toISOString(),
+                actor: String(entry?.actor || (direction === 'player' ? 'Player' : 'Staff')).trim().slice(0, 80),
+                text: messageText,
+                messageId: /^\d{17,20}$/.test(String(entry?.messageId || '').trim()) ? String(entry.messageId).trim() : '',
+                deliveryMode: direction === 'staff' && String(entry?.deliveryMode || '').toLowerCase() === 'bot' ? 'bot' : 'manual'
+            };
+        })
+        .filter(Boolean);
+    if (!messages.length && value.dmText && parseMs(value.dmSentAt) > 0) {
+        messages.push({
+            id: `legacy-staff:${value.dmMessageId || value.dmSentAt}`,
+            direction: 'staff',
+            at: new Date(parseMs(value.dmSentAt)).toISOString(),
+            actor: String(value.dmSentByName || 'Staff').trim().slice(0, 80),
+            text: String(value.dmText).trim().slice(0, 2000),
+            messageId: /^\d{17,20}$/.test(String(value.dmMessageId || '').trim()) ? String(value.dmMessageId).trim() : '',
+            deliveryMode: String(value.dmDeliveryMode || '').toLowerCase() === 'bot' ? 'bot' : 'manual'
+        });
+        if (value.playerResponse && parseMs(value.playerResponseAt) > 0) {
+            messages.push({
+                id: `legacy-player:${value.playerResponseMessageId || value.playerResponseAt}`,
+                direction: 'player',
+                at: new Date(parseMs(value.playerResponseAt)).toISOString(),
+                actor: 'Player',
+                text: String(value.playerResponse).trim().slice(0, 2000),
+                messageId: /^\d{17,20}$/.test(String(value.playerResponseMessageId || '').trim()) ? String(value.playerResponseMessageId).trim() : '',
+                deliveryMode: 'manual'
+            });
+        }
+    }
+    return messages.sort((left, right) => parseMs(left.at) - parseMs(right.at)).slice(-40);
+}
+
 function normalizeCase(raw) {
     const value = raw && typeof raw === 'object' ? raw : {};
     const tag = normalizeTag(value.tag);
     if (!tag) return null;
+    const conversation = normalizeConversation(value);
 
     return {
         tag,
@@ -719,6 +764,9 @@ function normalizeCase(raw) {
         dmMessageId: '',
         dmSentByDiscordId: '',
         dmSentByName: '',
+        replyCaptureUntil: '',
+        conversation: [],
+        conversationTrimmedCount: 0,
         resolutionNote: '',
         escalatedAt: '',
         escalatedBy: '',
@@ -739,6 +787,8 @@ function normalizeCase(raw) {
         evidence: { regular: emptyStats(), cwl: emptyStats(), regularEvents: [], cwlEvents: [] },
         activity: [],
         ...value,
+        conversation,
+        conversationTrimmedCount: Math.max(0, toInt(value.conversationTrimmedCount)),
         tag
     };
 }

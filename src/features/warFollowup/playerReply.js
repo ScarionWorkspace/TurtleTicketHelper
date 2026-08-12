@@ -21,6 +21,28 @@ function cleanInline(value, maxLength = 120) {
         .slice(0, maxLength);
 }
 
+function cleanMessage(value, maxLength = 700) {
+    return text(value)
+        .replace(/[`*_~|>\[\]\\]/g, '\\$&')
+        .replace(/@/g, '@\u200b')
+        .replace(/\r\n?/g, '\n')
+        .replace(/[ \t]+/g, ' ')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim()
+        .slice(0, maxLength);
+}
+
+function conversationExcerpt(caseValue) {
+    const messages = Array.isArray(caseValue?.conversation) ? caseValue.conversation.slice(-4) : [];
+    if (!messages.length) return `**Player replied**\n${cleanMessage(caseValue?.playerResponse, 1200)}`;
+    return messages.map(message => {
+        const staff = message?.direction === 'staff';
+        const label = staff ? `Sent by ${cleanInline(message?.actor || 'Staff')}` : 'Player replied';
+        const when = workflow.formatDate(message?.at);
+        return `**${label}${when ? ` · ${when}` : ''}**\n${cleanMessage(message?.text)}`;
+    }).join('\n\n').slice(0, 3000);
+}
+
 function responseText(message) {
     const content = text(message?.content).trim();
     const attachments = message?.attachments?.values
@@ -39,18 +61,22 @@ function isDirectMessage(message) {
 }
 
 function matchingCases(workspace, discordId, referencedMessageId = '') {
+    const nowMs = Date.now();
+    const referencedId = text(referencedMessageId).trim();
     const candidates = (workspace?.work?.items || [])
         .filter(item => {
             const itemId = text(item?.player?.discordId || item?.case?.discordId).trim();
+            const exactReply = Boolean(referencedId && text(item.case?.dmMessageId).trim() === referencedId);
+            const captureWindowOpen = workflow.parseMs(item.case?.replyCaptureUntil) >= nowMs;
+            const captureState = item.status === 'waiting' || (item.status === 'needs_review' && (captureWindowOpen || exactReply));
             return itemId === discordId &&
-                item.status === 'waiting' &&
+                captureState &&
                 item.case?.contactPurpose === 'general' &&
                 item.case?.dmDeliveryMode === 'bot' &&
                 DISCORD_USER_ID_PATTERN.test(text(item.case?.dmMessageId).trim()) &&
                 workflow.parseMs(item.case?.dmSentAt) > 0;
         })
         .sort((left, right) => workflow.parseMs(right.case?.dmSentAt) - workflow.parseMs(left.case?.dmSentAt));
-    const referencedId = text(referencedMessageId).trim();
     return referencedId
         ? candidates.filter(item => text(item.case?.dmMessageId).trim() === referencedId)
         : candidates;
@@ -104,7 +130,6 @@ function responseNotification(item, plan, staffRoleId) {
     const recipientId = text(plan?.recipientId).trim();
     const hasRecipient = DISCORD_USER_ID_PATTERN.test(recipientId);
     const destination = plan?.destination === 'dm' ? 'dm' : 'channel';
-    const response = text(caseValue.playerResponse).trim();
     const name = cleanInline(item.player?.name || caseValue.name || item.tag);
     const tag = workflow.normalizeTag(item.tag);
     const mention = hasRecipient ? `<@${recipientId}>` : (DISCORD_USER_ID_PATTERN.test(staffRoleId) ? `<@&${staffRoleId}>` : '');
@@ -115,7 +140,8 @@ function responseNotification(item, plan, staffRoleId) {
         `**${name}** · \`${tag}\``,
         replyContext,
         '',
-        `**Player response:**\n${response}`,
+        '**Recent conversation**',
+        conversationExcerpt(caseValue),
         '',
         'Open War Follow Up to review and decide how to proceed.'
     ].join('\n');
@@ -200,7 +226,10 @@ async function handleWarFollowupPlayerReply(message, client) {
                 item,
                 reply,
                 message.id,
-                { seed: `player-response:${guildState.guildId}:${message.id}` }
+                {
+                    seed: `player-response:${guildState.guildId}:${message.id}`,
+                    responseToMessageId: message.reference?.messageId || ''
+                }
             );
             captured = true;
             const updatedItem = {
