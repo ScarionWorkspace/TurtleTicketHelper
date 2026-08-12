@@ -9,6 +9,7 @@ const SCHEDULER_PRIVATE_CACHE_TTL_MS = 10 * 60 * 1000;
 const INTERACTION_PUBLIC_CACHE_TTL_MS = 30 * 1000;
 const INTERACTION_PRIVATE_CACHE_TTL_MS = 30 * 1000;
 const INTERACTION_VIEW_CACHE_TTL_MS = 15 * 60 * 1000;
+const INTERACTION_STALE_FALLBACK_MAX_AGE_MS = 15 * 60 * 1000;
 
 let privateStateCache = null;
 let privateStateCachedAt = 0;
@@ -33,6 +34,24 @@ function invalidatePrivateStateCache() {
     latestWorkspaceCachedAt = 0;
 }
 
+function stalePrivateStateFallback(error, options) {
+    const cachedAgeMs = Date.now() - privateStateCachedAt;
+    if (
+        options.allowStaleOnError !== true ||
+        !privateStateCache ||
+        privateStateCachedAt <= 0 ||
+        cachedAgeMs > (options.staleMaxAgeMs ?? INTERACTION_STALE_FALLBACK_MAX_AGE_MS)
+    ) {
+        throw error;
+    }
+    const fallback = clone(privateStateCache);
+    Object.defineProperty(fallback, '__staleCache', {
+        value: { cachedAt: privateStateCachedAt, cause: error },
+        enumerable: false
+    });
+    return fallback;
+}
+
 async function readPrivateState(options = {}) {
     const cacheTtlMs = options.force === true
         ? 0
@@ -47,7 +66,11 @@ async function readPrivateState(options = {}) {
         options.force !== true &&
         pendingPrivateStateRead?.generation === generation
     ) {
-        return clone(await pendingPrivateStateRead.promise);
+        try {
+            return clone(await pendingPrivateStateRead.promise);
+        } catch (error) {
+            return stalePrivateStateFallback(error, options);
+        }
     }
 
     const requestId = ++privateStateRequestSequence;
@@ -80,7 +103,11 @@ async function readPrivateState(options = {}) {
     });
     pendingPrivateStateRead = pending;
 
-    return clone(await pending.promise);
+    try {
+        return clone(await pending.promise);
+    } catch (error) {
+        return stalePrivateStateFallback(error, options);
+    }
 }
 
 async function loadWorkspace(options = {}) {
@@ -95,6 +122,7 @@ async function loadWorkspace(options = {}) {
         }),
         readPrivateState({
             force: options.forcePrivate === true,
+            allowStaleOnError: options.allowStalePrivateOnError === true,
             cacheTtlMs: options.privateCacheTtlMs ?? (
                 scheduler ? SCHEDULER_PRIVATE_CACHE_TTL_MS : INTERACTION_PRIVATE_CACHE_TTL_MS
             ),
@@ -109,6 +137,12 @@ async function loadWorkspace(options = {}) {
     const workspace = {
         rosterData,
         privateState,
+        freshness: privateState?.__staleCache
+            ? {
+                privateStateStale: true,
+                privateStateCachedAt: privateState.__staleCache.cachedAt
+            }
+            : { privateStateStale: false },
         work: workflow.buildWorkItems(rosterData, privateState)
     };
     if (privateStateGeneration === generation && latestWorkspaceLoad === loadId) {
@@ -265,6 +299,7 @@ module.exports = {
     SCHEDULER_PRIVATE_CACHE_TTL_MS,
     INTERACTION_PRIVATE_CACHE_TTL_MS,
     INTERACTION_VIEW_CACHE_TTL_MS,
+    INTERACTION_STALE_FALLBACK_MAX_AGE_MS,
     loadWorkspace,
     readPrivateState,
     peekWorkspace,

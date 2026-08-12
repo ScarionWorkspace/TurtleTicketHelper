@@ -122,6 +122,20 @@ function buildBusyPayload(interaction, label = busyLabel(interaction)) {
     };
 }
 
+function addStaleDataNotice(payloadRaw, workspace) {
+    if (workspace?.freshness?.privateStateStale !== true) return payloadRaw;
+    const payload = payloadRaw && typeof payloadRaw === 'object' ? { ...payloadRaw } : {};
+    const cachedAtSeconds = Math.floor(Number(workspace.freshness.privateStateCachedAt) / 1000);
+    const age = cachedAtSeconds > 0 ? ` from <t:${cachedAtSeconds}:R>` : '';
+    const notice = `\u26a0\ufe0f **Backend temporarily unavailable** \u2014 showing the last confirmed case data${age}. No changes were made.`;
+    const original = String(payload.content || '');
+    payload.content = original && notice.length + original.length + 2 <= 2000
+        ? `${notice}\n\n${original}`
+        : notice;
+    payload.allowedMentions = { parse: [] };
+    return payload;
+}
+
 async function beginBusyUpdate(interaction, label = busyLabel(interaction)) {
     const restorePayload = messageSnapshot(interaction);
     await interaction.deferUpdate();
@@ -327,8 +341,11 @@ async function renderView(interaction, buildPayload, options = {}) {
     if (updateExisting) await beginBusyUpdate(interaction);
     else await interaction.deferReply({ flags: views.EPHEMERAL });
 
-    const workspace = await service.loadWorkspace({ forcePrivate: options.forcePrivate === true });
-    const payload = buildPayload(workspace, getConfig(interaction));
+    const workspace = await service.loadWorkspace({
+        forcePrivate: options.forcePrivate === true,
+        allowStalePrivateOnError: true
+    });
+    const payload = addStaleDataNotice(buildPayload(workspace, getConfig(interaction)), workspace);
     await interaction.editReply(views.asEditPayload(payload));
     return workspace;
 }
@@ -560,8 +577,12 @@ async function handleButtonOrSelect(interaction, parsed) {
     if (action === 'coverage') {
         if (isEphemeralSource(interaction)) await beginBusyUpdate(interaction);
         else await interaction.deferReply({ flags: views.EPHEMERAL });
-        const workspace = await service.loadWorkspace({ forcePrivate: true });
-        await interaction.editReply(views.asEditPayload(await buildCoverageForInteraction(interaction, workspace)));
+        const workspace = await service.loadWorkspace({
+            forcePrivate: true,
+            allowStalePrivateOnError: true
+        });
+        const payload = addStaleDataNotice(await buildCoverageForInteraction(interaction, workspace), workspace);
+        await interaction.editReply(views.asEditPayload(payload));
         return;
     }
     if (action === 'modclans') {
@@ -735,7 +756,10 @@ async function handleButtonOrSelect(interaction, parsed) {
     if (action === 'assignment') {
         if (isEphemeralSource(interaction)) await beginBusyUpdate(interaction);
         else await interaction.deferReply({ flags: views.EPHEMERAL });
-        const workspace = await service.loadWorkspace({ forcePrivate: true });
+        const workspace = await service.loadWorkspace({
+            forcePrivate: true,
+            allowStalePrivateOnError: true
+        });
         const item = findItem(workspace, first);
         assertCurrentCaseView(item, second);
         const eligible = await moderation.getEligibleModerators(
@@ -743,7 +767,8 @@ async function handleButtonOrSelect(interaction, parsed) {
             warFollowupStateStore.getGuild(interaction.guildId),
             moderation.caseClanTag(item)
         );
-        await interaction.editReply(views.asEditPayload(views.buildReassignmentPayload(item, eligible)));
+        const payload = addStaleDataNotice(views.buildReassignmentPayload(item, eligible), workspace);
+        await interaction.editReply(views.asEditPayload(payload));
         return;
     }
     if (action === 'contact' || action === 'wait') {

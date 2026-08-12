@@ -11,6 +11,7 @@ const SEASON_EVENT_MAX_ATTEMPTS = 2;
 const SEASON_EVENT_RETRY_DELAY_MS = 250;
 const WAR_FOLLOWUP_TIMEOUT_MS = 45_000;
 const WAR_FOLLOWUP_MAX_ATTEMPTS = 2;
+const APPS_SCRIPT_RESULT_RETRY_DELAYS_MS = Object.freeze([350, 1_000]);
 
 function normalizeBackendUrl(value) {
     const raw = String(value || '').trim();
@@ -178,12 +179,21 @@ async function fetchRosterBackendResponse(requestUrl, requestInit) {
         });
     }
 
-    const response = await fetch(redirectUrl, {
-        method: 'GET',
-        redirect: 'error',
-        headers: { 'Accept': 'application/json' },
-        signal: requestInit.signal
-    });
+    let response = null;
+    for (let attempt = 0; attempt <= APPS_SCRIPT_RESULT_RETRY_DELAYS_MS.length; attempt += 1) {
+        response = await fetch(redirectUrl, {
+            method: 'GET',
+            redirect: 'error',
+            headers: { 'Accept': 'application/json' },
+            signal: requestInit.signal
+        });
+        if (Number(response.status) !== 404 || attempt >= APPS_SCRIPT_RESULT_RETRY_DELAYS_MS.length) break;
+
+        // Google occasionally publishes the one-time Apps Script result URL a
+        // moment after returning its redirect. Retry that result URL instead of
+        // executing the Apps Script method again and consuming more quota.
+        await wait(APPS_SCRIPT_RESULT_RETRY_DELAYS_MS[attempt]);
+    }
     return { response, appsScriptRedirect: true };
 }
 

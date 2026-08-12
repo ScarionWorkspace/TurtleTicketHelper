@@ -234,6 +234,31 @@ test('Apps Script redirects are followed explicitly without forwarding credentia
     assert.doesNotMatch(JSON.stringify(calls[1]), /secret/);
 });
 
+test('a briefly unavailable Apps Script result is retried without re-running the backend method', async () => {
+    const redirectUrl = 'https://script.googleusercontent.com/macros/echo?user_content_key=opaque&lib=library';
+    const client = loadClient({
+        url: 'https://script.google.com/macros/s/deployment-id/exec'
+    });
+    const calls = [];
+    global.fetch = async (url, init) => {
+        calls.push({ url: String(url), init });
+        if (calls.length === 1) return makeRedirectResponse(redirectUrl);
+        if (calls.length === 2) {
+            return makeErrorResponse(404, '<!doctype html><html><body>Not ready</body></html>');
+        }
+        return makeJsonResponse({ ok: true, result: { cases: [], settings: {} } });
+    };
+
+    await client.getWarFollowupState({ maxAttempts: 1 });
+    assert.equal(calls.length, 3);
+    assert.equal(calls[0].init.method, 'POST');
+    assert.equal(calls[1].url, redirectUrl);
+    assert.equal(calls[2].url, redirectUrl);
+    assert.equal(calls[1].init.method, 'GET');
+    assert.equal(calls[2].init.method, 'GET');
+    assert.equal(calls.filter(call => call.init.method === 'POST').length, 1);
+});
+
 test('unexpected backend redirects are rejected without forwarding the request body', async () => {
     const client = loadClient();
     let calls = 0;

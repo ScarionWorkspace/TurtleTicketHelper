@@ -90,3 +90,48 @@ test('interactive workspace reads reuse a short private cache and expose only a 
     service.invalidatePrivateStateCache();
     assert.equal(service.peekWorkspace(), null);
 });
+
+test('read-only workspace loads fall back to recent confirmed private state during a backend failure', async () => {
+    let backendReads = 0;
+    const service = loadService({
+        getWarFollowupState: async () => {
+            backendReads += 1;
+            if (backendReads === 1) {
+                return {
+                    settings: { moderatorNames: ['Confirmed leader'] },
+                    cases: [{ tag: '#P0LYGQ', status: 'needs_review' }]
+                };
+            }
+            throw new Error('temporary Apps Script result failure');
+        }
+    });
+
+    await service.loadWorkspace({ forcePrivate: true });
+    const fallback = await service.loadWorkspace({
+        forcePrivate: true,
+        allowStalePrivateOnError: true
+    });
+
+    assert.equal(backendReads, 2);
+    assert.equal(fallback.freshness.privateStateStale, true);
+    assert.equal(Number.isFinite(fallback.freshness.privateStateCachedAt), true);
+    assert.deepEqual(fallback.privateState.settings.moderatorNames, ['Confirmed leader']);
+    assert.equal(fallback.privateState.cases[0].tag, '#P0LYGQ');
+});
+
+test('authoritative workspace loads still fail instead of using cached state', async () => {
+    let backendReads = 0;
+    const service = loadService({
+        getWarFollowupState: async () => {
+            backendReads += 1;
+            if (backendReads === 1) return { settings: {}, cases: [] };
+            throw new Error('temporary Apps Script result failure');
+        }
+    });
+
+    await service.loadWorkspace({ forcePrivate: true });
+    await assert.rejects(
+        () => service.loadWorkspace({ forcePrivate: true }),
+        /temporary Apps Script result failure/
+    );
+});

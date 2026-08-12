@@ -394,3 +394,31 @@ test('public Moderation Hub controls always open a private personalized response
     assert.equal(deferPayloads[0].flags, views.EPHEMERAL);
     assert.equal(calls.edits.length, 1);
 });
+
+test('read-only panels clearly label a recent cached fallback', async t => {
+    const workspace = buildWorkspace({
+        tag: '#P0LYGQ',
+        status: 'needs_review',
+        assignedModeratorId: '222222222222222222',
+        updatedAt: '2026-08-01T00:00:00.000Z'
+    });
+    workspace.freshness = {
+        privateStateStale: true,
+        privateStateCachedAt: Date.now() - 60_000
+    };
+    t.mock.method(service, 'loadWorkspace', async options => {
+        assert.equal(options.allowStalePrivateOnError, true);
+        return workspace;
+    });
+    t.mock.method(warFollowupStateStore, 'getGuild', () => ({
+        config: { enabled: true, channelId: '444444444444444444', features: {} }
+    }));
+    const { interaction, calls } = baseInteraction(buildCustomId('mycases'), {
+        user: { id: '222222222222222222', username: 'moderator' }
+    });
+
+    assert.equal(await handleWarFollowupInteraction(interaction), true);
+    assert.equal(calls.edits.length, 2);
+    assert.match(calls.edits[1].content, /Backend temporarily unavailable/);
+    assert.match(calls.edits[1].content, /last confirmed case data/);
+});
