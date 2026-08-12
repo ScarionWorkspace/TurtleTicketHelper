@@ -594,7 +594,7 @@ function buildCasePayload(item, workspace, config) {
             value: truncate(toText(item.case.playerResponse).replace(/`/g, "'"), 1000)
         });
     }
-    if (item.status === 'waiting' && item.case?.contactPurpose === 'general' && config?.features?.playerReplies === true) {
+    if (item.status === 'waiting' && item.case?.contactPurpose === 'general' && item.case?.dmDeliveryMode === 'bot' && item.case?.dmMessageId && config?.features?.playerReplies === true) {
         embed.addFields({
             name: 'Reply capture',
             value: 'Replies to the bot DM are captured and forwarded privately to the assigned moderator. No automatic decision is made.'

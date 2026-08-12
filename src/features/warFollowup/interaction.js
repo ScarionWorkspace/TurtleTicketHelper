@@ -472,7 +472,11 @@ async function handleDirectMessage(interaction, tagRaw, viewTokenRaw) {
             messageId: dmMessage?.id,
             disposition: 'direct-dm-sent'
         });
-        await service.mutateCase(item, 'mark_dm_sent', { dmText: message }, {
+        await service.mutateCase(item, 'mark_dm_sent', {
+            dmText: message,
+            dmDeliveryMode: 'bot',
+            dmMessageId: dmMessage?.id || ''
+        }, {
             actor: service.getActorName(interaction),
             seed: `${interaction.id}:send-dm:${item.tag}`
         });
@@ -972,7 +976,11 @@ async function handleCaseModal(interaction, parsed) {
     } else if (action === 'markdmform') {
         mutationAction = 'mark_dm_sent';
         assertCaseActionAllowed(item, mutationAction);
-        patch = { dmText: String(interaction.fields.getTextInputValue('message') || '').trim() };
+        patch = {
+            dmText: String(interaction.fields.getTextInputValue('message') || '').trim(),
+            dmDeliveryMode: 'manual',
+            dmMessageId: ''
+        };
         if (!patch.dmText) throw new Error('The decision message cannot be empty.');
     } else if (action === 'assignform') {
         mutationAction = 'set_handler';

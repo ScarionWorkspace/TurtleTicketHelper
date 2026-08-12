@@ -243,9 +243,11 @@ test('a delivered DM with a failed backend mutation retires the send controls an
     });
     const item = workspace.work.items[0];
     const deliveries = [];
+    const mutations = [];
     let dmSends = 0;
     t.mock.method(service, 'loadWorkspace', async () => workspace);
-    t.mock.method(service, 'mutateCase', async () => {
+    t.mock.method(service, 'mutateCase', async (...args) => {
+        mutations.push(args);
         throw new Error('temporary backend outage');
     });
     t.mock.method(warFollowupStateStore, 'getGuild', () => ({
@@ -275,6 +277,9 @@ test('a delivered DM with a failed backend mutation retires the send controls an
         'direct-dm-pending',
         'direct-dm-sent'
     ]);
+    assert.equal(mutations.length, 1);
+    assert.equal(mutations[0][2].dmDeliveryMode, 'bot');
+    assert.equal(mutations[0][2].dmMessageId, '555555555555555555');
     assert.equal(calls.edits.length, 2);
     assert.match(calls.edits[0].content, /Sending DM/);
     assert.match(calls.edits[1].content, /DM was delivered/);

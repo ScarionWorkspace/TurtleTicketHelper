@@ -15,6 +15,8 @@ function baseWorkspace(status = 'waiting') {
             status,
             contactPurpose: 'general',
             dmSentAt: '2026-08-12T10:00:00.000Z',
+            dmDeliveryMode: 'bot',
+            dmMessageId: '888888888888888888',
             waitingUntil: '2026-08-13T10:00:00.000Z',
             assignedModeratorId: '333333333333333333',
             assignedModeratorName: 'Moderator',
@@ -159,4 +161,38 @@ test('replies to closed or non-contact cases are not assigned accidentally', asy
     assert.deepEqual(result, { handled: true, captured: false });
     assert.equal(setupState.mutations.length, 0);
     assert.equal(setupState.playerMessages.length, 0);
+});
+
+test('a manually delivered contact message never captures an unrelated bot DM', async t => {
+    const workspace = baseWorkspace();
+    workspace.work.items[0].case.dmDeliveryMode = 'manual';
+    workspace.work.items[0].case.dmMessageId = '';
+    const setupState = setup(t, workspace);
+
+    const result = await handleWarFollowupPlayerReply(setupState.message, setupState.client);
+
+    assert.deepEqual(result, { handled: true, captured: false });
+    assert.equal(setupState.mutations.length, 0);
+});
+
+test('a Discord message reply identifies the correct case when one player has two open contacts', async t => {
+    const workspace = baseWorkspace();
+    workspace.work.items.push({
+        ...structuredClone(workspace.work.items[0]),
+        tag: '#Q2L9CG',
+        case: {
+            ...structuredClone(workspace.work.items[0].case),
+            tag: '#Q2L9CG',
+            dmMessageId: '999999999999999999',
+            dmSentAt: '2026-08-12T11:00:00.000Z'
+        }
+    });
+    const setupState = setup(t, workspace);
+    setupState.message.reference = { messageId: '888888888888888888' };
+
+    const result = await handleWarFollowupPlayerReply(setupState.message, setupState.client);
+
+    assert.deepEqual(result, { handled: true, captured: true });
+    assert.equal(setupState.mutations.length, 1);
+    assert.equal(setupState.mutations[0][0].tag, '#P0LYGQ');
 });

@@ -714,6 +714,8 @@ function normalizeCase(raw) {
         playerResponse: '',
         playerResponseAt: '',
         playerResponseMessageId: '',
+        dmDeliveryMode: '',
+        dmMessageId: '',
         resolutionNote: '',
         escalatedAt: '',
         escalatedBy: '',

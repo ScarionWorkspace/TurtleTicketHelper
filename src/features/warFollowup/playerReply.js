@@ -38,16 +38,22 @@ function isDirectMessage(message) {
     return Boolean(message && !message.guildId && message.author?.bot !== true);
 }
 
-function matchingCases(workspace, discordId) {
-    return (workspace?.work?.items || [])
+function matchingCases(workspace, discordId, referencedMessageId = '') {
+    const candidates = (workspace?.work?.items || [])
         .filter(item => {
             const itemId = text(item?.player?.discordId || item?.case?.discordId).trim();
             return itemId === discordId &&
                 item.status === 'waiting' &&
                 item.case?.contactPurpose === 'general' &&
+                item.case?.dmDeliveryMode === 'bot' &&
+                DISCORD_USER_ID_PATTERN.test(text(item.case?.dmMessageId).trim()) &&
                 workflow.parseMs(item.case?.dmSentAt) > 0;
         })
         .sort((left, right) => workflow.parseMs(right.case?.dmSentAt) - workflow.parseMs(left.case?.dmSentAt));
+    const referencedId = text(referencedMessageId).trim();
+    return referencedId
+        ? candidates.filter(item => text(item.case?.dmMessageId).trim() === referencedId)
+        : candidates;
 }
 
 function notificationDestinations(preference, hasOwner) {
@@ -144,7 +150,7 @@ async function handleWarFollowupPlayerReply(message, client) {
 
     let captured = false;
     for (const guildState of guilds) {
-        const candidates = matchingCases(workspace, discordId);
+        const candidates = matchingCases(workspace, discordId, message.reference?.messageId);
         if (candidates.length !== 1) {
             if (candidates.length > 1) console.warn('War Follow Up received an ambiguous player DM reply:', { discordId, guildId: guildState.guildId });
             continue;
