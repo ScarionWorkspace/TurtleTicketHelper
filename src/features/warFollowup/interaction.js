@@ -1,6 +1,6 @@
 'use strict';
 
-const { isStaffMember } = require('../permissions/staffPermissions');
+const { isStaffMember, canTakeAnyWarFollowupCase } = require('../permissions/staffPermissions');
 const workflow = require('./workflow');
 const service = require('./service');
 const views = require('./views');
@@ -780,7 +780,8 @@ async function handleButtonOrSelect(interaction, parsed) {
         const identity = moderatorIdentity(interaction);
         const payload = addStaleDataNotice(views.buildReassignmentPayload(item, eligible, {
             currentModeratorId: identity.discordId,
-            currentModeratorName: identity.displayName
+            currentModeratorName: identity.displayName,
+            canTakeAnyCase: canTakeAnyWarFollowupCase(interaction.member)
         }), workspace);
         await interaction.editReply(views.asEditPayload(payload));
         return;
@@ -821,6 +822,13 @@ async function handleButtonOrSelect(interaction, parsed) {
         );
         const selected = String(interaction.values?.[0] || '');
         const identity = moderatorIdentity(interaction);
+        const eligibleSelf = eligible.find(candidate => candidate.discordId === identity.discordId) || null;
+        const unrestrictedSelf = canTakeAnyWarFollowupCase(interaction.member)
+            ? {
+                discordId: identity.discordId,
+                displayName: identity.displayName
+            }
+            : null;
         const chosen = selected === '__auto__'
             ? moderation.chooseModerator(eligible, workspace.work.items, {
                 avoidModeratorId: item.case?.assignedModeratorId,
@@ -829,16 +837,18 @@ async function handleButtonOrSelect(interaction, parsed) {
                 nowMs: Date.now()
             })
             : selected === '__self__'
-                ? eligible.find(candidate => candidate.discordId === identity.discordId) || null
+                ? eligibleSelf || unrestrictedSelf
             : eligible.find(candidate => candidate.discordId === selected) || null;
         let mutationAction = 'assign_owner';
-        let patch = moderation.assignmentPatch(chosen);
+        let patch = moderation.assignmentPatch(chosen, {
+            outsideCoverage: selected === '__self__' && !eligibleSelf && Boolean(unrestrictedSelf)
+        });
         if (selected === '__unassigned__') {
             mutationAction = 'unassign_owner';
             patch = {};
         } else if (!chosen) {
             throw new Error(selected === '__self__'
-                ? 'To take ownership, first select this clan in your moderation settings and turn on new assignments.'
+                ? 'To take ownership outside your selected clans, a senior leadership role is required.'
                 : 'No eligible moderator is currently available for that assignment.');
         }
         const result = await service.mutateCase(item, mutationAction, patch, {

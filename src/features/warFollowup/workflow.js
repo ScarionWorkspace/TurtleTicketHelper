@@ -704,6 +704,7 @@ function normalizeCase(raw) {
         discordId: '',
         assignedModeratorId: '',
         assignedModeratorName: '',
+        assignmentCoverageOverride: false,
         assignedAt: '',
         assignmentUpdatedAt: '',
         lastMeaningfulActionAt: '',

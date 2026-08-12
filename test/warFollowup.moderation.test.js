@@ -209,6 +209,7 @@ test('an owner who loses staff eligibility is removed even when nobody else is a
         status: 'needs_review',
         assignedModeratorId: MOD_A,
         assignedModeratorName: 'Leader A',
+        assignmentCoverageOverride: true,
         handledBy: 'Leader A',
         assignedAt: NOW.toISOString(),
         assignmentUpdatedAt: NOW.toISOString(),
@@ -245,6 +246,38 @@ test('an owner who loses staff eligibility is removed even when nobody else is a
 
     assert.equal(calls.length, 1);
     assert.equal(calls[0].action, 'unassign_owner');
+});
+
+test('a senior leader who explicitly took a case remains assigned outside automatic coverage', async t => {
+    const workspace = buildWorkspace({
+        tag: '#P0LYGQ',
+        sourceRosterId: 'main',
+        sourceRosterTitle: 'Main Clan',
+        sourceClanTag: '#CLAN0',
+        status: 'needs_review',
+        assignedModeratorId: MOD_A,
+        assignedModeratorName: 'Leader A',
+        assignmentCoverageOverride: true,
+        handledBy: 'Leader A',
+        assignedAt: NOW.toISOString(),
+        assignmentUpdatedAt: NOW.toISOString(),
+        lastMeaningfulActionAt: NOW.toISOString(),
+        createdAt: NOW.toISOString(),
+        updatedAt: NOW.toISOString(),
+        activity: []
+    });
+    const calls = [];
+    t.mock.method(service, 'mutateCase', async (...args) => {
+        calls.push(args);
+        return workspace.work.items[0].case;
+    });
+    const store = createStore({
+        [MOD_A]: moderator(MOD_A, { accepting: false, clanTags: [] })
+    });
+
+    await moderation.synchronizeModerationCases(guildWithEligibility(), GUILD_ID, workspace, store, { now: NOW });
+
+    assert.equal(calls.length, 0);
 });
 
 test('a future waiting follow-up pauses inactivity reassignment without masking lost eligibility', async t => {

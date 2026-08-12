@@ -213,6 +213,15 @@ const appConfig = {
         roleUpdateReason: 'Join clan application role update'
     },
 
+    warFollowup: {
+        // Senior leaders may explicitly take any case without opting into
+        // automatic assignments for that clan.
+        unrestrictedOwnershipRoleIds: [
+            '1444000343431053332', // leader
+            '1444000229576671303'  // co-leader
+        ]
+    },
+
     seasonEvents: {
         maxLeaderboardRows: 10,
         websiteLeaderboardUrl: ROSTER_WEBSITE_LEADERBOARD_URL,

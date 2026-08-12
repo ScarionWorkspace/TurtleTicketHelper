@@ -12,6 +12,7 @@ const { handleWarFollowupInteraction } = require('../src/features/warFollowup/in
 
 const GUILD_ID = '111111111111111111';
 const STAFF_ROLE_ID = '1444000343431053332';
+const APPRENTICE_ROLE_ID = '1456074413412716780';
 
 function buildWorkspace(caseValue) {
     const rosterData = {
@@ -421,8 +422,84 @@ test('an eligible moderator can explicitly take ownership of another moderators 
     assert.equal(mutations[0][1], 'assign_owner');
     assert.equal(mutations[0][2].assignedModeratorId, moderatorId);
     assert.equal(mutations[0][2].assignedModeratorName, 'Moderator');
+    assert.equal(mutations[0][2].assignmentCoverageOverride, false);
     assert.equal(assignmentRecords.length, 1);
     assert.equal(calls.edits.length, 2);
+});
+
+test('a senior leader can take ownership without enabling automatic clan coverage', async t => {
+    const workspace = buildWorkspace({
+        tag: '#P0LYGQ',
+        status: 'needs_review',
+        sourceClanTag: '#2LUCULP',
+        assignedModeratorId: '999999999999999999',
+        assignedModeratorName: 'Previous owner',
+        updatedAt: '2026-08-01T00:00:00.000Z'
+    });
+    const item = workspace.work.items[0];
+    const moderatorId = '222222222222222222';
+    const mutations = [];
+    t.mock.method(service, 'loadWorkspace', async () => workspace);
+    t.mock.method(service, 'mutateCase', async (...args) => {
+        mutations.push(args);
+        return { ...item.case, assignedAt: '2026-08-12T12:00:00.000Z' };
+    });
+    t.mock.method(moderation, 'getEligibleModerators', async () => []);
+    t.mock.method(warFollowupStateStore, 'getGuild', () => ({
+        config: { enabled: false, channelId: '', features: {} },
+        moderationHub: {},
+        moderators: {}
+    }));
+    t.mock.method(warFollowupStateStore, 'recordModeratorAssignment', () => {});
+    const { interaction } = baseInteraction(
+        buildCustomId('assignpick', item.tag, views.caseToken(item)),
+        {
+            user: { id: moderatorId, username: 'moderator' },
+            values: ['__self__']
+        }
+    );
+
+    assert.equal(await handleWarFollowupInteraction(interaction), true);
+    assert.equal(mutations.length, 1);
+    assert.equal(mutations[0][2].assignedModeratorId, moderatorId);
+    assert.equal(mutations[0][2].assignmentCoverageOverride, true);
+});
+
+test('ordinary staff still need clan coverage before taking ownership', async t => {
+    const workspace = buildWorkspace({
+        tag: '#P0LYGQ',
+        status: 'needs_review',
+        sourceClanTag: '#2LUCULP',
+        updatedAt: '2026-08-01T00:00:00.000Z'
+    });
+    const item = workspace.work.items[0];
+    let mutations = 0;
+    t.mock.method(service, 'loadWorkspace', async () => workspace);
+    t.mock.method(service, 'mutateCase', async () => {
+        mutations += 1;
+        return item.case;
+    });
+    t.mock.method(moderation, 'getEligibleModerators', async () => []);
+    t.mock.method(warFollowupStateStore, 'getGuild', () => ({
+        config: { enabled: false, channelId: '', features: {} },
+        moderationHub: {},
+        moderators: {}
+    }));
+    const { interaction, calls } = baseInteraction(
+        buildCustomId('assignpick', item.tag, views.caseToken(item)),
+        {
+            member: {
+                displayName: 'Apprentice leader',
+                roles: { cache: { has: roleId => roleId === APPRENTICE_ROLE_ID } }
+            },
+            user: { id: '222222222222222222', username: 'apprentice' },
+            values: ['__self__']
+        }
+    );
+
+    assert.equal(await handleWarFollowupInteraction(interaction), true);
+    assert.equal(mutations, 0);
+    assert.match(JSON.stringify(calls), /senior leadership role/i);
 });
 
 test('public Moderation Hub controls always open a private personalized response', async t => {

@@ -1055,7 +1055,9 @@ function buildReassignmentPayload(item, moderatorsRaw, optionsRaw = {}) {
     const optionsValue = optionsRaw && typeof optionsRaw === 'object' ? optionsRaw : {};
     const currentModeratorId = toText(optionsValue.currentModeratorId).trim();
     const currentModeratorName = toText(optionsValue.currentModeratorName).trim();
-    const canTakeOwnership = moderators.some(moderator => moderator.discordId === currentModeratorId);
+    const coveredByModerator = moderators.some(moderator => moderator.discordId === currentModeratorId);
+    const canTakeAnyCase = optionsValue.canTakeAnyCase === true;
+    const canTakeOwnership = coveredByModerator || canTakeAnyCase;
     const options = [
         new StringSelectMenuOptionBuilder()
             .setLabel('Assign automatically')
@@ -1066,7 +1068,9 @@ function buildReassignmentPayload(item, moderatorsRaw, optionsRaw = {}) {
         options.push(new StringSelectMenuOptionBuilder()
             .setLabel(truncate(`Take ownership${currentModeratorName ? ` · ${currentModeratorName}` : ''}`, 100))
             .setDescription(canTakeOwnership
-                ? 'Assign this case directly to you.'
+                ? (coveredByModerator
+                    ? 'Assign this case directly to you.'
+                    : 'Take this case without changing your automatic coverage.')
                 : 'Select this clan and accept assignments first.')
             .setValue('__self__'));
     }

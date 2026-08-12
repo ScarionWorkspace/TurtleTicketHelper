@@ -14,7 +14,16 @@ function isStaffMember(member) {
     return getStaffRoleIds().some(roleId => member.roles.cache.has(roleId));
 }
 
+function canTakeAnyWarFollowupCase(member) {
+    if (!member?.roles?.cache) return false;
+    const roleIds = Array.isArray(appConfig.warFollowup?.unrestrictedOwnershipRoleIds)
+        ? appConfig.warFollowup.unrestrictedOwnershipRoleIds.filter(Boolean)
+        : [];
+    return roleIds.some(roleId => member.roles.cache.has(roleId));
+}
+
 module.exports = {
     getStaffRoleIds,
-    isStaffMember
+    isStaffMember,
+    canTakeAnyWarFollowupCase
 };

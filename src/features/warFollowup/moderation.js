@@ -1,6 +1,6 @@
 'use strict';
 
-const { isStaffMember } = require('../permissions/staffPermissions');
+const { isStaffMember, canTakeAnyWarFollowupCase } = require('../permissions/staffPermissions');
 const workflow = require('./workflow');
 const service = require('./service');
 
@@ -126,11 +126,12 @@ function replaceCase(workspace, caseValue) {
     return workspace.work.items.find(item => item.tag === workflow.normalizeTag(caseValue?.tag)) || null;
 }
 
-function assignmentPatch(moderator) {
+function assignmentPatch(moderator, options = {}) {
     return moderator ? {
         assignedModeratorId: moderator.discordId,
         assignedModeratorName: moderator.displayName,
-        handledBy: moderator.displayName
+        handledBy: moderator.displayName,
+        assignmentCoverageOverride: options.outsideCoverage === true
     } : {};
 }
 
@@ -237,13 +238,22 @@ async function synchronizeModerationCases(guild, guildId, workspaceRaw, store, o
         const assignedModeratorId = toText(item.case.assignedModeratorId).trim();
         if (assignedModeratorId) {
             const assignedEligible = eligible.find(candidate => candidate.discordId === assignedModeratorId);
+            const assignedMember = item.case.assignmentCoverageOverride === true
+                ? await resolveMember(assignedModeratorId)
+                : null;
+            const validCoverageOverride = Boolean(
+                item.case.assignmentCoverageOverride === true &&
+                assignedMember &&
+                isStaffMember(assignedMember) &&
+                canTakeAnyWarFollowupCase(assignedMember)
+            );
             const waitingUntilMs = workflow.parseMs(item.case.waitingUntil);
             const hasFutureWaitingFollowup = item.case.status === 'waiting' && waitingUntilMs > nowMs;
             const anchorMs = workflow.parseMs(
                 item.case.lastMeaningfulActionAt || item.case.assignedAt || item.case.updatedAt
             );
             const inactiveForMs = anchorMs > 0 ? nowMs - anchorMs : 0;
-            if (!assignedEligible || (!hasFutureWaitingFollowup && inactiveForMs >= INACTIVITY_REASSIGN_MS)) {
+            if ((!assignedEligible && !validCoverageOverride) || (!hasFutureWaitingFollowup && inactiveForMs >= INACTIVITY_REASSIGN_MS)) {
                 const chosen = chooseModerator(eligible, workspace.work.items, {
                     avoidModeratorId: assignedModeratorId,
                     nowMs

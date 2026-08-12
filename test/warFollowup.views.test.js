@@ -476,6 +476,13 @@ test('assignment picker makes taking ownership explicit while retaining manual r
     assert.match(rendered, /Assign automatically/);
     assert.match(rendered, /reassign the case/i);
     assert.match(JSON.stringify(serialize(views.buildCasePayload(item, workspace, config()))), /Change owner/);
+
+    const seniorPayload = serialize(views.buildReassignmentPayload(item, [], {
+        currentModeratorId: '222222222222222222',
+        currentModeratorName: 'Current leader',
+        canTakeAnyCase: true
+    }));
+    assert.match(JSON.stringify(seniorPayload), /without changing your automatic coverage/i);
 });
 
 test('the moderation panel accepts an existing staff-only channel', () => {
