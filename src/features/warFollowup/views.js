@@ -163,7 +163,8 @@ function buildModerationHubPayload(workspace, guildRecord, options = {}) {
     const stateParts = [
         summary.awaitingPlayer.length ? `**${summary.awaitingPlayer.length} awaiting player repl${summary.awaitingPlayer.length === 1 ? 'y' : 'ies'}**` : '',
         summary.scheduledWaiting.length ? `**${summary.scheduledWaiting.length} scheduled follow-up${summary.scheduledWaiting.length === 1 ? '' : 's'}**` : '',
-        summary.inProgress.length ? `**${summary.inProgress.length} in progress**` : ''
+        summary.heroDownRecovery.length ? `**${summary.heroDownRecovery.length} hero-down recover${summary.heroDownRecovery.length === 1 ? 'y' : 'ies'}**` : '',
+        summary.awaitingRemovalConfirmation.length ? `**${summary.awaitingRemovalConfirmation.length} awaiting removal confirmation**` : ''
     ].filter(Boolean);
     const regularStatus = pending.regularAttacks
         ? `**${pending.regularAttacks} attack${pending.regularAttacks === 1 ? '' : 's'} pending** · ${pending.regularPlayers} player${pending.regularPlayers === 1 ? '' : 's'}`
@@ -185,7 +186,8 @@ function buildModerationHubPayload(workspace, guildRecord, options = {}) {
             unassigned: summary.unassigned.length,
             awaitingPlayer: summary.awaitingPlayer.length,
             scheduledWaiting: summary.scheduledWaiting.length,
-            inProgress: summary.inProgress.length,
+            heroDownRecovery: summary.heroDownRecovery.length,
+            awaitingRemovalConfirmation: summary.awaitingRemovalConfirmation.length,
             overdue: summary.overdue.length
         },
         pending,
@@ -208,7 +210,7 @@ function buildModerationHubPayload(workspace, guildRecord, options = {}) {
                 name: 'Current workload',
                 value: [
                     `Cases: **${summary.items.length} tracked** · **${summary.actionable.length} actionable**`,
-                    `State: ${stateParts.join(' · ') || '**Nothing waiting or in progress**'}`,
+                    `State: ${stateParts.join(' · ') || '**Nothing waiting or active**'}`,
                     `Ownership: **${summary.assigned.length} assigned** · **${summary.unassigned.length} unassigned** · **${summary.overdue.length} overdue**`,
                     `Coverage: **${activeModerators.length} active leader${activeModerators.length === 1 ? '' : 's'}** · **${coveredClanCount}/${rosters.length} clans**`
                 ].join('\n')
@@ -1193,9 +1195,9 @@ function moderationCaseSummary(workspace, guildRecord, nowRaw = new Date()) {
         (item.status === 'removal_pending' && !item.case?.removalActionedAt) ||
         waitingIsDue(item)
     );
-    const inProgress = items.filter(item =>
-        item.status === 'hero_down' ||
-        (item.status === 'removal_pending' && Boolean(item.case?.removalActionedAt))
+    const heroDownRecovery = items.filter(item => item.status === 'hero_down');
+    const awaitingRemovalConfirmation = items.filter(item =>
+        item.status === 'removal_pending' && Boolean(item.case?.removalActionedAt)
     );
     const overdue = items.filter(item => {
         const dueMs = workflow.parseMs(item.case?.waitingUntil);
@@ -1203,7 +1205,18 @@ function moderationCaseSummary(workspace, guildRecord, nowRaw = new Date()) {
         if (item.status === 'waiting' && dueMs > 0) return dueMs <= nowMs;
         return Boolean(item.case?.assignedModeratorId && anchorMs > 0 && nowMs - anchorMs >= 24 * 60 * 60 * 1000);
     });
-    return { items, actionable, assigned, unassigned, waiting, awaitingPlayer, scheduledWaiting, inProgress, overdue };
+    return {
+        items,
+        actionable,
+        assigned,
+        unassigned,
+        waiting,
+        awaitingPlayer,
+        scheduledWaiting,
+        heroDownRecovery,
+        awaitingRemovalConfirmation,
+        overdue
+    };
 }
 
 function buildCoveragePayload(workspace, guildRecord, options = {}) {
@@ -1234,7 +1247,7 @@ function buildCoveragePayload(workspace, guildRecord, options = {}) {
             { name: 'Case ownership', value: `Assigned **${summary.assigned.length}** · Unassigned **${summary.unassigned.length}**`, inline: true },
             {
                 name: 'Case status',
-                value: `Actionable **${summary.actionable.length}** · Awaiting replies **${summary.awaitingPlayer.length}** · Scheduled **${summary.scheduledWaiting.length}** · In progress **${summary.inProgress.length}** · Overdue **${summary.overdue.length}**`,
+                value: `Actionable **${summary.actionable.length}** · Awaiting replies **${summary.awaitingPlayer.length}** · Scheduled **${summary.scheduledWaiting.length}** · Hero-down recovery **${summary.heroDownRecovery.length}** · Removal confirmation **${summary.awaitingRemovalConfirmation.length}** · Overdue **${summary.overdue.length}**`,
                 inline: true
             }
         );
@@ -1250,27 +1263,71 @@ function buildCoveragePayload(workspace, guildRecord, options = {}) {
     };
 }
 
-function buildMyCasesPayload(workspace, userIdRaw) {
+function personalCaseLine(item) {
+    const meta = workflow.STATUS_META[item.status] || workflow.STATUS_META.needs_review;
+    let state = meta.label;
+    if (item.status === 'hero_down') state = 'Hero-down recovery';
+    if (item.status === 'removal_pending' && item.case?.removalActionedAt) state = 'Awaiting removal confirmation';
+    return `${meta.emoji} **${safeInline(item.player?.name || item.tag)}** · ${state} · \`${item.tag}\``;
+}
+
+function personalCaseGroupValue(items, emptyText) {
+    if (!items.length) return emptyText;
+    return truncate(items.map(personalCaseLine).join('\n'), 1024);
+}
+
+function buildMyCasesPayload(workspace, userIdRaw, options = {}) {
     const userId = toText(userIdRaw).trim();
     const items = (workspace?.work?.items || []).filter(item =>
         ACTIVE_CASE_STATUSES.has(item.status) && item.case?.assignedModeratorId === userId
     );
-    const visibleItems = items.slice(0, 25);
-    const lines = visibleItems.map(item => {
-        const meta = workflow.STATUS_META[item.status] || workflow.STATUS_META.needs_review;
-        return `${meta.emoji} **${safeInline(item.player?.name || item.tag)}** · ${meta.label} · \`${item.tag}\``;
-    });
-    if (items.length > visibleItems.length) lines.push(`…and ${items.length - visibleItems.length} more in the full queue.`);
+    const summary = moderationCaseSummary({ work: { items } }, {}, options.now || new Date());
+    const activeRecoveryOrRemoval = [
+        ...summary.heroDownRecovery,
+        ...summary.awaitingRemovalConfirmation
+    ];
+    const orderedItems = [
+        ...summary.actionable,
+        ...summary.awaitingPlayer,
+        ...summary.scheduledWaiting,
+        ...activeRecoveryOrRemoval
+    ];
+    const visibleItems = orderedItems.slice(0, 25);
+    const visibleSet = new Set(visibleItems);
+    const visible = category => category.filter(item => visibleSet.has(item));
     const embed = new EmbedBuilder()
-        .setColor(items.length ? COLORS.neutral : COLORS.success)
-        .setTitle('My assigned moderation cases')
-        .setDescription(truncate(lines.join('\n') || 'You have no open assigned cases.', 4096));
+        .setColor(summary.actionable.length ? COLORS.review : (items.length ? COLORS.neutral : COLORS.success))
+        .setTitle('My moderation cases')
+        .setDescription(items.length
+            ? (summary.actionable.length
+                ? '**Start with Needs action.** Waiting and active recovery cases remain visible for reference.'
+                : 'Nothing needs action right now. Waiting and active recovery cases remain visible for reference.') +
+                    (items.length > visibleItems.length ? ` Showing 25 of ${items.length}; use **Full queue** for the rest.` : '')
+            : 'You have no assigned moderation cases.')
+        .addFields(
+            {
+                name: `Needs action (${summary.actionable.length})`,
+                value: personalCaseGroupValue(visible(summary.actionable), 'Nothing needs action right now.')
+            },
+            {
+                name: `Awaiting player replies (${summary.awaitingPlayer.length})`,
+                value: personalCaseGroupValue(visible(summary.awaitingPlayer), 'None')
+            },
+            ...(summary.scheduledWaiting.length ? [{
+                name: `Scheduled follow-ups (${summary.scheduledWaiting.length})`,
+                value: personalCaseGroupValue(visible(summary.scheduledWaiting), 'Open the full queue to view these cases.')
+            }] : []),
+            {
+                name: `Active recovery/removal (${activeRecoveryOrRemoval.length})`,
+                value: personalCaseGroupValue(visible(activeRecoveryOrRemoval), 'None')
+            }
+        );
     const components = [];
     if (items.length) {
         components.push(new ActionRowBuilder().addComponents(
             new StringSelectMenuBuilder()
                 .setCustomId(buildCustomId('pick'))
-                .setPlaceholder('Open one of my cases')
+                .setPlaceholder('Open an assigned case')
                 .addOptions(visibleItems.map(caseOption))
         ));
     }

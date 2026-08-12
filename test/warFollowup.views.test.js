@@ -371,9 +371,10 @@ test('Moderation Hub separates actionable work from cases awaiting player replie
     assert.match(rendered, /5 tracked/);
     assert.match(rendered, /0 actionable/);
     assert.match(rendered, /4 awaiting player replies/);
-    assert.match(rendered, /1 in progress/);
+    assert.match(rendered, /1 hero-down recovery/);
     assert.match(rendered, /5 assigned/);
     assert.doesNotMatch(rendered, /5 open/);
+    assert.doesNotMatch(rendered, /in progress/i);
 });
 
 test('a due waiting case is actionable instead of being reported as still waiting', () => {
@@ -397,6 +398,54 @@ test('a due waiting case is actionable instead of being reported as still waitin
     assert.equal(summary.waiting.length, 0);
     assert.equal(summary.awaitingPlayer.length, 0);
     assert.equal(summary.overdue.length, 1);
+});
+
+test('My cases separates immediate work from replies and active recovery or removal', () => {
+    const workspace = buildWorkspace();
+    const moderatorId = '222222222222222222';
+    workspace.work.items = [{
+        tag: '#REVIEW1',
+        status: 'needs_review',
+        player: { name: 'Review Player' },
+        case: { status: 'needs_review', assignedModeratorId: moderatorId }
+    }, {
+        tag: '#REPLY1',
+        status: 'waiting',
+        player: { name: 'Reply Player' },
+        case: {
+            status: 'waiting',
+            contactPurpose: 'general',
+            dmSentAt: '2026-08-10T10:00:00.000Z',
+            waitingUntil: '2026-08-11T10:00:00.000Z',
+            assignedModeratorId: moderatorId
+        }
+    }, {
+        tag: '#HERO1',
+        status: 'hero_down',
+        player: { name: 'Recovery Player' },
+        case: { status: 'hero_down', assignedModeratorId: moderatorId }
+    }, {
+        tag: '#REMOVE1',
+        status: 'removal_pending',
+        player: { name: 'Removal Player' },
+        case: {
+            status: 'removal_pending',
+            removalActionedAt: '2026-08-10T10:30:00.000Z',
+            assignedModeratorId: moderatorId
+        }
+    }];
+
+    const rendered = JSON.stringify(serialize(views.buildMyCasesPayload(workspace, moderatorId, {
+        now: new Date('2026-08-10T12:00:00.000Z')
+    })));
+
+    assert.match(rendered, /Needs action \(1\)/);
+    assert.match(rendered, /Awaiting player replies \(1\)/);
+    assert.match(rendered, /Active recovery\/removal \(2\)/);
+    assert.match(rendered, /Hero-down recovery/);
+    assert.match(rendered, /Awaiting removal confirmation/);
+    assert.match(rendered, /Nothing needs action right now|Start with Needs action/);
+    assert.doesNotMatch(rendered, /in progress/i);
 });
 
 test('the moderation panel accepts an existing staff-only channel', () => {
@@ -474,8 +523,8 @@ test('moderator settings, coverage, and personal ownership views stay within Dis
     const myMonitoring = JSON.stringify(serialize(
         views.buildMyCasesPayload(monitoringWorkspace, '222222222222222222')
     ));
-    assert.match(myMonitoring, /no open assigned cases/i);
-    assert.doesNotMatch(myMonitoring, /Open one of my cases/);
+    assert.match(myMonitoring, /no assigned moderation cases/i);
+    assert.doesNotMatch(myMonitoring, /Open an assigned case/);
 });
 
 test('reply-only ephemeral flags are stripped before editing an interaction response', () => {
