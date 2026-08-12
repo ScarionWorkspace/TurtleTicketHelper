@@ -15,7 +15,8 @@ const FEATURE_KEYS = Object.freeze([
     'cwlDailyUpdates',
     'cwlEndSummaries',
     'missingDiscordDigest',
-    'directMessages'
+    'directMessages',
+    'playerReplies'
 ]);
 const SUMMARY_FEATURE_KEYS = Object.freeze([
     'regularWarSummaries',

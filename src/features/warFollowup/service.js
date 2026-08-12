@@ -270,6 +270,19 @@ async function setTrustedAccount(tagRaw, trusted, options = {}) {
     }
 }
 
+async function recordPlayerResponse(item, responseText, responseMessageId, options = {}) {
+    const request = {
+        ...mutationBase(item, options.actor || 'Player DM'),
+        action: 'player_response',
+        responseText: String(responseText || '').trim(),
+        responseMessageId: String(responseMessageId || '').trim(),
+        mutationId: options.mutationId || mutationId(options.seed || `player-response:${item?.tag}:${responseMessageId}`)
+    };
+    const result = await rosterBackend.mutateWarFollowupCase(request, options);
+    invalidatePrivateStateCache();
+    return workflow.normalizeCase(result);
+}
+
 async function saveRules(settingsPatch, expectedRulesUpdatedAt, options = {}) {
     const operationId = options.mutationId || mutationId(options.seed || `rules:${Date.now()}`);
 
@@ -310,5 +323,6 @@ module.exports = {
     mutateCase,
     ensureManualCase,
     setTrustedAccount,
+    recordPlayerResponse,
     saveRules
 };

@@ -588,6 +588,18 @@ function buildCasePayload(item, workspace, config) {
     if (item.case?.dmText && item.status === 'needs_dm') {
         embed.addFields({ name: 'Decision message', value: truncate(toText(item.case.dmText).replace(/`/g, "'"), 1000) });
     }
+    if (item.case?.playerResponse) {
+        embed.addFields({
+            name: `Player response${item.case.playerResponseAt ? ` · ${workflow.formatDate(item.case.playerResponseAt)}` : ''}`,
+            value: truncate(toText(item.case.playerResponse).replace(/`/g, "'"), 1000)
+        });
+    }
+    if (item.status === 'waiting' && item.case?.contactPurpose === 'general' && config?.features?.playerReplies === true) {
+        embed.addFields({
+            name: 'Reply capture',
+            value: 'Replies to the bot DM are captured and forwarded privately to the assigned moderator. No automatic decision is made.'
+        });
+    }
     if (item.case) embed.addFields({ name: 'Recent private activity', value: activityValue(item) });
 
     const components = [];
@@ -1245,7 +1257,8 @@ function buildSetupSummary(config, channelMention) {
         cwlDailyUpdates: 'CWL all-clear updates',
         cwlEndSummaries: 'CWL end summaries',
         missingDiscordDigest: 'Daily Discord-gap digest',
-        directMessages: 'Staff-triggered direct DMs'
+        directMessages: 'Staff-triggered direct DMs',
+        playerReplies: 'Capture player DM replies'
     };
     const featureLines = Object.entries(labels).map(([key, label]) =>
         `${config.features?.[key] ? '✅' : '⬜'} ${label}`
