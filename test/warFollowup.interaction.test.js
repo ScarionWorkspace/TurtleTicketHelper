@@ -114,6 +114,72 @@ test('a stale case control is rejected before any modal or mutation', async t =>
     assert.match(calls.replies[0].content, /changed after it was opened/);
 });
 
+test('slow private controls show a locked action-specific busy state before loading', async t => {
+    const workspace = buildWorkspace({
+        tag: '#P0LYGQ',
+        status: 'needs_review',
+        updatedAt: '2026-08-01T00:00:00.000Z'
+    });
+    const customId = buildCustomId('refresh');
+    let calls;
+    t.mock.method(service, 'loadWorkspace', async () => {
+        assert.equal(calls.edits.length, 1, 'busy state must render before the backend read starts');
+        assert.match(calls.edits[0].content, /Refreshing cases/);
+        assert.equal(calls.edits[0].components[0].components.every(component => component.disabled), true);
+        return workspace;
+    });
+    t.mock.method(warFollowupStateStore, 'getGuild', () => ({
+        config: { enabled: false, channelId: '', features: {} }
+    }));
+    const built = baseInteraction(customId, {
+        message: {
+            flags: { bitfield: 64 },
+            content: 'Original case view',
+            embeds: [{ title: 'Case' }],
+            components: [{
+                type: 1,
+                components: [
+                    { type: 2, style: 1, custom_id: customId, label: 'Refresh' },
+                    { type: 2, style: 2, custom_id: buildCustomId('mycases'), label: 'My cases' }
+                ]
+            }]
+        }
+    });
+    calls = built.calls;
+
+    assert.equal(await handleWarFollowupInteraction(built.interaction), true);
+    assert.equal(calls.edits.length, 2);
+    assert.equal(calls.edits[0].components[0].components[0].label, 'Refreshing cases\u2026');
+    assert.match(calls.edits[0].content, /Controls will unlock when this finishes/);
+    assert.doesNotMatch(calls.edits[1].content || '', /Controls will unlock/);
+});
+
+test('a failed slow action restores its controls before reporting the error', async t => {
+    const customId = buildCustomId('refresh');
+    t.mock.method(service, 'loadWorkspace', async () => {
+        throw new Error('backend unavailable');
+    });
+    const { interaction, calls } = baseInteraction(customId, {
+        message: {
+            flags: { bitfield: 64 },
+            content: 'Original case view',
+            embeds: [{ title: 'Case' }],
+            components: [{
+                type: 1,
+                components: [{ type: 2, style: 1, custom_id: customId, label: 'Refresh' }]
+            }]
+        }
+    });
+
+    assert.equal(await handleWarFollowupInteraction(interaction), true);
+    assert.equal(calls.edits.length, 2);
+    assert.equal(calls.edits[0].components[0].components[0].disabled, true);
+    assert.equal(calls.edits[1].content, 'Original case view');
+    assert.equal(calls.edits[1].components[0].components[0].disabled, undefined);
+    assert.equal(calls.followUps.length, 1);
+    assert.match(calls.followUps[0].content, /backend unavailable/);
+});
+
 test('extension submission preserves the newly selected connected target roster', async t => {
     const workspace = buildWorkspace({
         tag: '#P0LYGQ',
@@ -209,9 +275,10 @@ test('a delivered DM with a failed backend mutation retires the send controls an
         'direct-dm-pending',
         'direct-dm-sent'
     ]);
-    assert.equal(calls.edits.length, 1);
-    assert.match(calls.edits[0].content, /DM was delivered/);
-    assert.doesNotMatch(JSON.stringify(calls.edits[0]), /Send DM now/);
+    assert.equal(calls.edits.length, 2);
+    assert.match(calls.edits[0].content, /Sending DM/);
+    assert.match(calls.edits[1].content, /DM was delivered/);
+    assert.doesNotMatch(JSON.stringify(calls.edits[1]), /Send DM now/);
 });
 
 test('a known Discord DM failure releases the durable reservation for a safe retry', async t => {
@@ -254,6 +321,8 @@ test('a known Discord DM failure releases the durable reservation for a safe ret
     assert.equal(await handleWarFollowupInteraction(interaction), true);
     assert.deepEqual(dispositions, ['direct-dm-pending']);
     assert.equal(removed.length, 1);
+    assert.equal(calls.edits.length, 2);
+    assert.match(calls.edits[0].content, /Sending DM/);
     assert.equal(calls.followUps.length, 1);
     assert.match(calls.followUps[0].content, /Discord rejected the DM/);
 });
@@ -289,14 +358,14 @@ test('moderators can persist their own clan subscriptions and assignment availab
     });
     assert.equal(await handleWarFollowupInteraction(clans.interaction), true);
     assert.deepEqual(patches[0].clanTags, ['#2LUCULP']);
-    assert.equal(clans.calls.edits.length, 1);
+    assert.equal(clans.calls.edits.length, 2);
 
     const toggle = baseInteraction(buildCustomId('modtoggle'), {
         user: { id: moderatorId, username: 'moderator' }
     });
     assert.equal(await handleWarFollowupInteraction(toggle.interaction), true);
     assert.equal(patches[1].accepting, true);
-    assert.equal(toggle.calls.edits.length, 1);
+    assert.equal(toggle.calls.edits.length, 2);
 });
 
 test('public Moderation Hub controls always open a private personalized response', async t => {

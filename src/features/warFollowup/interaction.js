@@ -10,10 +10,153 @@ const { warFollowupStateStore } = require('./stateStore');
 const { ensureDashboard, ensureModerationHub } = require('./dashboard');
 
 const directDmInFlight = new Set();
+const busyStateKey = Symbol('warFollowupBusyState');
+const BUSY_LABELS = Object.freeze({
+    home: 'Loading overview\u2026',
+    refresh: 'Refreshing cases\u2026',
+    modsettings: 'Loading settings\u2026',
+    mycases: 'Loading your cases\u2026',
+    coverage: 'Loading coverage\u2026',
+    modclans: 'Saving clan coverage\u2026',
+    modnotify: 'Saving notifications\u2026',
+    modtoggle: 'Updating availability\u2026',
+    gaps: 'Loading Discord gaps\u2026',
+    gapspage: 'Loading Discord gaps\u2026',
+    rules: 'Loading rules\u2026',
+    ignored: 'Loading ignored players\u2026',
+    ignoredpage: 'Loading ignored players\u2026',
+    filter: 'Filtering cases\u2026',
+    page: 'Loading cases\u2026',
+    pick: 'Loading case\u2026',
+    case: 'Loading case\u2026',
+    evidence: 'Loading evidence\u2026',
+    activity: 'Loading activity\u2026',
+    hero: 'Loading recovery rosters\u2026',
+    extend: 'Loading recovery rosters\u2026',
+    assignment: 'Loading moderators\u2026',
+    ignoreask: 'Loading confirmation\u2026',
+    closeask: 'Loading confirmation\u2026',
+    assignpick: 'Reassigning case\u2026',
+    dismiss: 'Closing case\u2026',
+    escalate: 'Escalating case\u2026',
+    reopen: 'Reopening case\u2026',
+    approve: 'Approving return\u2026',
+    close: 'Closing case\u2026',
+    removalnodm: 'Continuing removal\u2026',
+    removaldone: 'Confirming removal\u2026',
+    cancelremoval: 'Cancelling removal\u2026',
+    approverejoin: 'Approving return\u2026',
+    senddm: 'Sending DM\u2026',
+    togreg: 'Saving rules\u2026',
+    togcwl: 'Saving rules\u2026',
+    toggaps: 'Saving rules\u2026',
+    defroster: 'Saving default roster\u2026',
+    ignore: 'Ignoring player\u2026',
+    restore: 'Restoring player\u2026'
+});
 
 function isEphemeralSource(interaction) {
     const flags = Number(interaction?.message?.flags?.bitfield ?? interaction?.message?.flags ?? 0);
     return (flags & views.EPHEMERAL) === views.EPHEMERAL;
+}
+
+function toApiJson(value) {
+    if (!value) return null;
+    const raw = typeof value.toJSON === 'function' ? value.toJSON() : value;
+    try {
+        return JSON.parse(JSON.stringify(raw));
+    } catch (_error) {
+        return null;
+    }
+}
+
+function messageSnapshot(interaction) {
+    const message = interaction?.message || {};
+    return {
+        content: typeof message.content === 'string' ? message.content : '',
+        components: (Array.isArray(message.components) ? message.components : []).map(toApiJson).filter(Boolean),
+        allowedMentions: { parse: [] }
+    };
+}
+
+function disableComponents(componentsRaw, clickedCustomId, label, selectedValuesRaw = []) {
+    const interactiveTypes = new Set([2, 3, 5, 6, 7, 8]);
+    const selectedValues = new Set((Array.isArray(selectedValuesRaw) ? selectedValuesRaw : []).map(String));
+    const visit = componentRaw => {
+        const component = toApiJson(componentRaw);
+        if (!component) return null;
+        if (Array.isArray(component.components)) {
+            component.components = component.components.map(visit).filter(Boolean);
+        }
+        if (interactiveTypes.has(Number(component.type))) component.disabled = true;
+        if (component.custom_id === clickedCustomId) {
+            if (Number(component.type) === 2) component.label = String(label).slice(0, 80);
+            else if (interactiveTypes.has(Number(component.type))) {
+                component.placeholder = String(label).slice(0, 150);
+                if (Number(component.type) === 3 && Array.isArray(component.options)) {
+                    component.options = component.options.map(option => ({
+                        ...option,
+                        default: selectedValues.has(String(option.value))
+                    }));
+                }
+            }
+        }
+        return component;
+    };
+    return (Array.isArray(componentsRaw) ? componentsRaw : []).map(visit).filter(Boolean);
+}
+
+function busyLabel(interaction, fallback = 'Working\u2026') {
+    const parsed = parseCustomId(interaction?.customId);
+    return BUSY_LABELS[parsed?.action] || fallback;
+}
+
+function buildBusyPayload(interaction, label = busyLabel(interaction)) {
+    const original = messageSnapshot(interaction);
+    const notice = `\u23f3 **${label}** Controls will unlock when this finishes.`;
+    const combined = original.content ? `${notice}\n\n${original.content}` : notice;
+    return {
+        ...original,
+        content: combined.length <= 2000 ? combined : notice,
+        components: disableComponents(original.components, interaction?.customId, label, interaction?.values)
+    };
+}
+
+async function beginBusyUpdate(interaction, label = busyLabel(interaction)) {
+    const restorePayload = messageSnapshot(interaction);
+    await interaction.deferUpdate();
+
+    // Updating a public panel would lock it for everyone. Public hub buttons use
+    // deferred private replies instead, but keep this guard as a safe fallback.
+    if (!isEphemeralSource(interaction)) return;
+
+    const state = { restorePayload, shown: false };
+    interaction[busyStateKey] = state;
+    try {
+        await interaction.editReply(buildBusyPayload(interaction, label));
+        state.shown = true;
+    } catch (error) {
+        // A cosmetic update must never prevent the requested moderation action.
+        console.error('War Follow Up busy state could not be shown:', {
+            interactionId: interaction?.id || null,
+            error: error?.message || String(error)
+        });
+    }
+}
+
+async function restoreBusyUpdate(interaction) {
+    const state = interaction?.[busyStateKey];
+    if (!state?.shown) return;
+    try {
+        await interaction.editReply(state.restorePayload);
+    } catch (error) {
+        console.error('War Follow Up controls could not be restored after an error:', {
+            interactionId: interaction?.id || null,
+            error: error?.message || String(error)
+        });
+    } finally {
+        delete interaction[busyStateKey];
+    }
 }
 
 async function replyError(interaction, error, prefix = '') {
@@ -181,7 +324,7 @@ async function refreshDashboardQuietly(interaction, workspace) {
 
 async function renderView(interaction, buildPayload, options = {}) {
     const updateExisting = isEphemeralSource(interaction);
-    if (updateExisting) await interaction.deferUpdate();
+    if (updateExisting) await beginBusyUpdate(interaction);
     else await interaction.deferReply({ flags: views.EPHEMERAL });
 
     const workspace = await service.loadWorkspace({ forcePrivate: options.forcePrivate === true });
@@ -227,7 +370,7 @@ async function showCachedModal(interaction, builder) {
 }
 
 async function mutateAndRender(interaction, action, tagRaw, viewTokenRaw, patch = {}) {
-    await interaction.deferUpdate();
+    await beginBusyUpdate(interaction);
     const actor = service.getActorName(interaction);
     let workspace = await service.loadWorkspace({ forcePrivate: true });
     const item = findItem(workspace, tagRaw);
@@ -259,7 +402,7 @@ function yesNoField(interaction, id) {
 }
 
 async function handleDirectMessage(interaction, tagRaw, viewTokenRaw) {
-    await interaction.deferUpdate();
+    await beginBusyUpdate(interaction);
     let dmDelivered = false;
     let deliveryReserved = false;
     let caseMarkedSent = false;
@@ -360,7 +503,7 @@ async function handleDirectMessage(interaction, tagRaw, viewTokenRaw) {
 }
 
 async function handleToggleRule(interaction, key) {
-    await interaction.deferUpdate();
+    await beginBusyUpdate(interaction);
     let workspace = await service.loadWorkspace({ forcePrivate: true });
     const settings = workspace.work.settings;
     await service.saveRules({ [key]: !settings[key] }, settings.rulesUpdatedAt, {
@@ -372,7 +515,7 @@ async function handleToggleRule(interaction, key) {
 }
 
 async function handleDefaultRoster(interaction) {
-    await interaction.deferUpdate();
+    await beginBusyUpdate(interaction);
     let workspace = await service.loadWorkspace({ forcePrivate: true });
     const token = interaction.values?.[0] || '';
     const roster = token === '__none__' ? null : findRosterByToken(workspace, token);
@@ -415,14 +558,14 @@ async function handleButtonOrSelect(interaction, parsed) {
         return;
     }
     if (action === 'coverage') {
-        if (isEphemeralSource(interaction)) await interaction.deferUpdate();
+        if (isEphemeralSource(interaction)) await beginBusyUpdate(interaction);
         else await interaction.deferReply({ flags: views.EPHEMERAL });
         const workspace = await service.loadWorkspace({ forcePrivate: true });
         await interaction.editReply(views.asEditPayload(await buildCoverageForInteraction(interaction, workspace)));
         return;
     }
     if (action === 'modclans') {
-        await interaction.deferUpdate();
+        await beginBusyUpdate(interaction);
         const workspace = await service.loadWorkspace({ forcePrivate: false });
         const available = new Set((workspace?.work?.directory?.rosters || []).map(roster => workflow.normalizeTag(roster.clanTag)).filter(Boolean));
         const clanTags = (interaction.values || []).map(workflow.normalizeTag).filter(tag => available.has(tag));
@@ -442,7 +585,7 @@ async function handleButtonOrSelect(interaction, parsed) {
         return;
     }
     if (action === 'modnotify' || action === 'modtoggle') {
-        await interaction.deferUpdate();
+        await beginBusyUpdate(interaction);
         const identity = moderatorIdentity(interaction);
         const record = warFollowupStateStore.getGuild(interaction.guildId);
         const current = record.moderators?.[identity.discordId] || {};
@@ -590,7 +733,7 @@ async function handleButtonOrSelect(interaction, parsed) {
         return;
     }
     if (action === 'assignment') {
-        if (isEphemeralSource(interaction)) await interaction.deferUpdate();
+        if (isEphemeralSource(interaction)) await beginBusyUpdate(interaction);
         else await interaction.deferReply({ flags: views.EPHEMERAL });
         const workspace = await service.loadWorkspace({ forcePrivate: true });
         const item = findItem(workspace, first);
@@ -628,7 +771,7 @@ async function handleButtonOrSelect(interaction, parsed) {
         return;
     }
     if (action === 'assignpick') {
-        await interaction.deferUpdate();
+        await beginBusyUpdate(interaction);
         let workspace = await service.loadWorkspace({ forcePrivate: true });
         const item = findItem(workspace, first);
         assertCurrentCaseView(item, second);
@@ -686,7 +829,7 @@ async function handleButtonOrSelect(interaction, parsed) {
     if (action === 'defroster') return handleDefaultRoster(interaction);
 
     if (action === 'ignore') {
-        await interaction.deferUpdate();
+        await beginBusyUpdate(interaction);
         const beforeIgnore = await service.loadWorkspace({ forcePrivate: true });
         assertCurrentCaseView(findItem(beforeIgnore, first), second);
         await service.setTrustedAccount(first, true, { seed: `${interaction.id}:ignore:${first}` });
@@ -696,7 +839,7 @@ async function handleButtonOrSelect(interaction, parsed) {
         return;
     }
     if (action === 'restore') {
-        await interaction.deferUpdate();
+        await beginBusyUpdate(interaction);
         const tag = interaction.values?.[0];
         await service.setTrustedAccount(tag, false, { seed: `${interaction.id}:restore:${tag}` });
         const workspace = await service.loadWorkspace({ forcePrivate: true });
@@ -886,6 +1029,7 @@ async function handleWarFollowupInteraction(interaction) {
         await handleButtonOrSelect(interaction, parsed);
         return true;
     } catch (error) {
+        await restoreBusyUpdate(interaction);
         await replyError(interaction, error, 'War Follow Up could not complete that action: ');
         return true;
     }
