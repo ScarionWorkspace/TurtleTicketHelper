@@ -534,8 +534,11 @@ async function mutateAndRender(interaction, action, tagRaw, viewTokenRaw, patch 
     const item = findItem(workspace, tagRaw);
     assertCurrentCaseView(item, viewTokenRaw);
     assertCaseActionAllowed(item, action);
+    const requestPatch = ['dismiss', 'approve_return', 'close', 'cancel_removal', 'approve_rejoin'].includes(action)
+        ? { ...patch, evidence: patch.evidence || item.evidence }
+        : patch;
     const mutationId = service.mutationId(`${interaction.id}:${action}:${item.tag}`);
-    const request = service.buildMutationRequest(item, action, patch, {
+    const request = service.buildMutationRequest(item, action, requestPatch, {
         actor,
         mutationId
     });
@@ -546,7 +549,7 @@ async function mutateAndRender(interaction, action, tagRaw, viewTokenRaw, patch 
         tag: item.tag,
         actorId: interaction.user?.id || interaction.member?.id || '',
         actorName: actor,
-        draftPreview: draftPreviewForMutation(action, patch),
+        draftPreview: draftPreviewForMutation(action, requestPatch),
         request,
         attempts: 0,
         createdAt: new Date().toISOString(),
@@ -1285,7 +1288,7 @@ async function handleCaseModal(interaction, parsed) {
         assertCaseActionAllowed(item, mutationAction);
         const resolutionNote = String(interaction.fields.getTextInputValue('resolution') || '').trim();
         if (!resolutionNote) throw new Error('Add a short note explaining what resolved the case.');
-        patch = { resolutionNote };
+        patch = { resolutionNote, evidence: item.evidence };
     } else if (action === 'heroform') {
         assertCaseActionAllowed(item, 'hero_down');
         const target = findRosterByToken(workspace, rosterTokenRaw);

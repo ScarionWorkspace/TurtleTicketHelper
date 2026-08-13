@@ -176,7 +176,7 @@ async function synchronizeModerationCases(guild, guildId, workspaceRaw, store, o
                     workspace,
                     item,
                     'watch_complete',
-                    {},
+                    { evidence: item.evidence },
                     `scheduler:watch-complete:${tag}:${item.case.updatedAt}:${item.watching.completedWars}`
                 );
                 mutations.push({ tag, action: 'watch_complete', moderatorId: '' });

@@ -133,6 +133,33 @@ test('a stale case control is rejected before any modal or mutation', async t =>
     assert.match(calls.replies[0].content, /changed after it was opened/);
 });
 
+test('No action snapshots the evidence visible when the Discord case is closed', async t => {
+    const workspace = buildWorkspace({
+        tag: '#P0LYGQ',
+        status: 'needs_review',
+        updatedAt: '2026-08-13T10:00:00.000Z'
+    });
+    const item = workspace.work.items[0];
+    const saved = [];
+    t.mock.method(service, 'peekWorkspace', () => workspace);
+    t.mock.method(warFollowupStateStore, 'enqueueMutation', (_guildId, record) => {
+        saved.push(structuredClone(record));
+        return structuredClone(record);
+    });
+    t.mock.method(mutationOutbox, 'executeMutation', async (_guildId, mutationId) => ({
+        record: { ...saved[0], id: mutationId, state: 'pending' },
+        attempted: true
+    }));
+    t.mock.method(warFollowupStateStore, 'getGuild', () => ({
+        config: { enabled: false, channelId: '', features: {} }
+    }));
+    const { interaction } = baseInteraction(buildCustomId('dismiss', item.tag, views.caseToken(item)));
+
+    assert.equal(await handleWarFollowupInteraction(interaction), true);
+    assert.equal(saved.length, 1);
+    assert.deepEqual(saved[0].request.evidence, item.evidence);
+});
+
 test('a submitted Contact player message is saved locally and remains visible when the backend is unavailable', async t => {
     const workspace = buildWorkspace({
         tag: '#P0LYGQ',

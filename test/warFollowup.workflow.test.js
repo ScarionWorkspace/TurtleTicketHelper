@@ -191,6 +191,96 @@ test('dismissed evidence stays closed until the evidence revision changes', () =
     assert.equal(reopened.items.find(item => item.tag === initial.tag).status, 'needs_review');
 });
 
+test('a closed case ignores clean post-close evidence and reopens only for a new violation', () => {
+    const data = buildRosterData();
+    const settings = {
+        regularMissedThreshold: 2,
+        regularPerformanceEnabled: false,
+        cwlMissedThreshold: 8,
+        cwlPerformanceEnabled: false
+    };
+    const initial = workflow.buildWorkItems(data, { settings, cases: [] });
+    const initialItem = initial.items.find(item => item.tag === '#P0LYGQ');
+    const closedCase = {
+        tag: '#P0LYGQ',
+        status: 'dismissed',
+        outcome: 'no_action',
+        dismissedSignalIds: initialItem.signalIds,
+        closedAt: '2026-08-01T00:00:00.000Z',
+        updatedAt: '2026-08-01T00:00:00.000Z'
+    };
+
+    data.playerWarPerformance.byTag['#P0LYGQ'].recentRegularWarForm.unshift(
+        regularEvent('rw-clean-after-close', '2026-08-02T00:00:00.000Z', '#MAIN', {
+            possibleAttacks: 2,
+            usedAttacks: 2,
+            countedAttacks: 2,
+            starsTotal: 6,
+            totalDestruction: 200
+        })
+    );
+    const clean = workflow.buildWorkItems(data, { settings, cases: [closedCase] });
+    assert.equal(clean.items.find(item => item.tag === '#P0LYGQ').status, 'closed');
+
+    data.playerWarPerformance.byTag['#P0LYGQ'].recentRegularWarForm.unshift(
+        regularEvent('rw-missed-after-close', '2026-08-03T00:00:00.000Z', '#MAIN', {
+            possibleAttacks: 2,
+            usedAttacks: 0,
+            attacksMissed: 2
+        })
+    );
+    const reopened = workflow.buildWorkItems(data, { settings, cases: [closedCase] })
+        .items.find(item => item.tag === '#P0LYGQ');
+    assert.equal(reopened.status, 'needs_review');
+    assert.deepEqual(reopened.signals.map(signal => signal.reasonCode), ['regular_missed']);
+    assert.deepEqual(reopened.evidence.regularEvents.map(event => event.id), ['rw-missed-after-close', 'rw-clean-after-close']);
+});
+
+test('a closed case evaluates only the new CWL delta within the same season', () => {
+    const data = buildRosterData();
+    const settings = {
+        regularMissedThreshold: 16,
+        regularPerformanceEnabled: false,
+        cwlMissedThreshold: 1,
+        cwlPerformanceEnabled: false
+    };
+    const initial = workflow.buildWorkItems(data, { settings, cases: [] });
+    const initialItem = initial.items.find(item => item.tag === '#P0LYGQ');
+    const closedCase = {
+        tag: '#P0LYGQ',
+        status: 'dismissed',
+        outcome: 'no_action',
+        dismissedSignalIds: initialItem.signalIds,
+        evidence: structuredClone(initialItem.evidence),
+        closedAt: '2026-08-01T12:00:00.000Z'
+    };
+    const season = data.playerWarPerformance.byTag['#P0LYGQ'].cwlSeasonContext.bySeason['2026-07'];
+
+    season.finalizedEventIds.push('cwl-clean');
+    Object.assign(season.stats, {
+        possibleAttacks: 3,
+        usedAttacks: 2,
+        attacksMissed: 1,
+        countedAttacks: 2,
+        starsTotal: 4,
+        totalDestruction: 160
+    });
+    const clean = workflow.buildWorkItems(data, { settings, cases: [closedCase] });
+    assert.equal(clean.items.find(item => item.tag === '#P0LYGQ').status, 'closed');
+
+    season.finalizedEventIds.push('cwl-missed');
+    Object.assign(season.stats, {
+        possibleAttacks: 4,
+        usedAttacks: 2,
+        attacksMissed: 2
+    });
+    const reopened = workflow.buildWorkItems(data, { settings, cases: [closedCase] })
+        .items.find(item => item.tag === '#P0LYGQ');
+    assert.equal(reopened.status, 'needs_review');
+    assert.deepEqual(reopened.signals.map(signal => signal.reasonCode), ['cwl_missed']);
+    assert.equal(reopened.evidence.cwl.missedAttacks, 1);
+});
+
 test('monitoring is cleanly separated from active cases and triggers only on post-watch problems', () => {
     const data = buildRosterData();
     const settings = {

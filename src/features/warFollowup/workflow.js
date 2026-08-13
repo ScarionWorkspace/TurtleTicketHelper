@@ -821,6 +821,54 @@ function eventsAfter(eventsRaw, timestampRaw, clanTagRaw) {
         .sort((left, right) => parseMs(left.at) - parseMs(right.at));
 }
 
+function buildEvidenceAfter(evidenceRaw, timestampRaw, baselineEvidenceRaw) {
+    const evidence = evidenceRaw && typeof evidenceRaw === 'object' ? evidenceRaw : {};
+    const baselineEvidence = baselineEvidenceRaw && typeof baselineEvidenceRaw === 'object' ? baselineEvidenceRaw : {};
+    const regularEvents = eventsAfter(evidence.regularEvents, timestampRaw, '')
+        .sort((left, right) => parseMs(right.at) - parseMs(left.at) || toText(right.id).localeCompare(toText(left.id)));
+    const baselineCwlById = new Map((Array.isArray(baselineEvidence.cwlEvents) ? baselineEvidence.cwlEvents : [])
+        .filter(event => event && toText(event.id).trim())
+        .map(event => [toText(event.id).trim(), event]));
+    const cwlEvents = (Array.isArray(evidence.cwlEvents) ? evidence.cwlEvents : []).map(eventRaw => {
+        const event = eventRaw && typeof eventRaw === 'object' ? eventRaw : null;
+        if (!event) return null;
+        const id = toText(event.id).trim();
+        const baseline = baselineCwlById.get(id);
+        if (!baseline) return parseMs(event.at) > parseMs(timestampRaw) ? event : null;
+        const currentStats = normalizeStats(event.stats);
+        const baselineStats = normalizeStats(baseline.stats);
+        const delta = emptyStats();
+        for (const key of Object.keys(delta)) {
+            if (currentStats[key] < baselineStats[key]) return null;
+            delta[key] = currentStats[key] - baselineStats[key];
+        }
+        const hasDelta = delta.possibleAttacks > 0 || delta.usedAttacks > 0 || delta.missedAttacks > 0 ||
+            delta.countedAttacks > 0 || delta.warCount > 0;
+        if (!hasDelta) return null;
+        return {
+            ...event,
+            id: `${id}:after-close:${stableRevision(Object.keys(delta).map(key => delta[key]).join('|'))}`,
+            legacyIds: [],
+            at: toText(evidence.capturedAt || event.at).trim(),
+            stats: delta
+        };
+    }).filter(Boolean)
+        .sort((left, right) => parseMs(right.at) - parseMs(left.at) || toText(right.id).localeCompare(toText(left.id)));
+    const regularTotals = emptyStats();
+    const cwlTotals = emptyStats();
+    for (const event of regularEvents) addStats(regularTotals, event.stats);
+    for (const event of cwlEvents) addStats(cwlTotals, event.stats);
+    regularTotals.warCount = regularEvents.length;
+    cwlTotals.warCount = cwlEvents.reduce((sum, event) => sum + toInt(event?.stats?.warCount), 0);
+    return {
+        capturedAt: toText(evidence.capturedAt).trim(),
+        regular: statsSummary(regularTotals),
+        cwl: statsSummary(cwlTotals),
+        regularEvents,
+        cwlEvents
+    };
+}
+
 function buildRecoveryProgress(caseRaw, currentEvidenceRaw) {
     const value = normalizeCase(caseRaw);
     const evidence = currentEvidenceRaw && typeof currentEvidenceRaw === 'object' ? currentEvidenceRaw : {};
@@ -918,13 +966,20 @@ function buildWorkItems(rosterData, privateStateRaw) {
         };
         const evidence = buildEvidenceForTag(rosterData, tag, settings, evidenceOwner);
         const signals = player?.automaticEligible ? buildSignals(evidence, settings) : [];
-        const signalIds = signals.map(signal => signal.id);
         const dismissed = new Set(Array.isArray(caseValue?.dismissedSignalIds) ? caseValue.dismissedSignalIds : []);
-        const hasNewSignal = signals.some(signal =>
+        let status = caseValue ? toText(caseValue.status).trim() : (signals.length ? 'needs_review' : '');
+        const wasClosed = status === 'closed' || status === 'dismissed';
+        const postCloseEvidence = wasClosed && parseMs(caseValue?.closedAt) > 0
+            ? buildEvidenceAfter(evidence, caseValue.closedAt, caseValue.evidence)
+            : null;
+        const postCloseSignals = postCloseEvidence && player?.automaticEligible
+            ? buildSignals(postCloseEvidence, settings)
+            : null;
+        const newSignals = postCloseSignals || signals.filter(signal =>
             ![signal.id, ...(Array.isArray(signal.legacyIds) ? signal.legacyIds : [])]
                 .some(id => dismissed.has(id))
         );
-        let status = caseValue ? toText(caseValue.status).trim() : (signals.length ? 'needs_review' : '');
+        const hasNewSignal = newSignals.length > 0;
 
         if ((status === 'closed' || status === 'dismissed') && hasNewSignal) status = 'needs_review';
         if (status === 'dismissed') status = 'closed';
@@ -959,12 +1014,13 @@ function buildWorkItems(rosterData, privateStateRaw) {
             automaticEligible: false
         };
 
-        const itemSignals = watching?.triggered ? watching.signals : signals;
+        const reopenedFromClosed = wasClosed && status === 'needs_review' && hasNewSignal;
+        const itemSignals = watching?.triggered ? watching.signals : (reopenedFromClosed ? newSignals : signals);
         items.push({
             tag,
             player: identity,
             case: caseValue,
-            evidence,
+            evidence: reopenedFromClosed && postCloseEvidence ? postCloseEvidence : evidence,
             signals: itemSignals,
             signalIds: itemSignals.map(signal => signal.id),
             status,
