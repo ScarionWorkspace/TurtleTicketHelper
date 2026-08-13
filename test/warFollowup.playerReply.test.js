@@ -177,6 +177,17 @@ test('a follow-up player message is appended while the 72-hour capture window re
     assert.equal(setupState.mutations.length, 1);
 });
 
+test('a late reply reopens a recently dismissed contact while its capture window remains open', async t => {
+    const workspace = baseWorkspace('dismissed');
+    workspace.work.items[0].case.replyCaptureUntil = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    const setupState = setup(t, workspace, { mode: 'dm' });
+
+    const result = await handleWarFollowupPlayerReply(setupState.message, setupState.client);
+
+    assert.deepEqual(result, { handled: true, captured: true });
+    assert.equal(setupState.mutations.length, 1);
+});
+
 test('channel notification mode sends one private-content-safe moderator ping', async t => {
     const workspace = baseWorkspace();
     const setupState = setup(t, workspace, { mode: 'channel' });

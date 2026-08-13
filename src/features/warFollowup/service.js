@@ -86,6 +86,7 @@ async function readPrivateState(options = {}) {
         const state = {
             schemaVersion: 3,
             settings: workflow.sanitizeSettings(result?.settings),
+            moderators: Array.isArray(result?.moderators) ? clone(result.moderators) : [],
             cases: (Array.isArray(result?.cases) ? result.cases : [])
                 .map(workflow.normalizeCase)
                 .filter(Boolean)
@@ -284,6 +285,20 @@ async function recordPlayerResponse(item, responseText, responseMessageId, optio
     return workflow.normalizeCase(result);
 }
 
+async function syncModeratorPreference(guildIdRaw, preferenceRaw, options = {}) {
+    const preference = preferenceRaw && typeof preferenceRaw === 'object' ? preferenceRaw : {};
+    const payload = {
+        guildId: String(guildIdRaw || '').trim(),
+        discordId: String(preference.discordId || '').trim(),
+        displayName: String(preference.displayName || '').trim(),
+        clanTags: Array.isArray(preference.clanTags) ? preference.clanTags : [],
+        notificationMode: String(preference.notificationMode || 'channel').trim(),
+        accepting: preference.accepting === true,
+        updatedAt: String(preference.updatedAt || '').trim()
+    };
+    return rosterBackend.syncWarFollowupModerator(payload, options);
+}
+
 async function saveRules(settingsPatch, expectedRulesUpdatedAt, options = {}) {
     const operationId = options.mutationId || mutationId(options.seed || `rules:${Date.now()}`);
 
@@ -325,5 +340,6 @@ module.exports = {
     ensureManualCase,
     setTrustedAccount,
     recordPlayerResponse,
+    syncModeratorPreference,
     saveRules
 };

@@ -169,6 +169,7 @@ test('War Follow Up wrappers keep the bot credential in the existing method cont
     };
 
     await client.getWarFollowupState();
+    await client.syncWarFollowupModerator({ discordId: '222222222222222222', accepting: true });
     await client.getWarFollowupCase('#PLAYER');
     await client.mutateWarFollowupCase({
         tag: '#PLAYER',
@@ -184,25 +185,27 @@ test('War Follow Up wrappers keep the bot credential in the existing method cont
 
     assert.deepEqual(bodies.map(body => body.method), [
         'getWarFollowupState',
+        'syncWarFollowupModerator',
         'getWarFollowupCase',
         'mutateWarFollowupCase',
         'saveWarFollowupSettings',
         'setWarFollowupTrustedAccount'
     ]);
     assert.deepEqual(bodies[0].args, ['secret']);
-    assert.deepEqual(bodies[1].args, ['#PLAYER', 'secret']);
-    assert.deepEqual(bodies[2].args, [{
+    assert.deepEqual(bodies[1].args, [{ discordId: '222222222222222222', accepting: true }, 'secret']);
+    assert.deepEqual(bodies[2].args, ['#PLAYER', 'secret']);
+    assert.deepEqual(bodies[3].args, [{
         tag: '#PLAYER',
         action: 'dismiss',
         mutationId: 'mutation-1'
     }, 'secret']);
-    assert.deepEqual(bodies[3].args, [
+    assert.deepEqual(bodies[4].args, [
         { regularMissedThreshold: 3 },
         'secret',
         '2026-08-01T00:00:00.000Z',
         'rules-1'
     ]);
-    assert.deepEqual(bodies[4].args, ['#PLAYER', true, 'secret', 'trust-1']);
+    assert.deepEqual(bodies[5].args, ['#PLAYER', true, 'secret', 'trust-1']);
     for (const requestHeaders of headers) {
         assert.equal(requestHeaders.Authorization, undefined);
         assert.equal(requestHeaders['X-Discord-Bot-Secret'], undefined);

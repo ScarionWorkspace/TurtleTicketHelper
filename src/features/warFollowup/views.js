@@ -336,7 +336,7 @@ function caseOption(item) {
     const removalEvasion = item.case?.status === 'removal_evasion' || item.removalRejoinDetected === true;
     const meta = removalEvasion
         ? { label: 'Removal evasion', next: 'Remove the player again or approve their return', emoji: '🚨' }
-        : (workflow.STATUS_META[item.status] || workflow.STATUS_META.needs_review);
+        : casePresentation(item);
     const description = item.signals?.length
         ? item.signals.map(signal => signal.title).join(', ')
         : meta.next;
@@ -355,7 +355,7 @@ function buildHomePayload(workspace, config, options = {}) {
     const items = allItems.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
     const counts = statusCounts(work);
     const lines = items.slice(0, 12).map(item => {
-        const meta = workflow.STATUS_META[item.status] || workflow.STATUS_META.needs_review;
+        const meta = casePresentation(item);
         const handler = item.case?.assignedModeratorName || item.case?.handledBy;
         return `${meta.emoji} **${safeInline(item.player?.name || item.tag)}** · ${meta.label} · ${handler ? safeInline(handler) : 'Unassigned'}`;
     });
@@ -438,6 +438,42 @@ function recentConversationValue(item) {
     const entries = conversationEntries(item).slice(-2);
     if (!entries.length) return '';
     return entries.map(entry => conversationBlock(entry, 380)).join('\n\n').slice(0, 1024);
+}
+
+function casePresentation(item) {
+    const caseValue = item?.case || {};
+    if (item?.status === 'needs_dm' && caseValue.dmQueueId) {
+        return { label: 'Sending DM', next: 'Queued for secure Discord bot delivery', emoji: '⏳' };
+    }
+    if (item?.status === 'needs_dm' && caseValue.dmDeliveryFailedAt) {
+        return { label: 'DM delivery failed', next: 'Retry the bot DM or record a manual message', emoji: '⚠️' };
+    }
+    if (item?.status === 'waiting' && caseValue.contactPurpose === 'general') {
+        if (caseValue.contactStage === 'awaiting_final_response' || caseValue.contactAutomaticReminderAllowed === false) {
+            return { label: 'Awaiting final reply', next: 'Final message sent; no automatic reminder will follow', emoji: '⏳' };
+        }
+        return caseValue.contactStage === 'awaiting_after_reminder' || caseValue.contactReminderSentAt
+            ? { label: 'Awaiting reply after reminder', next: 'One reminder sent; no more automatic DMs', emoji: '⏳' }
+            : { label: 'Awaiting first reply', next: 'One automatic reminder will be sent after 24 hours', emoji: '⏳' };
+    }
+    if (caseValue.contactStage === 'no_response') {
+        return caseValue.contactAutomaticReminderAllowed === false
+            ? { label: 'No response to final message', next: 'Choose an outcome; no more automatic DMs will be sent', emoji: '⚠️' }
+            : { label: 'No response after reminder', next: 'Choose an outcome; no more automatic DMs will be sent', emoji: '⚠️' };
+    }
+    if (caseValue.contactStage === 'reminder_failed') {
+        return { label: 'Reminder delivery failed', next: 'Choose how to continue', emoji: '⚠️' };
+    }
+    if (caseValue.contactStage === 'responded' && item?.status === 'needs_review') {
+        return { label: 'Player replied', next: 'Read the conversation and decide what happens next', emoji: '💬' };
+    }
+    if (item?.status === 'hero_down') {
+        return { label: 'Hero-down recovery', next: 'Recovery period is active', emoji: '🛡️' };
+    }
+    if (item?.status === 'removal_pending' && caseValue.removalActionedAt) {
+        return { label: 'Awaiting removal confirmation', next: 'Waiting for refreshed roster data', emoji: '⏳' };
+    }
+    return workflow.STATUS_META[item?.status] || workflow.STATUS_META.needs_review;
 }
 
 function conversationPages(entriesRaw) {
@@ -617,7 +653,7 @@ function buildCasePayload(item, workspace, config) {
     const removedMonitoring = item.case?.status === 'removed' && !removalEvasion;
     const meta = removalEvasion
         ? { label: 'Removal evasion', next: 'Remove the player again or approve their return', emoji: '🚨' }
-        : (workflow.STATUS_META[item.status] || workflow.STATUS_META.needs_review);
+        : casePresentation(item);
     const player = item.player || {};
     const shownEvidence = evidenceForDisplay(item);
     const embed = new EmbedBuilder()
@@ -664,6 +700,27 @@ function buildCasePayload(item, workspace, config) {
         });
     }
     if (item.case?.waitingUntil) embed.addFields({ name: 'Follow-up due', value: workflow.discordRelativeTimestamp(item.case.waitingUntil), inline: true });
+    if (item.case?.dmQueueId) {
+        embed.addFields({ name: 'Discord delivery', value: `Queued ${workflow.discordRelativeTimestamp(item.case.dmQueuedAt)}. The bot will update this case after sending; do not send it again.` });
+    }
+    if (item.case?.dmDeliveryFailedAt) {
+        embed.addFields({ name: 'Discord delivery failed', value: truncate(safeInline(item.case.dmDeliveryFailureReason || 'The message could not be delivered.'), 1024) });
+    }
+    if (item.case?.contactStage === 'awaiting_first_response') {
+        embed.addFields({ name: 'What happens next', value: `No action is needed now. If there is no reply by ${workflow.discordRelativeTimestamp(item.case.waitingUntil)}, the bot sends one polite reminder without pinging staff.` });
+    } else if (item.case?.contactStage === 'awaiting_after_reminder') {
+        embed.addFields({ name: 'What happens next', value: `The one automatic reminder was sent ${workflow.discordRelativeTimestamp(item.case.contactReminderSentAt)}. If there is still no reply by ${workflow.discordRelativeTimestamp(item.case.waitingUntil)}, this returns to **Needs action**. No further automatic DMs will be sent.` });
+    } else if (item.case?.contactStage === 'awaiting_final_response') {
+        embed.addFields({ name: 'What happens next', value: `A moderator approved this final message. No automatic reminder will follow. If there is still no reply by ${workflow.discordRelativeTimestamp(item.case.waitingUntil)}, this returns to **Needs action**.` });
+    } else if (item.case?.contactStage === 'no_response') {
+        embed.addFields({ name: 'Response status', value: item.case?.contactAutomaticReminderAllowed === false
+            ? '**No response to the moderator-approved final message.** Decide without a response, give more time, send another explicitly approved message, or escalate.'
+            : '**No response after the initial DM and one reminder.** Decide without a response, give more time, approve a final message, or escalate.' });
+    } else if (item.case?.contactStage === 'reminder_failed') {
+        embed.addFields({ name: 'Response status', value: `**The automatic reminder could not be delivered.** ${truncate(safeInline(item.case.contactReminderFailureReason || ''), 800)}` });
+    } else if (item.case?.contactStage === 'responded') {
+        embed.addFields({ name: 'Response status', value: '**The player replied.** Read the recent or full conversation before deciding.' });
+    }
     if (item.case?.escalatedAt) embed.addFields({ name: 'Leadership review', value: `Escalated ${workflow.discordRelativeTimestamp(item.case.escalatedAt)}`, inline: true });
     if (item.case?.targetRosterTitle) embed.addFields({ name: 'Hero-down roster', value: safeInline(item.case.targetRosterTitle), inline: true });
     if (item.case?.removalReason) embed.addFields({ name: 'Removal reason', value: truncate(safeInline(item.case.removalReason), 1024) });
@@ -701,7 +758,7 @@ function buildCasePayload(item, workspace, config) {
     if (item.status === 'waiting' && item.case?.contactPurpose === 'general' && item.case?.dmDeliveryMode === 'bot' && item.case?.dmMessageId && isPlayerReplyCaptureEnabled(config)) {
         embed.addFields({
             name: 'Reply capture',
-            value: 'Player messages are added to the private conversation for 72 hours after the bot DM. Replies are forwarded privately; no automatic decision is made.'
+            value: 'Player replies are added to the private conversation and forwarded privately. The bot never makes a moderation decision from a reply.'
         });
     }
     if (item.case) embed.addFields({ name: 'Recent private activity', value: activityValue(item) });
@@ -709,6 +766,7 @@ function buildCasePayload(item, workspace, config) {
     const components = [];
     const tag = item.tag;
     const token = caseToken(item);
+    const contactStage = toText(item.case?.contactStage).trim();
     if (removalEvasion) {
         components.push(new ActionRowBuilder().addComponents(
             actionButton('remove', 'Remove again', ButtonStyle.Danger, tag, token),
@@ -725,16 +783,27 @@ function buildCasePayload(item, workspace, config) {
         components.push(new ActionRowBuilder().addComponents(
             actionButton(
                 'contact',
-                conversationEntries(item).some(entry => entry.direction === 'player') ? 'Reply to player' : 'Contact player',
+                ['no_response', 'reminder_failed'].includes(contactStage)
+                    ? 'Send final message'
+                    : (conversationEntries(item).some(entry => entry.direction === 'player') ? 'Reply to player' : 'Contact player'),
                 ButtonStyle.Primary,
                 tag,
                 token
             ),
-            actionButton('wait', 'Set follow-up', ButtonStyle.Secondary, tag, token),
+            actionButton('wait', ['no_response', 'reminder_failed'].includes(contactStage) ? 'Give more time' : 'Set follow-up', ButtonStyle.Secondary, tag, token),
             actionButton('resolveask', 'Record resolution', ButtonStyle.Success, tag, token),
             actionButton('escalate', 'Escalate', ButtonStyle.Danger, tag, token)
         ));
     } else if (item.status === 'needs_dm') {
+        if (item.case?.dmQueueId) {
+            components.push(new ActionRowBuilder().addComponents(
+                actionButton('case', 'Refresh status', ButtonStyle.Primary, tag),
+                ...(item.case?.contactPurpose === 'removal'
+                    ? [actionButton('cancelremoval', 'Cancel removal', ButtonStyle.Secondary, tag, token)]
+                    : [actionButton('reopen', 'Cancel / change decision', ButtonStyle.Secondary, tag, token)]),
+                actionButton('escalate', 'Escalate', ButtonStyle.Danger, tag, token)
+            ));
+        } else {
         const row = new ActionRowBuilder();
         if (config?.features?.directMessages === true && player.discordId) {
             row.addComponents(actionButton('senddm', 'Send DM now', ButtonStyle.Success, tag, token));
@@ -756,6 +825,7 @@ function buildCasePayload(item, workspace, config) {
                 ]),
             actionButton('escalate', 'Escalate', ButtonStyle.Danger, tag, token)
         ));
+        }
     } else if (item.status === 'removal_pending') {
         components.push(new ActionRowBuilder().addComponents(
             actionButton('removaldone', item.case?.removalActionedAt ? 'Removal recorded' : 'I removed them in game', ButtonStyle.Danger, tag, token)
@@ -774,13 +844,21 @@ function buildCasePayload(item, workspace, config) {
         );
         components.push(row);
     } else if (item.status === 'waiting') {
-        components.push(new ActionRowBuilder().addComponents(
-            actionButton('reopen', 'Review now', ButtonStyle.Primary, tag, token),
-            actionButton('wait', 'Change follow-up', ButtonStyle.Secondary, tag, token),
-            actionButton('resolveask', 'Close case', ButtonStyle.Success, tag, token),
-            actionButton('remove', 'Remove from community', ButtonStyle.Danger, tag, token),
-            actionButton('escalate', 'Escalate', ButtonStyle.Danger, tag, token),
-        ));
+        if (item.case?.contactPurpose === 'general' && item.case?.dmDeliveryMode === 'bot') {
+            components.push(new ActionRowBuilder().addComponents(
+                actionButton('reopen', 'Decide now', ButtonStyle.Secondary, tag, token),
+                actionButton('wait', 'Give more time', ButtonStyle.Secondary, tag, token),
+                actionButton('escalate', 'Escalate', ButtonStyle.Danger, tag, token)
+            ));
+        } else {
+            components.push(new ActionRowBuilder().addComponents(
+                actionButton('reopen', 'Review now', ButtonStyle.Primary, tag, token),
+                actionButton('wait', 'Change follow-up', ButtonStyle.Secondary, tag, token),
+                actionButton('resolveask', 'Close case', ButtonStyle.Success, tag, token),
+                actionButton('remove', 'Remove from community', ButtonStyle.Danger, tag, token),
+                actionButton('escalate', 'Escalate', ButtonStyle.Danger, tag, token)
+            ));
+        }
     } else if (item.status === 'watching') {
         components.push(new ActionRowBuilder().addComponents(
             actionButton('reopen', 'Review now', ButtonStyle.Primary, tag, token),
@@ -1121,12 +1199,15 @@ function buildMarkDmModal(item) {
 function buildContactModal(item) {
     const playerName = safeInline(item.player?.name || item.tag);
     const isReply = conversationEntries(item).some(entry => entry.direction === 'player');
-    return modal(isReply ? 'Prepare reply to player' : 'Prepare player contact', buildCustomId('contactform', item.tag, caseToken(item)), [
-        textInput('message', 'Message to the player', isReply
+    const isFinal = ['no_response', 'reminder_failed'].includes(toText(item.case?.contactStage).trim());
+    return modal(isFinal ? 'Prepare final message' : (isReply ? 'Prepare reply to player' : 'Prepare player contact'), buildCustomId('contactform', item.tag, caseToken(item)), [
+        textInput('message', 'Message (reply instructions added)', isFinal
+            ? `Hi ${playerName}. We still need your response before leadership can finish reviewing this. Please reply when you can.`
+            : isReply
             ? `Hi ${playerName}. Thanks for getting back to us. We would like to follow up about your recent war activity.`
             : `Hi ${playerName}. A leader is reviewing your recent war activity and would like to follow up with you.`, {
             style: TextInputStyle.Paragraph,
-            maxLength: 2000
+            maxLength: 1800
         })
     ]);
 }
@@ -1314,11 +1395,13 @@ function moderationCaseSummary(workspace, guildRecord, nowRaw = new Date()) {
     const waiting = items.filter(item => item.status === 'waiting' && !waitingIsDue(item));
     const awaitingPlayer = waiting.filter(item =>
         item.case?.contactPurpose === 'general' && workflow.parseMs(item.case?.dmSentAt) > 0
-    );
+    ).concat(items.filter(item =>
+        item.status === 'needs_dm' && item.case?.contactPurpose === 'general' && Boolean(item.case?.dmQueueId)
+    ));
     const scheduledWaiting = waiting.filter(item => !awaitingPlayer.includes(item));
     const actionable = items.filter(item =>
         item.status === 'needs_review' ||
-        item.status === 'needs_dm' ||
+        (item.status === 'needs_dm' && !item.case?.dmQueueId) ||
         item.status === 'ready' ||
         (item.status === 'removal_pending' && !item.case?.removalActionedAt) ||
         waitingIsDue(item)
@@ -1392,7 +1475,7 @@ function buildCoveragePayload(workspace, guildRecord, options = {}) {
 }
 
 function personalCaseLine(item) {
-    const meta = workflow.STATUS_META[item.status] || workflow.STATUS_META.needs_review;
+    const meta = casePresentation(item);
     let state = meta.label;
     if (item.status === 'hero_down') state = 'Hero-down recovery';
     if (item.status === 'removal_pending' && item.case?.removalActionedAt) state = 'Awaiting removal confirmation';

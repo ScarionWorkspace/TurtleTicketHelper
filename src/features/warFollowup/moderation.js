@@ -225,6 +225,10 @@ async function synchronizeModerationCases(guild, guildId, workspaceRaw, store, o
             workflow.parseMs(item.case.waitingUntil) > 0 &&
             workflow.parseMs(item.case.waitingUntil) <= nowMs
         ) {
+            const botManagedContact = item.case.contactPurpose === 'general' &&
+                item.case.dmDeliveryMode === 'bot' &&
+                item.case.dmMessageId;
+            if (botManagedContact) continue;
             item = await mutateAndReplace(
                 workspace,
                 item,

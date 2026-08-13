@@ -66,9 +66,12 @@ function matchingCases(workspace, discordId, referencedMessageId = '') {
     const candidates = (workspace?.work?.items || [])
         .filter(item => {
             const itemId = text(item?.player?.discordId || item?.case?.discordId).trim();
-            const exactReply = Boolean(referencedId && text(item.case?.dmMessageId).trim() === referencedId);
+            const exactReply = Boolean(referencedId && [item.case?.dmMessageId, item.case?.contactReminderMessageId]
+                .map(value => text(value).trim())
+                .includes(referencedId));
             const captureWindowOpen = workflow.parseMs(item.case?.replyCaptureUntil) >= nowMs;
-            const captureState = item.status === 'waiting' || (item.status === 'needs_review' && (captureWindowOpen || exactReply));
+            const captureState = item.status === 'waiting' ||
+                (['needs_review', 'closed', 'dismissed'].includes(item.status) && (captureWindowOpen || exactReply));
             return itemId === discordId &&
                 captureState &&
                 item.case?.contactPurpose === 'general' &&
@@ -78,7 +81,9 @@ function matchingCases(workspace, discordId, referencedMessageId = '') {
         })
         .sort((left, right) => workflow.parseMs(right.case?.dmSentAt) - workflow.parseMs(left.case?.dmSentAt));
     return referencedId
-        ? candidates.filter(item => text(item.case?.dmMessageId).trim() === referencedId)
+        ? candidates.filter(item => [item.case?.dmMessageId, item.case?.contactReminderMessageId]
+            .map(value => text(value).trim())
+            .includes(referencedId))
         : candidates;
 }
 

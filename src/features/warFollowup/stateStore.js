@@ -398,6 +398,12 @@ function createWarFollowupStateStore(options = {}) {
         return Boolean(key && record.deliveries[key]);
     }
 
+    function getDelivery(guildIdRaw, keyRaw) {
+        const key = cleanText(keyRaw, 300);
+        const record = getGuild(guildIdRaw);
+        return key && record.deliveries[key] ? clone(record.deliveries[key]) : null;
+    }
+
     function recordDeliveries(guildIdRaw, keysRaw, detailsRaw = {}) {
         const { record } = ensureGuild(guildIdRaw);
         const keys = Array.from(new Set(
@@ -522,6 +528,7 @@ function createWarFollowupStateStore(options = {}) {
         setDashboard,
         setModerationHub,
         hasDelivery,
+        getDelivery,
         recordDeliveries,
         upsertModerator,
         recordModeratorAssignment,

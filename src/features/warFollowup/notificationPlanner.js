@@ -86,6 +86,19 @@ function semanticKey(parts) {
     return parts.map(value => workflow.stableRevision(toText(value))).join(':');
 }
 
+function caseAlertMeta(item) {
+    const stage = toText(item?.case?.contactStage).trim();
+    if (stage === 'no_response') return {
+        label: item?.case?.contactAutomaticReminderAllowed === false ? 'No response to final message' : 'No response after reminder',
+        next: 'Moderator decision required',
+        emoji: '⚠️'
+    };
+    if (stage === 'reminder_failed') return { label: 'Reminder delivery failed', next: 'Moderator decision required', emoji: '⚠️' };
+    if (stage === 'responded') return { label: 'Player replied', next: 'Read the conversation and decide', emoji: '💬' };
+    if (item?.case?.dmDeliveryFailedAt) return { label: 'DM delivery failed', next: 'Retry or choose another action', emoji: '⚠️' };
+    return workflow.STATUS_META[item?.status] || workflow.STATUS_META.needs_review;
+}
+
 function regularSummaryKey(roster, historyKey, entry) {
     return `summary:regular:${semanticKey([roster?.id, entry?.warKey || historyKey])}`;
 }
@@ -173,11 +186,14 @@ function planCaseAlerts(work, config, record, nowIso) {
         discordId: item.player?.discordId
     }));
     const lines = changed.slice(0, MAX_NOTIFICATION_LINES).map((item, index) => {
-        const meta = workflow.STATUS_META[item.status] || workflow.STATUS_META.needs_review;
+        const meta = caseAlertMeta(item);
         const identity = changedIdentities[index];
         const removalEvasion = item.case?.status === 'removal_evasion' || item.removalRejoinDetected === true;
+        const contactStage = toText(item.case?.contactStage).trim();
         const reasons = removalEvasion
             ? `Removed player rejoined ${safeInline(item.case?.rejoinRosterTitle || item.player?.rosterTitle || 'a connected clan')}`
+            : ['no_response', 'reminder_failed', 'responded'].includes(contactStage)
+            ? meta.next
             : item.signals?.length
             ? item.signals.map(signal => signal.title).join(', ')
             : meta.next;

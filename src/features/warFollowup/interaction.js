@@ -8,6 +8,7 @@ const moderation = require('./moderation');
 const { isWarFollowupCustomId, parseCustomId } = require('./customIds');
 const { isPlayerReplyCaptureEnabled, warFollowupStateStore } = require('./stateStore');
 const { ensureDashboard, ensureModerationHub } = require('./dashboard');
+const { prepareContactMessage } = require('./contactMessages');
 
 const directDmInFlight = new Set();
 const busyStateKey = Symbol('warFollowupBusyState');
@@ -358,6 +359,20 @@ function moderatorIdentity(interaction) {
     };
 }
 
+async function syncModeratorPreferenceQuietly(interaction, preference) {
+    try {
+        await service.syncModeratorPreference(interaction.guildId, preference, { maxAttempts: 1, timeoutMs: 10_000 });
+        return true;
+    } catch (error) {
+        console.error('War Follow Up moderator website sync failed:', {
+            guildId: interaction.guildId,
+            discordId: preference?.discordId || '',
+            error: error?.message || String(error)
+        });
+        return false;
+    }
+}
+
 async function buildCoverageForInteraction(interaction, workspace) {
     const guildRecord = warFollowupStateStore.getGuild(interaction.guildId);
     const resolveMember = moderation.createMemberResolver(interaction.guild);
@@ -432,6 +447,9 @@ async function handleDirectMessage(interaction, tagRaw, viewTokenRaw) {
     if (!config.features.directMessages) throw new Error('Direct DMs are not opted in for this server.');
     const generalContact = item.case?.contactPurpose === 'general';
     const removalContact = item.case?.contactPurpose === 'removal';
+    if (generalContact && !isPlayerReplyCaptureEnabled(config)) {
+        throw new Error('Player reply capture is disabled. Enable it before sending a Contact player message through the bot.');
+    }
     if (!item.player?.discordId) throw new Error('This player has no linked Discord ID.');
     const deliveryKey = directDmDeliveryKey(item);
     const scopedDeliveryKey = `${interaction.guildId}:${deliveryKey}`;
@@ -451,20 +469,10 @@ async function handleDirectMessage(interaction, tagRaw, viewTokenRaw) {
         assertCurrentCaseView(item, viewTokenRaw);
         if (item.status !== 'needs_dm') throw new Error('This follow-up is no longer waiting for a DM.');
         if (!config.features.directMessages) throw new Error('Direct DMs were disabled before this message was sent.');
-        let message = String(item.case?.dmText || '').trim();
-        if (!message) throw new Error('The prepared decision message is empty.');
-        if (generalContact && isPlayerReplyCaptureEnabled(config)) {
-            const replyPrompt = '\n\nIf you would like to explain, reply to this message. Your reply will be forwarded privately to the moderation team.';
-            if (!message.includes(replyPrompt.trim())) {
-                if (message.length + replyPrompt.length > 2000) {
-                    throw new Error('The prepared contact message is too long to include the required reply instructions. Shorten it, then send it again.');
-                }
-                message += replyPrompt;
-            }
+        if (generalContact && !isPlayerReplyCaptureEnabled(config)) {
+            throw new Error('Player reply capture was disabled before this message was sent.');
         }
-        if (message.length > 2000) {
-            throw new Error('The prepared decision message exceeds Discord\'s 2,000-character limit. Reopen the decision and shorten it first.');
-        }
+        const message = prepareContactMessage(item.case?.dmText, item.case?.contactPurpose);
         // Persist an at-most-once reservation before the irreversible API call.
         // If the process stops after Discord accepts the DM, the next attempt
         // remains safely blocked instead of sending the same decision twice.
@@ -608,7 +616,7 @@ async function handleButtonOrSelect(interaction, parsed) {
         const clanTags = (interaction.values || []).map(workflow.normalizeTag).filter(tag => available.has(tag));
         if (clanTags.length !== (interaction.values || []).length) throw new Error('One selected clan is no longer available. Reopen your settings.');
         const identity = moderatorIdentity(interaction);
-        warFollowupStateStore.upsertModerator(interaction.guildId, identity.discordId, {
+        const preference = warFollowupStateStore.upsertModerator(interaction.guildId, identity.discordId, {
             displayName: identity.displayName,
             clanTags
         });
@@ -619,6 +627,14 @@ async function handleButtonOrSelect(interaction, parsed) {
             identity.displayName
         )));
         await refreshModerationHubQuietly(interaction, workspace);
+        const synced = await syncModeratorPreferenceQuietly(interaction, preference);
+        if (!synced) {
+            await interaction.followUp({
+                content: 'Your Discord settings were saved. Website access will sync automatically when the backend is reachable.',
+                flags: views.EPHEMERAL,
+                allowedMentions: { parse: [] }
+            });
+        }
         return;
     }
     if (action === 'modnotify' || action === 'modtoggle') {
@@ -636,7 +652,7 @@ async function handleButtonOrSelect(interaction, parsed) {
             }
             patch.accepting = current.accepting !== true;
         }
-        warFollowupStateStore.upsertModerator(interaction.guildId, identity.discordId, patch);
+        const preference = warFollowupStateStore.upsertModerator(interaction.guildId, identity.discordId, patch);
         const workspace = await service.loadWorkspace({ forcePrivate: false });
         await interaction.editReply(views.asEditPayload(views.buildModeratorSettingsPayload(
             workspace,
@@ -645,6 +661,14 @@ async function handleButtonOrSelect(interaction, parsed) {
             identity.displayName
         )));
         await refreshModerationHubQuietly(interaction, workspace);
+        const synced = await syncModeratorPreferenceQuietly(interaction, preference);
+        if (!synced) {
+            await interaction.followUp({
+                content: 'Your Discord settings were saved. Website access will sync automatically when the backend is reachable.',
+                flags: views.EPHEMERAL,
+                allowedMentions: { parse: [] }
+            });
+        }
         return;
     }
     if (action === 'gaps') {
@@ -933,7 +957,10 @@ async function handleCaseModal(interaction, parsed) {
     if (action === 'contactform') {
         mutationAction = 'contact';
         assertCaseActionAllowed(item, mutationAction);
-        patch = { dmText: String(interaction.fields.getTextInputValue('message') || '').trim() };
+        patch = {
+            dmText: String(interaction.fields.getTextInputValue('message') || '').trim(),
+            suppressAutomaticReminder: ['no_response', 'reminder_failed'].includes(String(item.case?.contactStage || '').trim())
+        };
         if (!patch.dmText) throw new Error('The contact message cannot be empty.');
     } else if (action === 'waitform') {
         mutationAction = 'wait';

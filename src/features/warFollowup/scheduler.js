@@ -7,6 +7,11 @@ const { warFollowupStateStore } = require('./stateStore');
 const { buildSummaryBaselineKeys, planNotifications } = require('./notificationPlanner');
 const { synchronizeModerationCases } = require('./moderation');
 const {
+    syncModeratorDirectory,
+    processQueuedDiscordDms,
+    processContactAutomations
+} = require('./automation');
+const {
     ensureDashboard,
     ensureModerationHub,
     resolveConfiguredChannel,
@@ -241,6 +246,22 @@ async function processGuild(client, guildState, workspace, options = {}) {
         return { guildId, skipped: true, reason: 'disabled-during-tick', planned: 0, sent: [] };
     }
     const channel = await resolveConfiguredChannel(client, guildId, config.channelId);
+    const moderatorSync = await syncModeratorDirectory(guildId, store);
+    for (const result of moderatorSync.filter(entry => entry.synced === false)) {
+        logSchedulerError(`Moderator website sync failed for guild ${guildId} and user ${result.discordId}`, result.error);
+    }
+    const queuedDmResults = await processQueuedDiscordDms(client, guildId, workspace, store, config);
+    const contactAutomationResults = await processContactAutomations(
+        client,
+        guildId,
+        workspace,
+        store,
+        config,
+        options.now || new Date()
+    );
+    for (const result of [...queuedDmResults, ...contactAutomationResults].filter(entry => entry.action === 'error')) {
+        logSchedulerError(`War Follow Up player DM automation failed for guild ${guildId} and case ${result.tag}`, result.error);
+    }
     const moderationSync = await synchronizeModerationCases(
         channel.guild,
         guildId,
@@ -356,6 +377,9 @@ async function processGuild(client, guildState, workspace, options = {}) {
         deferred: prepared.deferred.length,
         sent,
         moderationMutations: moderationSync.mutations
+            .concat(queuedDmResults.filter(entry => entry.action !== 'error'))
+            .concat(contactAutomationResults.filter(entry => entry.action !== 'error')),
+        moderatorSyncs: moderatorSync.filter(entry => entry.synced === true).length
     };
 }
 

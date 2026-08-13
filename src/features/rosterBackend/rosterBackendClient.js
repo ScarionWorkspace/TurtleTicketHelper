@@ -515,6 +515,14 @@ function getWarFollowupState(options = {}) {
     );
 }
 
+function syncWarFollowupModerator(moderator = {}, options = {}) {
+    return callWarFollowupMethod(
+        'syncWarFollowupModerator',
+        [moderator, ROSTER_BOT_SECRET],
+        options
+    );
+}
+
 function getWarFollowupCase(playerTag, options = {}) {
     return callWarFollowupMethod(
         'getWarFollowupCase',
@@ -590,6 +598,7 @@ module.exports = {
     clearCwlLeaguePreference,
     resetCwlLeaguePreferences,
     getWarFollowupState,
+    syncWarFollowupModerator,
     getWarFollowupCase,
     mutateWarFollowupCase,
     saveWarFollowupSettings,
