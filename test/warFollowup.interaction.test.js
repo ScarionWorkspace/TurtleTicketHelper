@@ -240,6 +240,7 @@ test('a delivered DM with a failed backend mutation retires the send controls an
     const workspace = buildWorkspace({
         tag: '#P0LYGQ',
         status: 'needs_dm',
+        contactPurpose: 'general',
         dmText: 'Prepared decision',
         updatedAt: '2026-08-01T00:00:00.000Z'
     });
@@ -247,6 +248,7 @@ test('a delivered DM with a failed backend mutation retires the send controls an
     const deliveries = [];
     const mutations = [];
     let dmSends = 0;
+    let deliveredPayload = null;
     t.mock.method(service, 'loadWorkspace', async () => workspace);
     t.mock.method(service, 'mutateCase', async (...args) => {
         mutations.push(args);
@@ -264,8 +266,9 @@ test('a delivered DM with a failed backend mutation retires the send controls an
             client: {
                 users: {
                     fetch: async () => ({
-                        send: async () => {
+                        send: async payload => {
                             dmSends += 1;
+                            deliveredPayload = payload;
                             return { id: '555555555555555555' };
                         }
                     })
@@ -276,6 +279,7 @@ test('a delivered DM with a failed backend mutation retires the send controls an
 
     assert.equal(await handleWarFollowupInteraction(interaction), true);
     assert.equal(dmSends, 1);
+    assert.match(deliveredPayload.content, /reply to this message/i);
     assert.deepEqual(deliveries.map(entry => entry[2].disposition), [
         'direct-dm-pending',
         'direct-dm-sent'

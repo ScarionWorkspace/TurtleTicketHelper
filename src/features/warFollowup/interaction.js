@@ -6,7 +6,7 @@ const service = require('./service');
 const views = require('./views');
 const moderation = require('./moderation');
 const { isWarFollowupCustomId, parseCustomId } = require('./customIds');
-const { warFollowupStateStore } = require('./stateStore');
+const { isPlayerReplyCaptureEnabled, warFollowupStateStore } = require('./stateStore');
 const { ensureDashboard, ensureModerationHub } = require('./dashboard');
 
 const directDmInFlight = new Set();
@@ -453,9 +453,14 @@ async function handleDirectMessage(interaction, tagRaw, viewTokenRaw) {
         if (!config.features.directMessages) throw new Error('Direct DMs were disabled before this message was sent.');
         let message = String(item.case?.dmText || '').trim();
         if (!message) throw new Error('The prepared decision message is empty.');
-        if (generalContact && config.features.playerReplies && !/\breply\b/i.test(message)) {
+        if (generalContact && isPlayerReplyCaptureEnabled(config)) {
             const replyPrompt = '\n\nIf you would like to explain, reply to this message. Your reply will be forwarded privately to the moderation team.';
-            if (message.length + replyPrompt.length <= 2000) message += replyPrompt;
+            if (!message.includes(replyPrompt.trim())) {
+                if (message.length + replyPrompt.length > 2000) {
+                    throw new Error('The prepared contact message is too long to include the required reply instructions. Shorten it, then send it again.');
+                }
+                message += replyPrompt;
+            }
         }
         if (message.length > 2000) {
             throw new Error('The prepared decision message exceeds Discord\'s 2,000-character limit. Reopen the decision and shorten it first.');

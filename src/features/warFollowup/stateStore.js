@@ -122,7 +122,19 @@ function sanitizeModerators(raw) {
 
 function sanitizeFeatures(raw) {
     const value = raw && typeof raw === 'object' ? raw : {};
-    return Object.fromEntries(FEATURE_KEYS.map(key => [key, value[key] === true]));
+    const features = Object.fromEntries(FEATURE_KEYS.map(key => [key, value[key] === true]));
+    // Reply capture is part of a staff-triggered Contact player DM, not a
+    // separate notification category. Preserve the legacy key so existing
+    // capture windows remain active if direct DMs are disabled later.
+    features.playerReplies = features.playerReplies || features.directMessages;
+    return features;
+}
+
+function isPlayerReplyCaptureEnabled(configRaw) {
+    const features = configRaw?.features && typeof configRaw.features === 'object'
+        ? configRaw.features
+        : (configRaw && typeof configRaw === 'object' ? configRaw : {});
+    return features.directMessages === true || features.playerReplies === true;
 }
 
 function sanitizeConfig(raw) {
@@ -532,6 +544,7 @@ module.exports = {
     createDefaultConfig,
     createDefaultGuildRecord,
     sanitizeConfig,
+    isPlayerReplyCaptureEnabled,
     sanitizeModerators,
     sanitizeGuildRecord,
     createWarFollowupStateStore,

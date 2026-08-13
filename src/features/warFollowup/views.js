@@ -13,6 +13,7 @@ const {
 } = require('discord.js');
 const workflow = require('./workflow');
 const { buildCustomId } = require('./customIds');
+const { isPlayerReplyCaptureEnabled } = require('./stateStore');
 
 const COLORS = Object.freeze({
     neutral: 0x5865f2,
@@ -697,7 +698,7 @@ function buildCasePayload(item, workspace, config) {
             value: recentConversation
         });
     }
-    if (item.status === 'waiting' && item.case?.contactPurpose === 'general' && item.case?.dmDeliveryMode === 'bot' && item.case?.dmMessageId && config?.features?.playerReplies === true) {
+    if (item.status === 'waiting' && item.case?.contactPurpose === 'general' && item.case?.dmDeliveryMode === 'bot' && item.case?.dmMessageId && isPlayerReplyCaptureEnabled(config)) {
         embed.addFields({
             name: 'Reply capture',
             value: 'Player messages are added to the private conversation for 72 hours after the bot DM. Replies are forwarded privately; no automatic decision is made.'
@@ -1474,8 +1475,7 @@ function buildSetupSummary(config, channelMention) {
         cwlDailyUpdates: 'CWL all-clear updates',
         cwlEndSummaries: 'CWL end summaries',
         missingDiscordDigest: 'Daily Discord-gap digest',
-        directMessages: 'Staff-triggered direct DMs',
-        playerReplies: 'Capture player DM replies'
+        directMessages: 'Contact-player DMs with private reply capture'
     };
     const featureLines = Object.entries(labels).map(([key, label]) =>
         `${config.features?.[key] ? '✅' : '⬜'} ${label}`

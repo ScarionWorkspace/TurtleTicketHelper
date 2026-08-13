@@ -62,6 +62,18 @@ test('configuration transitions timestamp only the categories explicitly enabled
     );
 });
 
+test('enabling direct DMs also enables reply capture for Contact player conversations', () => {
+    const { store } = createStore();
+    const config = store.patchConfig('111111111111111111', {
+        enabled: true,
+        channelId: '222222222222222222',
+        features: { directMessages: true, playerReplies: false }
+    });
+
+    assert.equal(config.features.directMessages, true);
+    assert.equal(config.features.playerReplies, true);
+});
+
 test('delivery keys and case baselines survive a fresh process read', () => {
     const { filePath, store } = createStore();
     store.patchConfig('111111111111111111', {

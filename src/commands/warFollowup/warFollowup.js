@@ -28,8 +28,7 @@ const FEATURE_OPTIONS = Object.freeze({
     'cwl-daily-updates': 'cwlDailyUpdates',
     'cwl-end-summaries': 'cwlEndSummaries',
     'discord-gap-digest': 'missingDiscordDigest',
-    'direct-dms': 'directMessages',
-    'player-replies': 'playerReplies'
+    'direct-dms': 'directMessages'
 });
 const VALID_PLAYER_TAG_PATTERN = /^#[PYLQGRJCUV0289]{3,15}$/;
 
@@ -56,8 +55,7 @@ function addSetupOptions(subcommand) {
         'cwl-daily-updates': 'Post when every tracked CWL attack for the active day is complete.',
         'cwl-end-summaries': 'Post the final CWL report, including everyone who missed attacks.',
         'discord-gap-digest': 'Post one daily staff digest for roster accounts without Discord links.',
-        'direct-dms': 'Allow staff to send the prepared decision DM through the bot.',
-        'player-replies': 'Capture replies to contact DMs and forward them to the assigned moderator.'
+        'direct-dms': 'Allow Contact player DMs and capture replies privately in the case.'
     };
 
     for (const optionName of Object.keys(FEATURE_OPTIONS)) {

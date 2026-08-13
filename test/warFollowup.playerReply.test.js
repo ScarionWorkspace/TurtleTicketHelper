@@ -50,7 +50,10 @@ function setup(t, workspace, options = {}) {
             enabled: true,
             channelId: '444444444444444444',
             staffRoleId: '555555555555555555',
-            features: { playerReplies: options.enabled !== false }
+            features: {
+                directMessages: options.enabled !== false,
+                playerReplies: options.legacyReplyFlag === true
+            }
         },
         moderators
     }]);
@@ -187,7 +190,7 @@ test('channel notification mode sends one private-content-safe moderator ping', 
     assert.deepEqual(setupState.channelMessages[0].allowedMentions.users, ['333333333333333333']);
 });
 
-test('disabled reply capture leaves player DMs untouched', async t => {
+test('disabled direct DMs with no legacy capture window leave player DMs untouched', async t => {
     const workspace = baseWorkspace();
     const setupState = setup(t, workspace, { enabled: false });
 
@@ -196,6 +199,16 @@ test('disabled reply capture leaves player DMs untouched', async t => {
     assert.deepEqual(result, { handled: true, captured: false });
     assert.equal(setupState.mutations.length, 0);
     assert.equal(setupState.playerMessages.length, 0);
+});
+
+test('direct DMs always capture Contact player replies without a second feature flag', async t => {
+    const workspace = baseWorkspace();
+    const setupState = setup(t, workspace, { enabled: true, legacyReplyFlag: false });
+
+    const result = await handleWarFollowupPlayerReply(setupState.message, setupState.client);
+
+    assert.deepEqual(result, { handled: true, captured: true });
+    assert.equal(setupState.mutations.length, 1);
 });
 
 test('replies to closed or non-contact cases are not assigned accidentally', async t => {

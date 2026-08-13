@@ -2,7 +2,7 @@
 
 const workflow = require('./workflow');
 const service = require('./service');
-const { warFollowupStateStore } = require('./stateStore');
+const { isPlayerReplyCaptureEnabled, warFollowupStateStore } = require('./stateStore');
 const { resolveConfiguredChannel } = require('./dashboard');
 
 const DISCORD_USER_ID_PATTERN = /^\d{17,20}$/;
@@ -202,7 +202,7 @@ async function handleWarFollowupPlayerReply(message, client) {
     if (!DISCORD_USER_ID_PATTERN.test(discordId) || !reply) return { handled: true, captured: false };
 
     const guilds = warFollowupStateStore.listEnabledGuilds()
-        .filter(guildState => guildState.config?.features?.playerReplies === true);
+        .filter(guildState => isPlayerReplyCaptureEnabled(guildState.config));
     if (!guilds.length) return { handled: true, captured: false };
 
     let workspace;
@@ -232,6 +232,12 @@ async function handleWarFollowupPlayerReply(message, client) {
                 }
             );
             captured = true;
+            console.info('War Follow Up captured a player DM reply:', {
+                guildId: guildState.guildId,
+                discordId,
+                tag: item.tag,
+                messageId: text(message.id).trim()
+            });
             const updatedItem = {
                 ...item,
                 status: updated?.status || item.status,
