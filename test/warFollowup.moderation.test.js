@@ -158,6 +158,68 @@ test('a new automated case is atomically created with its evidence snapshot and 
     assert.equal(store.assignments.length, 1);
 });
 
+test('a reopened case after a clan transfer uses the current clan moderator pool', async t => {
+    const closedAt = '2026-08-01T00:00:00.000Z';
+    const workspace = buildWorkspace({
+        tag: '#P0LYGQ',
+        name: 'Player',
+        sourceRosterId: 'old-clan',
+        sourceRosterTitle: 'Old Clan',
+        sourceClanTag: '#CLANA',
+        status: 'closed',
+        outcome: 'no_action',
+        closedAt,
+        evidence: { capturedAt: closedAt, regular: {}, cwl: {}, regularEvents: [], cwlEvents: [] },
+        createdAt: closedAt,
+        updatedAt: closedAt,
+        activity: []
+    });
+    workspace.rosterData.rosters[0].id = 'new-clan';
+    workspace.rosterData.rosters[0].title = 'New Clan';
+    workspace.rosterData.rosters[0].connectedClanTag = '#CLANB';
+    workspace.rosterData.playerWarPerformance = {
+        updatedAt: '2026-08-09T00:00:00.000Z',
+        byTag: {
+            '#P0LYGQ': {
+                recentRegularWarForm: [{
+                    eventId: 'new-war',
+                    warKey: 'new-war',
+                    clanTag: '#CLANB',
+                    finalizedAt: '2026-08-09T00:00:00.000Z',
+                    stats: { possibleAttacks: 2, usedAttacks: 0, attacksMissed: 2 }
+                }],
+                cwlSeasonContext: { bySeason: {} }
+            }
+        }
+    };
+    workspace.work = workflow.buildWorkItems(workspace.rosterData, workspace.privateState);
+    const calls = [];
+    t.mock.method(service, 'mutateCase', async (item, action, patch) => {
+        calls.push({ action, patch });
+        return {
+            ...item.case,
+            ...patch,
+            tag: item.tag,
+            status: 'needs_review',
+            openedAt: NOW.toISOString(),
+            assignedAt: NOW.toISOString(),
+            assignmentUpdatedAt: NOW.toISOString(),
+            lastMeaningfulActionAt: NOW.toISOString(),
+            updatedAt: NOW.toISOString()
+        };
+    });
+    const store = createStore({
+        [MOD_A]: moderator(MOD_A, { clanTags: ['#CLANA'] }),
+        [MOD_B]: moderator(MOD_B, { clanTags: ['#CLANB'] })
+    });
+
+    await moderation.synchronizeModerationCases(guildWithEligibility(), GUILD_ID, workspace, store, { now: NOW });
+
+    assert.equal(calls[0].action, 'create_automatic');
+    assert.equal(calls[0].patch.sourceClanTag, '#CLANB');
+    assert.equal(calls[0].patch.assignedModeratorId, MOD_B);
+});
+
 test('72 hours of inactivity reassigns to another eligible moderator and never selects the inactive owner when an alternative exists', async t => {
     const oldAction = new Date(NOW.getTime() - 73 * 60 * 60 * 1000).toISOString();
     const workspace = buildWorkspace({

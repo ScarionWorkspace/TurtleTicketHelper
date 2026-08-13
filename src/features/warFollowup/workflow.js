@@ -407,6 +407,15 @@ function buildRegularEvidence(entryRaw, settingsRaw) {
     return { events, totals: statsSummary(totals) };
 }
 
+function cwlSeasonStartAt(seasonRaw) {
+    const season = toText(seasonRaw).trim();
+    const candidate = /^\d{4}-\d{2}$/.test(season)
+        ? `${season}-01T00:00:00.000Z`
+        : (/^\d{4}-\d{2}-\d{2}$/.test(season) ? `${season}T00:00:00.000Z` : season);
+    const ms = parseMs(candidate);
+    return ms > 0 ? new Date(ms).toISOString() : '';
+}
+
 function buildCwlEvidence(entryRaw, settingsRaw) {
     const settings = sanitizeSettings(settingsRaw);
     const entry = entryRaw && typeof entryRaw === 'object' ? entryRaw : {};
@@ -427,7 +436,9 @@ function buildCwlEvidence(entryRaw, settingsRaw) {
                 id: `cwl:${season}`,
                 legacyIds: [],
                 label: season,
-                at: `${season}-01T00:00:00.000Z`,
+                at: parseMs(value.lastEventAt) > 0 ? toText(value.lastEventAt).trim() : cwlSeasonStartAt(season),
+                finalizedAt: parseMs(value.lastEventAt) > 0 ? toText(value.lastEventAt).trim() : '',
+                seasonStartedAt: cwlSeasonStartAt(season),
                 clanTag: '',
                 stats
             };
@@ -541,7 +552,11 @@ function buildRosterCwlEvidence(rosterRaw, tagRaw) {
         id: `cwl:${season}`,
         legacyIds: [],
         label: season,
-        at: /^\d{4}-\d{2}$/.test(season) ? `${season}-01T00:00:00.000Z` : `${season}T00:00:00.000Z`,
+        at: parseMs(cwlStats.lastRefreshedAt) > 0
+            ? toText(cwlStats.lastRefreshedAt).trim()
+            : cwlSeasonStartAt(season),
+        finalizedAt: '',
+        seasonStartedAt: cwlSeasonStartAt(season),
         clanTag: normalizeTag(roster.connectedClanTag),
         stats
     };
@@ -577,6 +592,70 @@ function buildRosterCwlEvidenceForTag(rosterData, tagRaw, settingsRaw, preferred
     return { events, totals: statsSummary(totals) };
 }
 
+function mergeEvidenceSources(primaryRaw, secondaryRaw, limitRaw, kindRaw) {
+    const primary = primaryRaw && typeof primaryRaw === 'object' ? primaryRaw : {};
+    const secondary = secondaryRaw && typeof secondaryRaw === 'object' ? secondaryRaw : {};
+    const kind = kindRaw === 'cwl' ? 'cwl' : 'regular';
+    const limit = Math.max(1, toInt(limitRaw) || 1);
+    const events = (Array.isArray(primary.events) ? primary.events : []).slice();
+    const idsFor = eventRaw => {
+        const event = eventRaw && typeof eventRaw === 'object' ? eventRaw : {};
+        return Array.from(new Set([event.id, ...(Array.isArray(event.legacyIds) ? event.legacyIds : [])]
+            .map(value => toText(value).trim())
+            .filter(Boolean)));
+    };
+    const sameEvent = (left, right) => {
+        if (kind === 'regular') {
+            const leftClan = normalizeTag(left?.clanTag);
+            const rightClan = normalizeTag(right?.clanTag);
+            if (leftClan && rightClan && leftClan !== rightClan) return false;
+        }
+        const leftIds = new Set(idsFor(left));
+        return idsFor(right).some(id => leftIds.has(id));
+    };
+    const moreCompleteCwlStats = (preferredRaw, fallbackRaw) => {
+        const preferred = normalizeStats(preferredRaw);
+        const fallback = normalizeStats(fallbackRaw);
+        for (const key of ['warCount', 'possibleAttacks', 'usedAttacks', 'countedAttacks', 'starsTotal']) {
+            const difference = toInt(fallback[key]) - toInt(preferred[key]);
+            if (difference !== 0) return difference > 0 ? fallback : preferred;
+        }
+        return preferred;
+    };
+
+    for (const fallback of Array.isArray(secondary.events) ? secondary.events : []) {
+        const index = events.findIndex(event => sameEvent(event, fallback));
+        if (index < 0) {
+            events.push(fallback);
+            continue;
+        }
+        const preferred = events[index];
+        const preferredAt = parseMs(preferred?.at);
+        const fallbackAt = parseMs(fallback?.at);
+        const preferredFinalizedAt = parseMs(preferred?.finalizedAt);
+        const fallbackFinalizedAt = parseMs(fallback?.finalizedAt);
+        events[index] = {
+            ...fallback,
+            ...preferred,
+            at: fallbackAt > preferredAt ? fallback.at : preferred.at,
+            finalizedAt: fallbackFinalizedAt > preferredFinalizedAt ? fallback.finalizedAt : preferred.finalizedAt,
+            seasonStartedAt: toText(preferred?.seasonStartedAt || fallback?.seasonStartedAt).trim(),
+            clanTag: normalizeTag(preferred?.clanTag || fallback?.clanTag),
+            stats: kind === 'cwl' ? moreCompleteCwlStats(preferred?.stats, fallback?.stats) : preferred.stats,
+            legacyIds: Array.from(new Set([...idsFor(preferred), ...idsFor(fallback)]))
+                .filter(id => id !== toText(preferred?.id).trim())
+        };
+    }
+    events.sort((left, right) => parseMs(right.at) - parseMs(left.at) || toText(right.id).localeCompare(toText(left.id)));
+    events.splice(limit);
+    const totals = emptyStats();
+    for (const event of events) addStats(totals, event.stats);
+    totals.warCount = kind === 'cwl'
+        ? events.reduce((sum, event) => sum + toInt(event?.stats?.warCount), 0)
+        : events.length;
+    return { events, totals: statsSummary(totals) };
+}
+
 function buildEvidenceForTag(rosterData, tagRaw, settingsRaw, identityRaw) {
     const tag = normalizeTag(tagRaw);
     const store = rosterData?.playerWarPerformance && typeof rosterData.playerWarPerformance === 'object'
@@ -587,12 +666,19 @@ function buildEvidenceForTag(rosterData, tagRaw, settingsRaw, identityRaw) {
     const roster = findEvidenceRoster(rosterData, tag, identityRaw);
     const globalRegular = buildRegularEvidence(entry, settingsRaw);
     const globalCwl = buildCwlEvidence(entry, settingsRaw);
-    const regular = globalRegular.events.length
-        ? globalRegular
-        : buildRosterRegularEvidenceForTag(rosterData, tag, settingsRaw, roster);
-    const cwl = globalCwl.events.length
-        ? globalCwl
-        : buildRosterCwlEvidenceForTag(rosterData, tag, settingsRaw, roster);
+    const settings = sanitizeSettings(settingsRaw);
+    const regular = mergeEvidenceSources(
+        globalRegular,
+        buildRosterRegularEvidenceForTag(rosterData, tag, settings, roster),
+        settings.regularLookbackWars,
+        'regular'
+    );
+    const cwl = mergeEvidenceSources(
+        globalCwl,
+        buildRosterCwlEvidenceForTag(rosterData, tag, settings, roster),
+        settings.cwlLookbackSeasons,
+        'cwl'
+    );
     const rosterPerformance = roster?.warPerformance && typeof roster.warPerformance === 'object' ? roster.warPerformance : {};
     const rosterCwlStats = roster?.cwlStats && typeof roster.cwlStats === 'object' ? roster.cwlStats : {};
 
@@ -829,12 +915,24 @@ function buildEvidenceAfter(evidenceRaw, timestampRaw, baselineEvidenceRaw) {
     const baselineCwlById = new Map((Array.isArray(baselineEvidence.cwlEvents) ? baselineEvidence.cwlEvents : [])
         .filter(event => event && toText(event.id).trim())
         .map(event => [toText(event.id).trim(), event]));
+    const hasCapturedBaseline = parseMs(baselineEvidence.capturedAt) > 0;
+    const newestBaselineSeasonMs = Math.max(0, ...Array.from(baselineCwlById.values()).map(event =>
+        parseMs(event?.seasonStartedAt) || parseMs(cwlSeasonStartAt(
+            toText(event?.label || event?.id).replace(/^cwl:/, '').split(':after-close:')[0]
+        ))
+    ));
     const cwlEvents = (Array.isArray(evidence.cwlEvents) ? evidence.cwlEvents : []).map(eventRaw => {
         const event = eventRaw && typeof eventRaw === 'object' ? eventRaw : null;
         if (!event) return null;
         const id = toText(event.id).trim();
         const baseline = baselineCwlById.get(id);
-        if (!baseline) return parseMs(event.at) > parseMs(timestampRaw) ? event : null;
+        if (!baseline) {
+            const finalizedAtMs = parseMs(event.finalizedAt);
+            if (finalizedAtMs > parseMs(timestampRaw)) return event;
+            const seasonStartedAtMs = parseMs(event.seasonStartedAt) || parseMs(cwlSeasonStartAt(event.label));
+            if (hasCapturedBaseline && newestBaselineSeasonMs === 0) return event;
+            return seasonStartedAtMs > newestBaselineSeasonMs && seasonStartedAtMs > 0 ? event : null;
+        }
         const currentStats = normalizeStats(event.stats);
         const baselineStats = normalizeStats(baseline.stats);
         const delta = emptyStats();
@@ -1021,6 +1119,7 @@ function buildWorkItems(rosterData, privateStateRaw) {
             player: identity,
             case: caseValue,
             evidence: reopenedFromClosed && postCloseEvidence ? postCloseEvidence : evidence,
+            currentEvidence: evidence,
             signals: itemSignals,
             signalIds: itemSignals.map(signal => signal.id),
             status,

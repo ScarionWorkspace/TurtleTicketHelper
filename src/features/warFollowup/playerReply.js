@@ -87,6 +87,24 @@ function matchingCases(workspace, discordId, referencedMessageId = '') {
         : candidates;
 }
 
+function ambiguousReplyNotice(candidatesRaw) {
+    const candidates = Array.isArray(candidatesRaw) ? candidatesRaw : [];
+    const accounts = candidates.slice(0, 10).map(item => {
+        const name = cleanInline(item?.player?.name || item?.case?.name || item?.tag, 80);
+        const tag = cleanInline(workflow.normalizeTag(item?.tag), 24);
+        return `- ${name} (${tag})`;
+    });
+    const remaining = Math.max(0, candidates.length - accounts.length);
+    return [
+        "I couldn't tell which account your response is about because more than one linked account has an open conversation:",
+        '',
+        accounts.join('\n'),
+        remaining ? `- and ${remaining} more` : '',
+        '',
+        "Please use Discord's Reply action on the relevant bot message and send your response again. Nothing was added to either case."
+    ].filter((line, index, all) => line || (index > 0 && all[index - 1] !== '')).join('\n').slice(0, 2000);
+}
+
 function notificationDestinations(preference) {
     const mode = text(preference?.notificationMode).trim().toLowerCase();
     if (mode === 'dm') return ['dm'];
@@ -219,10 +237,14 @@ async function handleWarFollowupPlayerReply(message, client) {
     }
 
     let captured = false;
+    let ambiguousCandidates = [];
     for (const guildState of guilds) {
         const candidates = matchingCases(workspace, discordId, message.reference?.messageId);
         if (candidates.length !== 1) {
-            if (candidates.length > 1) console.warn('War Follow Up received an ambiguous player DM reply:', { discordId, guildId: guildState.guildId });
+            if (candidates.length > 1) {
+                if (!ambiguousCandidates.length) ambiguousCandidates = candidates;
+                console.warn('War Follow Up received an ambiguous player DM reply:', { discordId, guildId: guildState.guildId });
+            }
             continue;
         }
         const item = candidates[0];
@@ -285,11 +307,16 @@ async function handleWarFollowupPlayerReply(message, client) {
         }
     }
 
-    if (captured && typeof message.channel?.send === 'function') {
-        await message.channel.send({
-            content: 'Thanks — your response was forwarded to the moderation team.',
-            allowedMentions: { parse: [] }
-        }).catch(error => console.error('War Follow Up could not acknowledge a player DM reply:', error?.message || String(error)));
+    if (typeof message.channel?.send === 'function') {
+        const acknowledgement = captured
+            ? 'Thanks — your response was forwarded to the moderation team.'
+            : (ambiguousCandidates.length ? ambiguousReplyNotice(ambiguousCandidates) : '');
+        if (acknowledgement) {
+            await message.channel.send({
+                content: acknowledgement,
+                allowedMentions: { parse: [] }
+            }).catch(error => console.error('War Follow Up could not acknowledge a player DM reply:', error?.message || String(error)));
+        }
     }
     return { handled: true, captured };
 }
@@ -298,6 +325,7 @@ module.exports = {
     handleWarFollowupPlayerReply,
     responseText,
     matchingCases,
+    ambiguousReplyNotice,
     legacyDmSenderId,
     replyNotificationPlan
 };

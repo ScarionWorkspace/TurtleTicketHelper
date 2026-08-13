@@ -155,10 +155,19 @@ async function synchronizeModerationCases(guild, guildId, workspaceRaw, store, o
     for (const tag of tags) {
         let item = workspace.work.items.find(candidate => candidate.tag === tag);
         if (!item) continue;
-        const clanTag = caseClanTag(item);
+        const currentPlayer = workspace?.work?.directory?.byTag?.[tag] || null;
+        const reopeningForNewEvidence = Boolean(
+            item.case &&
+            ['closed', 'dismissed'].includes(item.case.status) &&
+            item.status === 'needs_review'
+        );
+        // Preserve the old source on the closed audit record, but choose the
+        // new case owner from the clan where the player is currently rostered.
+        const clanTag = reopeningForNewEvidence && currentPlayer
+            ? workflow.normalizeTag(currentPlayer.clanTag)
+            : caseClanTag(item);
         const guildRecord = store.getGuild(guildId);
         const eligible = await getEligibleModerators(guild, guildRecord, clanTag, { resolveMember });
-        const currentPlayer = workspace?.work?.directory?.byTag?.[tag] || null;
 
         if (item.case?.status === 'watching') {
             if (item.status === 'needs_review' && item.signals?.length) {

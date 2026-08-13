@@ -534,8 +534,8 @@ async function mutateAndRender(interaction, action, tagRaw, viewTokenRaw, patch 
     const item = findItem(workspace, tagRaw);
     assertCurrentCaseView(item, viewTokenRaw);
     assertCaseActionAllowed(item, action);
-    const requestPatch = ['dismiss', 'approve_return', 'close', 'cancel_removal', 'approve_rejoin'].includes(action)
-        ? { ...patch, evidence: patch.evidence || item.evidence }
+    const requestPatch = ['dismiss', 'resolve', 'approve_return', 'close', 'cancel_removal', 'approve_rejoin'].includes(action)
+        ? { ...patch, evidence: item.currentEvidence || patch.evidence || item.evidence }
         : patch;
     const mutationId = service.mutationId(`${interaction.id}:${action}:${item.tag}`);
     const request = service.buildMutationRequest(item, action, requestPatch, {
@@ -1348,6 +1348,10 @@ async function handleCaseModal(interaction, parsed) {
         };
     } else {
         throw new Error('Unsupported War Follow Up case form.');
+    }
+
+    if (['dismiss', 'resolve', 'approve_return', 'close', 'cancel_removal', 'approve_rejoin'].includes(mutationAction)) {
+        patch = { ...patch, evidence: item.currentEvidence || patch.evidence || item.evidence };
     }
 
     const mutationId = service.mutationId(`${interaction.id}:${mutationAction}:${item.tag}`);

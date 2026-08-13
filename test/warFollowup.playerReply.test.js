@@ -5,6 +5,11 @@ const { test } = require('node:test');
 const service = require('../src/features/warFollowup/service');
 const { warFollowupStateStore } = require('../src/features/warFollowup/stateStore');
 const { handleWarFollowupPlayerReply } = require('../src/features/warFollowup/playerReply');
+const {
+    CONTACT_REPLY_PROMPT,
+    LEGACY_CONTACT_REPLY_PROMPT,
+    prepareContactMessage
+} = require('../src/features/warFollowup/contactMessages');
 
 function baseWorkspace(status = 'waiting') {
     const item = {
@@ -126,6 +131,17 @@ function setup(t, workspace, options = {}) {
     };
     return { client, message, mutations, moderatorMessages, directMessages, channelMessages, playerMessages };
 }
+
+test("Contact player explicitly requests Discord's Reply action without duplicating legacy instructions", () => {
+    const fresh = prepareContactMessage('Please tell us what happened.', 'general');
+    const upgraded = prepareContactMessage(`Please tell us what happened.\n\n${LEGACY_CONTACT_REPLY_PROMPT}`, 'general');
+
+    assert.match(fresh, /Discord's Reply action/);
+    assert.equal(fresh.endsWith(CONTACT_REPLY_PROMPT), true);
+    assert.equal(upgraded.endsWith(CONTACT_REPLY_PROMPT), true);
+    assert.equal(upgraded.includes(LEGACY_CONTACT_REPLY_PROMPT), false);
+    assert.equal(upgraded.split(CONTACT_REPLY_PROMPT).length - 1, 1);
+});
 
 test('captures an opted-in player reply, moves the case back to review, and privately notifies the moderator', async t => {
     const workspace = baseWorkspace();
@@ -266,6 +282,33 @@ test('a Discord message reply identifies the correct case when one player has tw
     assert.equal(setupState.mutations.length, 1);
     assert.equal(setupState.mutations[0][0].tag, '#P0LYGQ');
     assert.equal(setupState.mutations[0][3].responseToMessageId, '888888888888888888');
+});
+
+test('an unthreaded reply for two linked accounts is not lost or attached to the wrong case', async t => {
+    const workspace = baseWorkspace();
+    workspace.work.items.push({
+        ...structuredClone(workspace.work.items[0]),
+        tag: '#Q2L9CG',
+        player: { name: 'Beta', discordId: '222222222222222222' },
+        case: {
+            ...structuredClone(workspace.work.items[0].case),
+            tag: '#Q2L9CG',
+            dmMessageId: '999999999999999999',
+            dmSentAt: '2026-08-12T11:00:00.000Z'
+        }
+    });
+    const setupState = setup(t, workspace);
+
+    const result = await handleWarFollowupPlayerReply(setupState.message, setupState.client);
+
+    assert.deepEqual(result, { handled: true, captured: false });
+    assert.equal(setupState.mutations.length, 0);
+    assert.equal(setupState.playerMessages.length, 1);
+    assert.match(setupState.playerMessages[0].content, /couldn't tell which account/i);
+    assert.match(setupState.playerMessages[0].content, /Alpha.*#P0LYGQ/s);
+    assert.match(setupState.playerMessages[0].content, /Beta.*#Q2L9CG/s);
+    assert.match(setupState.playerMessages[0].content, /Discord's Reply action/i);
+    assert.match(setupState.playerMessages[0].content, /Nothing was added to either case/i);
 });
 
 test('the contact sender always receives the player response even when another moderator owns the case', async t => {
