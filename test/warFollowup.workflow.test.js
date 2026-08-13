@@ -102,6 +102,70 @@ test('Discord workflow derives the same conservative automatic signals as the ad
     assert.equal(item.player.discordId, '111111111111111111');
 });
 
+test('Discord follow-up keeps post-max loot attacks as used but excludes them from performance cases', () => {
+    const rosterData = buildRosterData();
+    delete rosterData.playerWarPerformance;
+    rosterData.rosters[0].warPerformance = {
+        lastRefreshedAt: '2026-08-12T18:02:00.000Z',
+        regularWarHistoryByKey: {
+            'rw-post-max': {
+                warKey: 'rw-post-max',
+                authoritative: true,
+                finalizedAt: '2026-08-12T18:02:00.000Z',
+                statsByTag: {
+                    '#P0LYGQ': {
+                        possibleAttacks: 2,
+                        usedAttacks: 2,
+                        attacksMade: 2,
+                        attacksMissed: 0,
+                        countedAttacks: 2,
+                        starsTotal: 2,
+                        totalDestruction: 80
+                    }
+                },
+                formStatsByTag: {
+                    '#P0LYGQ': {
+                        possibleAttacks: 2,
+                        usedAttacks: 2,
+                        attacksMade: 2,
+                        attacksMissed: 0,
+                        countedAttacks: 0,
+                        formEligibleAttacks: 0,
+                        starsTotal: 0,
+                        totalDestruction: 0
+                    }
+                }
+            }
+        }
+    };
+    const settings = {
+        regularLookbackWars: 1,
+        regularMissedThreshold: 1,
+        regularPerformanceEnabled: true,
+        regularMinimumAttacks: 1,
+        regularAverageStarsThreshold: 1.8,
+        regularAverageDestructionThreshold: 75,
+        cwlPerformanceEnabled: false
+    };
+
+    const evidence = workflow.buildEvidenceForTag(rosterData, '#P0LYGQ', settings);
+    assert.equal(evidence.regular.possibleAttacks, 2);
+    assert.equal(evidence.regular.usedAttacks, 2);
+    assert.equal(evidence.regular.missedAttacks, 0);
+    assert.equal(evidence.regular.countedAttacks, 0);
+    assert.equal(evidence.regular.starsTotal, 0);
+    assert.deepEqual(workflow.buildSignals(evidence, settings), []);
+
+    const rawOnly = structuredClone(rosterData);
+    delete rawOnly.rosters[0].warPerformance.regularWarHistoryByKey['rw-post-max'].formStatsByTag;
+    const unfilteredEvidence = workflow.buildEvidenceForTag(rawOnly, '#P0LYGQ', settings);
+    assert.equal(
+        workflow.buildSignals(unfilteredEvidence, settings).some(signal => signal.reasonCode === 'regular_performance'),
+        true,
+        'the fixture must prove that form filtering, rather than thresholds, prevents the case'
+    );
+});
+
 test('dismissed evidence stays closed until the evidence revision changes', () => {
     const data = buildRosterData();
     const first = workflow.buildWorkItems(data, { settings: {}, cases: [] });
