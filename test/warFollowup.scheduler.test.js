@@ -4,8 +4,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { afterEach, test } = require('node:test');
+const { afterEach, beforeEach, test } = require('node:test');
 const workflow = require('../src/features/warFollowup/workflow');
+const service = require('../src/features/warFollowup/service');
+const rosterBackend = require('../src/features/rosterBackend/rosterBackendClient');
 const { getStaffRoleIds } = require('../src/features/permissions/staffPermissions');
 const { createWarFollowupStateStore } = require('../src/features/warFollowup/stateStore');
 const {
@@ -112,6 +114,14 @@ afterEach(() => {
     while (temporaryDirectories.length) {
         fs.rmSync(temporaryDirectories.pop(), { recursive: true, force: true });
     }
+});
+
+beforeEach(t => {
+    // Scheduler tests are hermetic and must not depend on a live Apps Script
+    // deployment merely because a moderator preference exists in local state.
+    t.mock.method(service, 'syncModeratorPreference', async () => {
+        throw new Error('offline test backend');
+    });
 });
 
 test('moderation notifications are grouped per recipient and respect digest cooldowns', () => {
@@ -315,6 +325,40 @@ test('disabled installations perform no workspace or Discord work', async () => 
     const store = createStore();
     const result = await runWarFollowupTick({}, { store });
     assert.deepEqual(result, { skipped: true, reason: 'no-enabled-guilds' });
+});
+
+test('saved moderation changes retry even if the Discord integration is later disabled', async t => {
+    const store = createStore();
+    const mutationId = 'discord-wfu-disabled-retry';
+    store.enqueueMutation(GUILD_ID, {
+        id: mutationId,
+        state: 'pending',
+        action: 'contact',
+        tag: '#P0LYGQ',
+        actorId: '666666666666666666',
+        actorName: 'Moderator',
+        draftPreview: 'Message:\nPlease explain.',
+        request: {
+            action: 'contact',
+            tag: '#P0LYGQ',
+            expectedUpdatedAt: '2026-08-10T08:00:00.000Z',
+            mutationId,
+            dmText: 'Please explain.'
+        },
+        createdAt: '2026-08-10T08:01:00.000Z',
+        updatedAt: '2026-08-10T08:01:00.000Z'
+    });
+    t.mock.method(rosterBackend, 'mutateWarFollowupCase', async () => ({
+        tag: '#P0LYGQ',
+        status: 'needs_dm',
+        updatedAt: '2026-08-10T08:02:00.000Z',
+        mutationLedger: [{ mutationId, action: 'contact' }]
+    }));
+    t.mock.method(rosterBackend, 'getWarFollowupCase', async () => null);
+
+    const result = await runWarFollowupTick({}, { store, now: NOW });
+    assert.deepEqual(result, { skipped: true, reason: 'no-enabled-guilds', outboxProcessed: 1 });
+    assert.equal(store.getMutation(GUILD_ID, mutationId).state, 'committed');
 });
 
 test('an opt-out that lands during a tick prevents the queued notification', async () => {

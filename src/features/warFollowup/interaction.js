@@ -9,8 +9,21 @@ const { isWarFollowupCustomId, parseCustomId } = require('./customIds');
 const { isPlayerReplyCaptureEnabled, warFollowupStateStore } = require('./stateStore');
 const { ensureDashboard, ensureModerationHub } = require('./dashboard');
 const { prepareContactMessage } = require('./contactMessages');
+const mutationOutbox = require('./mutationOutbox');
 
 const directDmInFlight = new Set();
+const CASE_MODAL_ACTIONS = new Set([
+    'contactform',
+    'waitform',
+    'watchform',
+    'removeform',
+    'resolveform',
+    'heroform',
+    'extendform',
+    'noteform',
+    'markdmform',
+    'assignform'
+]);
 const busyStateKey = Symbol('warFollowupBusyState');
 const BUSY_LABELS = Object.freeze({
     home: 'Loading overview\u2026',
@@ -54,7 +67,9 @@ const BUSY_LABELS = Object.freeze({
     toggaps: 'Saving rules\u2026',
     defroster: 'Saving default roster\u2026',
     ignore: 'Ignoring player\u2026',
-    restore: 'Restoring player\u2026'
+    restore: 'Restoring player\u2026',
+    pendingcheck: 'Checking saved change\u2026',
+    pendingdiscard: 'Discarding saved draft\u2026'
 });
 
 function isEphemeralSource(interaction) {
@@ -182,6 +197,15 @@ async function replyError(interaction, error, prefix = '') {
         flags: views.EPHEMERAL,
         allowedMentions: { parse: [] }
     };
+    const preservedDraft = modalDraftPreview(interaction);
+    if (preservedDraft) {
+        payload.embeds = [{
+            color: views.COLORS.review,
+            title: 'Your submitted text was not discarded',
+            description: preservedDraft.split('\n').map(line => `> ${line || '\u200b'}`).join('\n').slice(0, 4096),
+            footer: { text: 'Copy this text before dismissing the error.' }
+        }];
+    }
     try {
         if (interaction.replied || interaction.deferred) await interaction.followUp(payload);
         else await interaction.reply(payload);
@@ -191,6 +215,33 @@ async function replyError(interaction, error, prefix = '') {
             error: replyFailure?.message || String(replyFailure)
         });
     }
+}
+
+function modalDraftPreview(interaction) {
+    if (!interaction?.isModalSubmit?.() || typeof interaction.fields?.getTextInputValue !== 'function') return '';
+    const action = parseCustomId(interaction.customId)?.action || '';
+    const fieldsByAction = {
+        contactform: [['message', 'Message']],
+        waitform: [['hours', 'Hours'], ['reason', 'Reason']],
+        watchform: [['wars', 'Wars']],
+        removeform: [['reason', 'Reason'], ['message', 'Player notice']],
+        resolveform: [['resolution', 'Resolution']],
+        heroform: [['wars', 'Clean wars'], ['no_misses', 'No misses'], ['message', 'Player message']],
+        extendform: [['wars', 'Clean wars'], ['no_misses', 'No misses'], ['message', 'Player message']],
+        noteform: [['note', 'Private note']],
+        markdmform: [['message', 'Message']],
+        assignform: [['handler', 'Handler']]
+    };
+    const values = [];
+    for (const [id, label] of fieldsByAction[action] || []) {
+        try {
+            const value = String(interaction.fields.getTextInputValue(id) || '').trim();
+            if (value) values.push(`${label}:\n${value}`);
+        } catch {
+            // Missing optional fields are not part of the preserved draft.
+        }
+    }
+    return values.join('\n\n').slice(0, 3800);
 }
 
 async function authorize(interaction) {
@@ -399,23 +450,121 @@ async function showCachedModal(interaction, builder) {
     }
     const modal = builder(workspace);
     if (!modal) throw new Error('This follow-up changed. Reopen it and try again.');
-    await interaction.showModal(modal);
+    const modalJson = modal.toJSON();
+    const parsed = parseCustomId(modalJson.custom_id);
+    let contextSaved = false;
+    if (parsed && CASE_MODAL_ACTIONS.has(parsed.action)) {
+        const item = findItem(workspace, parsed.values[0]);
+        if (!item) throw new Error('This follow-up changed. Reopen it and try again.');
+        warFollowupStateStore.recordModalContext(
+            interaction.guildId,
+            interaction.user?.id || interaction.member?.id,
+            modalJson.custom_id,
+            {
+                action: parsed.action,
+                tag: item.tag,
+                viewToken: parsed.values[1] || '',
+                item,
+                workspaceContext: {
+                    rosters: (workspace?.work?.directory?.rosters || []).map(roster => ({
+                        id: roster.id,
+                        title: roster.title,
+                        clanTag: roster.clanTag
+                    }))
+                }
+            }
+        );
+        contextSaved = true;
+    }
+    try {
+        await interaction.showModal(modal);
+    } catch (error) {
+        if (contextSaved) {
+            warFollowupStateStore.removeModalContext(
+                interaction.guildId,
+                interaction.user?.id || interaction.member?.id,
+                modalJson.custom_id
+            );
+        }
+        throw error;
+    }
+}
+
+function draftPreviewForMutation(action, patch) {
+    const blocks = [];
+    const add = (label, value) => {
+        const shown = String(value == null ? '' : value).trim();
+        if (shown) blocks.push(`${label}:\n${shown}`);
+    };
+    if (action === 'contact') add('Message', patch.dmText);
+    else if (action === 'wait') {
+        add('Follow-up', `${patch.followupHours} hours`);
+        add('Reason', patch.waitingReason);
+    } else if (action === 'watch') add('Monitoring period', `${patch.watchWarTarget} wars`);
+    else if (action === 'remove') {
+        add('Reason', patch.removalReason);
+        add('Player notice', patch.dmText);
+    } else if (action === 'resolve') add('Resolution', patch.resolutionNote);
+    else if (action === 'hero_down' || action === 'extend') {
+        add('Recovery period', `${patch.recoveryWarTarget} clean wars`);
+        add('Player message', patch.dmText);
+    } else if (action === 'add_note') add('Private note', patch.note);
+    else if (action === 'mark_dm_sent') add('Recorded message', patch.dmText);
+    else if (action === 'set_handler') add('Handler', patch.handledBy || 'Unassigned');
+    return blocks.join('\n\n').slice(0, 6000);
+}
+
+function latestLocalMutationForTag(guildId, tagRaw) {
+    const tag = workflow.normalizeTag(tagRaw);
+    return warFollowupStateStore.listMutations(guildId)
+        .filter(record => record.tag === tag && ['pending', 'conflict', 'failed'].includes(record.state))
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0] || null;
 }
 
 async function mutateAndRender(interaction, action, tagRaw, viewTokenRaw, patch = {}) {
     await beginBusyUpdate(interaction);
     const actor = service.getActorName(interaction);
-    let workspace = await service.loadWorkspace({ forcePrivate: true });
+    const pending = latestLocalMutationForTag(interaction.guildId, tagRaw);
+    if (pending) {
+        await interaction.editReply(views.asEditPayload(views.buildMutationOutboxPayload(pending)));
+        return;
+    }
+    let workspace = service.peekWorkspace();
+    if (!workspace) workspace = await service.loadWorkspace({ forcePrivate: true });
     const item = findItem(workspace, tagRaw);
     assertCurrentCaseView(item, viewTokenRaw);
     assertCaseActionAllowed(item, action);
-    await service.mutateCase(item, action, patch, {
+    const mutationId = service.mutationId(`${interaction.id}:${action}:${item.tag}`);
+    const request = service.buildMutationRequest(item, action, patch, {
         actor,
-        seed: `${interaction.id}:${action}:${item.tag}`
+        mutationId
     });
-    workspace = await service.loadWorkspace({ forcePrivate: true });
-    await interaction.editReply(views.asEditPayload(views.buildCasePayload(findItem(workspace, item.tag), workspace, getConfig(interaction))));
-    await refreshDashboardQuietly(interaction, workspace);
+    let record = warFollowupStateStore.enqueueMutation(interaction.guildId, {
+        id: mutationId,
+        state: 'pending',
+        action,
+        tag: item.tag,
+        actorId: interaction.user?.id || interaction.member?.id || '',
+        actorName: actor,
+        draftPreview: draftPreviewForMutation(action, patch),
+        request,
+        attempts: 0,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+    });
+    await interaction.editReply(views.asEditPayload(views.buildMutationOutboxPayload(record)));
+    const outcome = await mutationOutbox.executeMutation(interaction.guildId, mutationId, {
+        store: warFollowupStateStore,
+        force: true
+    });
+    record = outcome.record || record;
+    if (record.state === 'committed' && outcome.result && workspace?.rosterData) {
+        workspace = service.acceptConfirmedCase(workspace, outcome.result);
+        await interaction.editReply(views.asEditPayload(views.buildCasePayload(findItem(workspace, item.tag), workspace, getConfig(interaction))));
+        await refreshDashboardQuietly(interaction, workspace);
+        return;
+    }
+    await interaction.editReply(views.asEditPayload(views.buildMutationOutboxPayload(record)));
 }
 
 function numberField(interaction, id, min, max, label, integer = false) {
@@ -486,18 +635,41 @@ async function handleDirectMessage(interaction, tagRaw, viewTokenRaw) {
             messageId: dmMessage?.id,
             disposition: 'direct-dm-sent'
         });
-        await service.mutateCase(item, 'mark_dm_sent', {
+        const actor = service.getActorName(interaction);
+        const mutationId = service.mutationId(`${interaction.id}:send-dm:${item.tag}`);
+        const patch = {
             dmText: message,
             dmDeliveryMode: 'bot',
             dmMessageId: dmMessage?.id || '',
             dmSentByDiscordId: interaction.user?.id || interaction.member?.id || '',
-            dmSentByName: service.getActorName(interaction)
-        }, {
-            actor: service.getActorName(interaction),
-            seed: `${interaction.id}:send-dm:${item.tag}`
+            dmSentByName: actor
+        };
+        const request = service.buildMutationRequest(item, 'mark_dm_sent', patch, { actor, mutationId });
+        let record = warFollowupStateStore.enqueueMutation(interaction.guildId, {
+            id: mutationId,
+            state: 'pending',
+            action: 'mark_dm_sent',
+            tag: item.tag,
+            actorId: interaction.user?.id || interaction.member?.id || '',
+            actorName: actor,
+            draftPreview: draftPreviewForMutation('mark_dm_sent', patch),
+            request,
+            attempts: 0,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
         });
-        caseMarkedSent = true;
-        workspace = await service.loadWorkspace({ forcePrivate: true });
+        await interaction.editReply(views.asEditPayload(views.buildMutationOutboxPayload(record)));
+        const outcome = await mutationOutbox.executeMutation(interaction.guildId, mutationId, {
+            store: warFollowupStateStore,
+            force: true
+        });
+        record = outcome.record || record;
+        caseMarkedSent = record.state === 'committed';
+        if (!caseMarkedSent || !outcome.result) {
+            await interaction.editReply(views.asEditPayload(views.buildMutationOutboxPayload(record)));
+            return;
+        }
+        workspace = service.acceptConfirmedCase(workspace, outcome.result);
         await interaction.editReply(views.asEditPayload(views.buildCasePayload(findItem(workspace, item.tag), workspace, config)));
         await interaction.followUp({
             content: generalContact
@@ -574,6 +746,62 @@ async function handleButtonOrSelect(interaction, parsed) {
     const action = parsed.action;
     const [first, second, third] = parsed.values;
 
+    if (action === 'pendingcheck') {
+        await beginBusyUpdate(interaction);
+        const current = warFollowupStateStore.getMutation(interaction.guildId, first);
+        if (!current) throw new Error('This saved change is no longer in the local queue. Open the current case to see its authoritative state.');
+        const outcome = await mutationOutbox.executeMutation(interaction.guildId, first, {
+            store: warFollowupStateStore,
+            force: true
+        });
+        const record = outcome.record || current;
+        if (record.state === 'committed' && outcome.result) {
+            const cachedWorkspace = service.peekWorkspace();
+            if (cachedWorkspace?.rosterData) {
+                const confirmedWorkspace = service.acceptConfirmedCase(cachedWorkspace, outcome.result);
+                await interaction.editReply(views.asEditPayload(views.buildCasePayload(
+                    findItem(confirmedWorkspace, record.tag),
+                    confirmedWorkspace,
+                    getConfig(interaction)
+                )));
+                await refreshDashboardQuietly(interaction, confirmedWorkspace);
+                return;
+            }
+        }
+        await interaction.editReply(views.asEditPayload(views.buildMutationOutboxPayload(record)));
+        return;
+    }
+    if (action === 'pendingdiscard') {
+        await beginBusyUpdate(interaction);
+        const record = warFollowupStateStore.getMutation(interaction.guildId, first);
+        if (!record) throw new Error('This saved draft was already removed.');
+        if (record.state === 'pending') throw new Error('A possibly in-flight change cannot be discarded safely. Check its status first.');
+        const identity = moderatorIdentity(interaction);
+        if (record.actorId && record.actorId !== identity.discordId && !canTakeAnyWarFollowupCase(interaction.member)) {
+            throw new Error('Only the moderator who submitted this draft or senior leadership can discard it.');
+        }
+        warFollowupStateStore.removeMutation(interaction.guildId, first);
+        await interaction.editReply({
+            content: record.state === 'committed' ? 'Saved-change confirmation dismissed.' : 'Saved draft discarded. No backend change was made by this record.',
+            embeds: [],
+            components: [views.navigationRow()],
+            allowedMentions: { parse: [] }
+        });
+        return;
+    }
+    if (action === 'pendingpick') {
+        if (isEphemeralSource(interaction)) await beginBusyUpdate(interaction);
+        else await interaction.deferReply({ flags: views.EPHEMERAL });
+        const mutationId = interaction.values?.[0] || '';
+        const record = warFollowupStateStore.getMutation(interaction.guildId, mutationId);
+        const identity = moderatorIdentity(interaction);
+        if (!record || (record.actorId && record.actorId !== identity.discordId && !canTakeAnyWarFollowupCase(interaction.member))) {
+            throw new Error('That saved moderation change is no longer available to you.');
+        }
+        await interaction.editReply(views.asEditPayload(views.buildMutationOutboxPayload(record)));
+        return;
+    }
+
     if (action === 'home' || action === 'refresh') {
         await renderView(interaction, (workspace, config) => views.buildHomePayload(workspace, config), {
             forcePrivate: action === 'refresh'
@@ -593,7 +821,10 @@ async function handleButtonOrSelect(interaction, parsed) {
         return;
     }
     if (action === 'mycases') {
-        await renderView(interaction, workspace => views.buildMyCasesPayload(workspace, moderatorIdentity(interaction).discordId), {
+        const identity = moderatorIdentity(interaction);
+        const pendingMutations = warFollowupStateStore.listMutations(interaction.guildId)
+            .filter(record => record.actorId === identity.discordId && ['pending', 'conflict', 'failed'].includes(record.state));
+        await renderView(interaction, workspace => views.buildMyCasesPayload(workspace, identity.discordId, { pendingMutations }), {
             forcePrivate: true
         });
         return;
@@ -704,10 +935,24 @@ async function handleButtonOrSelect(interaction, parsed) {
     }
     if (action === 'pick') {
         const tag = interaction.values?.[0];
+        const localMutation = latestLocalMutationForTag(interaction.guildId, tag);
+        if (localMutation) {
+            if (isEphemeralSource(interaction)) await beginBusyUpdate(interaction);
+            else await interaction.deferReply({ flags: views.EPHEMERAL });
+            await interaction.editReply(views.asEditPayload(views.buildMutationOutboxPayload(localMutation)));
+            return;
+        }
         await renderView(interaction, (workspace, config) => views.buildCasePayload(findItem(workspace, tag), workspace, config));
         return;
     }
-    if (action === 'case') {
+    if (action === 'case' || action === 'casecurrent') {
+        const localMutation = action === 'case' ? latestLocalMutationForTag(interaction.guildId, first) : null;
+        if (localMutation) {
+            if (isEphemeralSource(interaction)) await beginBusyUpdate(interaction);
+            else await interaction.deferReply({ flags: views.EPHEMERAL });
+            await interaction.editReply(views.asEditPayload(views.buildMutationOutboxPayload(localMutation)));
+            return;
+        }
         await renderView(interaction, (workspace, config) => views.buildCasePayload(findItem(workspace, first), workspace, config));
         return;
     }
@@ -850,7 +1095,13 @@ async function handleButtonOrSelect(interaction, parsed) {
     }
     if (action === 'assignpick') {
         await beginBusyUpdate(interaction);
-        let workspace = await service.loadWorkspace({ forcePrivate: true });
+        const existingPending = latestLocalMutationForTag(interaction.guildId, first);
+        if (existingPending) {
+            await interaction.editReply(views.asEditPayload(views.buildMutationOutboxPayload(existingPending)));
+            return;
+        }
+        let workspace = service.peekWorkspace();
+        if (!workspace) workspace = await service.loadWorkspace({ forcePrivate: true });
         const item = findItem(workspace, first);
         assertCurrentCaseView(item, second);
         const eligible = await moderation.getEligibleModerators(
@@ -889,20 +1140,35 @@ async function handleButtonOrSelect(interaction, parsed) {
                 ? 'To take ownership outside your selected clans, a senior leadership role is required.'
                 : 'No eligible moderator is currently available for that assignment.');
         }
-        const result = await service.mutateCase(item, mutationAction, patch, {
-            actor: service.getActorName(interaction),
-            seed: `${interaction.id}:${mutationAction}:${item.tag}:${chosen?.discordId || 'unassigned'}`
+        const actor = service.getActorName(interaction);
+        const mutationId = service.mutationId(`${interaction.id}:${mutationAction}:${item.tag}:${chosen?.discordId || 'unassigned'}`);
+        const request = service.buildMutationRequest(item, mutationAction, patch, { actor, mutationId });
+        let record = warFollowupStateStore.enqueueMutation(interaction.guildId, {
+            id: mutationId,
+            state: 'pending',
+            action: mutationAction,
+            tag: item.tag,
+            actorId: identity.discordId,
+            actorName: actor,
+            draftPreview: chosen ? `Owner:\n${chosen.displayName}` : 'Owner:\nUnassigned',
+            request,
+            attempts: 0,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
         });
-        if (chosen) {
-            warFollowupStateStore.recordModeratorAssignment(
-                interaction.guildId,
-                chosen.discordId,
-                result?.assignedAt || new Date()
-            );
+        await interaction.editReply(views.asEditPayload(views.buildMutationOutboxPayload(record)));
+        const outcome = await mutationOutbox.executeMutation(interaction.guildId, mutationId, {
+            store: warFollowupStateStore,
+            force: true
+        });
+        record = outcome.record || record;
+        if (record.state === 'committed' && outcome.result && workspace?.rosterData) {
+            workspace = service.acceptConfirmedCase(workspace, outcome.result);
+            await interaction.editReply(views.asEditPayload(views.buildCasePayload(findItem(workspace, item.tag), workspace, getConfig(interaction))));
+            await refreshDashboardQuietly(interaction, workspace);
+            return;
         }
-        workspace = await service.loadWorkspace({ forcePrivate: true });
-        await interaction.editReply(views.asEditPayload(views.buildCasePayload(findItem(workspace, item.tag), workspace, getConfig(interaction))));
-        await refreshDashboardQuietly(interaction, workspace);
+        await interaction.editReply(views.asEditPayload(views.buildMutationOutboxPayload(record)));
         return;
     }
     if (action === 'dismiss') return mutateAndRender(interaction, 'dismiss', first, second);
@@ -946,9 +1212,32 @@ async function handleButtonOrSelect(interaction, parsed) {
 async function handleCaseModal(interaction, parsed) {
     const action = parsed.action;
     const [tagRaw, viewTokenRaw, rosterTokenRaw] = parsed.values;
-    await interaction.deferReply({ flags: views.EPHEMERAL });
-    let workspace = await service.loadWorkspace({ forcePrivate: true });
-    const item = findItem(workspace, tagRaw);
+    const userId = interaction.user?.id || interaction.member?.id || '';
+    const savedContext = warFollowupStateStore.getModalContext(
+        interaction.guildId,
+        userId,
+        interaction.customId
+    );
+    let workspace = null;
+    let item = null;
+    if (savedContext) {
+        item = savedContext.item;
+        workspace = {
+            work: {
+                directory: {
+                    rosters: Array.isArray(savedContext.workspaceContext?.rosters)
+                        ? savedContext.workspaceContext.rosters
+                        : []
+                }
+            }
+        };
+    } else {
+        // Compatibility for a modal opened just before a bot deployment. New
+        // modals always have a durable context and do not need this read.
+        await interaction.deferReply({ flags: views.EPHEMERAL });
+        workspace = service.peekWorkspace() || await service.loadWorkspace({ forcePrivate: true });
+        item = findItem(workspace, tagRaw);
+    }
     assertCurrentCaseView(item, viewTokenRaw);
     const actor = service.getActorName(interaction);
     let mutationAction = '';
@@ -1058,13 +1347,49 @@ async function handleCaseModal(interaction, parsed) {
         throw new Error('Unsupported War Follow Up case form.');
     }
 
-    await service.mutateCase(item, mutationAction, patch, {
+    const mutationId = service.mutationId(`${interaction.id}:${mutationAction}:${item.tag}`);
+    const request = service.buildMutationRequest(item, mutationAction, patch, {
         actor,
-        seed: `${interaction.id}:${mutationAction}:${item.tag}`
+        mutationId
     });
-    workspace = await service.loadWorkspace({ forcePrivate: true });
-    await interaction.editReply(views.asEditPayload(views.buildCasePayload(findItem(workspace, item.tag), workspace, getConfig(interaction))));
-    await refreshDashboardQuietly(interaction, workspace);
+    let record = warFollowupStateStore.enqueueMutation(interaction.guildId, {
+        id: mutationId,
+        state: 'pending',
+        action: mutationAction,
+        tag: item.tag,
+        actorId: userId,
+        actorName: actor,
+        draftPreview: draftPreviewForMutation(mutationAction, patch),
+        request,
+        attempts: 0,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+    });
+    if (!interaction.deferred && !interaction.replied) {
+        await interaction.deferReply({ flags: views.EPHEMERAL });
+    }
+    warFollowupStateStore.removeModalContext(interaction.guildId, userId, interaction.customId);
+    await interaction.editReply(views.asEditPayload(views.buildMutationOutboxPayload(record)));
+
+    const outcome = await mutationOutbox.executeMutation(interaction.guildId, mutationId, {
+        store: warFollowupStateStore,
+        force: true
+    });
+    record = outcome.record || record;
+    if (record.state === 'committed' && outcome.result) {
+        const cachedWorkspace = service.peekWorkspace();
+        if (cachedWorkspace?.rosterData) {
+            const confirmedWorkspace = service.acceptConfirmedCase(cachedWorkspace, outcome.result);
+            await interaction.editReply(views.asEditPayload(views.buildCasePayload(
+                findItem(confirmedWorkspace, item.tag),
+                confirmedWorkspace,
+                getConfig(interaction)
+            )));
+            await refreshDashboardQuietly(interaction, confirmedWorkspace);
+            return;
+        }
+    }
+    await interaction.editReply(views.asEditPayload(views.buildMutationOutboxPayload(record)));
 }
 
 async function handleRulesModal(interaction, parsed) {

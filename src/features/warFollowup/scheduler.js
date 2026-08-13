@@ -1,7 +1,7 @@
 'use strict';
 
 const { redactKnownSecrets } = require('../../config/env');
-const { loadWorkspace } = require('./service');
+const { loadWorkspace, invalidatePrivateStateCache } = require('./service');
 const workflow = require('./workflow');
 const { warFollowupStateStore } = require('./stateStore');
 const { buildSummaryBaselineKeys, planNotifications } = require('./notificationPlanner');
@@ -11,6 +11,7 @@ const {
     processQueuedDiscordDms,
     processContactAutomations
 } = require('./automation');
+const { processPendingMutations } = require('./mutationOutbox');
 const {
     ensureDashboard,
     ensureModerationHub,
@@ -388,8 +389,30 @@ async function runWarFollowupTick(client, options = {}) {
     schedulerRunning = true;
     try {
         const store = options.store || warFollowupStateStore;
+        let outboxResults = [];
+        try {
+            outboxResults = await processPendingMutations({
+                store,
+                now: options.now || new Date(),
+                // Keep the five-minute scheduler bounded even if Apps Script is
+                // unavailable. Remaining records stay durable for the next tick.
+                limit: 2,
+                timeoutMs: 8_000
+            });
+        } catch (error) {
+            // A damaged queue record must not suppress the existing war and
+            // moderation scheduler work for the entire server.
+            logSchedulerError('War Follow Up saved-change retry failed', error);
+        }
+        if (outboxResults.some(result => result.record?.state === 'committed')) {
+            invalidatePrivateStateCache();
+        }
         const guilds = store.listEnabledGuilds();
-        if (!guilds.length) return { skipped: true, reason: 'no-enabled-guilds' };
+        if (!guilds.length) {
+            return outboxResults.length
+                ? { skipped: true, reason: 'no-enabled-guilds', outboxProcessed: outboxResults.length }
+                : { skipped: true, reason: 'no-enabled-guilds' };
+        }
 
         const workspace = options.workspace || await loadWorkspace({ scheduler: true });
         const results = [];
@@ -401,7 +424,7 @@ async function runWarFollowupTick(client, options = {}) {
                 results.push({ guildId: guildState.guildId, error: error?.message || String(error) });
             }
         }
-        return { skipped: false, results };
+        return { skipped: false, results, outboxProcessed: outboxResults.length };
     } finally {
         schedulerRunning = false;
     }

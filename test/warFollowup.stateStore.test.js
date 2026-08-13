@@ -181,5 +181,80 @@ test('schema migration persists sanitized per-moderator clan and notification pr
     );
     const reloaded = createWarFollowupStateStore({ filePath }).getGuild('111111111111111111');
     assert.equal(reloaded.moderators['222222222222222222'].lastAssignedAt, '2026-08-09T13:00:00.000Z');
-    assert.equal(JSON.parse(fs.readFileSync(filePath, 'utf8')).schemaVersion, 3);
+    assert.equal(JSON.parse(fs.readFileSync(filePath, 'utf8')).schemaVersion, 4);
+});
+
+test('modal context and mutation outbox survive restart without changing their optimistic version', () => {
+    const { filePath, store } = createStore();
+    const guildId = '111111111111111111';
+    const userId = '222222222222222222';
+    const customId = 'wfu:1:contactform:I1AwTFlHUQ:dG9rZW4';
+    const item = {
+        tag: '#P0LYGQ',
+        status: 'needs_review',
+        player: { name: 'Alpha', discordId: '333333333333333333' },
+        case: { tag: '#P0LYGQ', status: 'needs_review', updatedAt: '2026-08-13T10:00:00.000Z' }
+    };
+    store.recordModalContext(guildId, userId, customId, {
+        action: 'contactform',
+        tag: '#P0LYGQ',
+        viewToken: 'token',
+        item,
+        workspaceContext: { rosters: [] }
+    }, new Date());
+    store.enqueueMutation(guildId, {
+        id: 'discord-wfu-durable-test',
+        state: 'pending',
+        action: 'contact',
+        tag: '#P0LYGQ',
+        actorId: userId,
+        actorName: 'Moderator',
+        draftPreview: 'Message:\nPlease explain what happened.',
+        request: {
+            action: 'contact',
+            tag: '#P0LYGQ',
+            expectedUpdatedAt: '2026-08-13T10:00:00.000Z',
+            mutationId: 'discord-wfu-durable-test',
+            dmText: 'Please explain what happened.'
+        },
+        createdAt: '2026-08-13T10:02:00.000Z',
+        updatedAt: '2026-08-13T10:02:00.000Z'
+    });
+
+    const reloaded = createWarFollowupStateStore({ filePath });
+    assert.equal(reloaded.getModalContext(guildId, userId, customId).item.case.updatedAt, '2026-08-13T10:00:00.000Z');
+    const queued = reloaded.getMutation(guildId, 'discord-wfu-durable-test');
+    assert.equal(queued.state, 'pending');
+    assert.equal(queued.request.expectedUpdatedAt, '2026-08-13T10:00:00.000Z');
+    assert.equal(queued.request.dmText, 'Please explain what happened.');
+    if (process.platform !== 'win32') assert.equal(fs.statSync(filePath).mode & 0o777, 0o600);
+});
+
+test('outbox IDs are idempotent and cannot be reused for different submitted text', () => {
+    const { store } = createStore();
+    const guildId = '111111111111111111';
+    const first = {
+        id: 'discord-wfu-idempotent-test',
+        state: 'pending',
+        action: 'contact',
+        tag: '#P0LYGQ',
+        actorId: '222222222222222222',
+        actorName: 'Moderator',
+        draftPreview: 'First message',
+        request: {
+            action: 'contact',
+            tag: '#P0LYGQ',
+            expectedUpdatedAt: '2026-08-13T10:00:00.000Z',
+            mutationId: 'discord-wfu-idempotent-test',
+            dmText: 'First message'
+        },
+        createdAt: '2026-08-13T10:02:00.000Z',
+        updatedAt: '2026-08-13T10:02:00.000Z'
+    };
+    assert.equal(store.enqueueMutation(guildId, first).request.dmText, 'First message');
+    assert.equal(store.enqueueMutation(guildId, first).request.dmText, 'First message');
+    assert.throws(() => store.enqueueMutation(guildId, {
+        ...first,
+        request: { ...first.request, dmText: 'Different message' }
+    }), /already attached to different data/i);
 });

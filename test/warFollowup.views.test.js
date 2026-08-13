@@ -448,6 +448,34 @@ test('My cases separates immediate work from replies and active recovery or remo
     assert.doesNotMatch(rendered, /in progress/i);
 });
 
+test('My cases replaces a stale backend task with its durable local syncing state', () => {
+    const workspace = buildWorkspace();
+    const moderatorId = '222222222222222222';
+    workspace.work.items = [{
+        tag: '#REVIEW1',
+        status: 'needs_review',
+        player: { name: 'Review Player' },
+        case: { status: 'needs_review', assignedModeratorId: moderatorId }
+    }];
+    const payload = views.buildMyCasesPayload(workspace, moderatorId, {
+        pendingMutations: [{
+            id: 'discord-wfu-pending-view',
+            state: 'pending',
+            action: 'contact',
+            tag: '#REVIEW1',
+            actorId: moderatorId
+        }]
+    });
+    const rendered = JSON.stringify(serialize(payload));
+
+    assert.match(rendered, /Saved changes \(1\)/);
+    assert.match(rendered, /Player message/);
+    assert.match(rendered, /Syncing safely/);
+    assert.match(rendered, /Needs action \(0\)/);
+    assert.match(rendered, /Open a saved change/);
+    assert.equal(payload.components.length <= 5, true);
+});
+
 test('assignment picker makes taking ownership explicit while retaining manual reassignment', () => {
     const workspace = buildWorkspace({
         tag: '#PLAYER',

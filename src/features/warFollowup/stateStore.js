@@ -3,9 +3,12 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 const MAX_DELIVERIES_PER_GUILD = 2500;
 const MAX_CASE_OBSERVATIONS_PER_GUILD = 1500;
+const MAX_MODAL_CONTEXTS_PER_GUILD = 250;
+const MAX_MUTATION_OUTBOX_PER_GUILD = 250;
+const MAX_STORED_MUTATION_BYTES = 128 * 1024;
 const SNOWFLAKE_PATTERN = /^\d{17,20}$/;
 const MODERATOR_NOTIFICATION_MODES = Object.freeze(['dm', 'channel', 'both']);
 const FEATURE_KEYS = Object.freeze([
@@ -58,6 +61,8 @@ function createDefaultGuildRecord() {
         },
         deliveries: {},
         moderators: {},
+        modalContexts: {},
+        mutationOutbox: {},
         observations: {
             caseFingerprints: {},
             casesInitializedAt: '',
@@ -93,6 +98,18 @@ function cleanClanTag(value) {
     const compact = cleanText(value, 24).toUpperCase().replace(/\s+/g, '').replace(/O/g, '0');
     if (!compact) return '';
     return compact.startsWith('#') ? compact : `#${compact}`;
+}
+
+function boundedJsonObject(valueRaw, maxBytes = MAX_STORED_MUTATION_BYTES) {
+    if (!valueRaw || typeof valueRaw !== 'object' || Array.isArray(valueRaw)) return null;
+    try {
+        const serialized = JSON.stringify(valueRaw);
+        if (!serialized || Buffer.byteLength(serialized, 'utf8') > maxBytes) return null;
+        const parsed = JSON.parse(serialized);
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+    } catch {
+        return null;
+    }
 }
 
 function sanitizeModerators(raw) {
@@ -202,6 +219,84 @@ function sanitizeCaseFingerprints(raw) {
     return Object.fromEntries(entries);
 }
 
+function sanitizeModalContexts(raw, nowMs = Date.now()) {
+    const value = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+    const entries = [];
+    for (const [rawKey, rawContext] of Object.entries(value)) {
+        const key = cleanText(rawKey, 220);
+        const context = rawContext && typeof rawContext === 'object' ? rawContext : {};
+        const userId = cleanSnowflake(context.userId);
+        const customId = cleanText(context.customId, 100);
+        const action = cleanText(context.action, 40).toLowerCase();
+        const tag = cleanClanTag(context.tag);
+        const createdAt = cleanTimestamp(context.createdAt);
+        const expiresAt = cleanTimestamp(context.expiresAt);
+        const item = boundedJsonObject(context.item);
+        const workspaceContext = boundedJsonObject(context.workspaceContext, 32 * 1024) || {};
+        if (!key || !userId || !customId || !action || !tag || !createdAt || !expiresAt || !item) continue;
+        if (new Date(expiresAt).getTime() <= nowMs) continue;
+        entries.push([key, {
+            key,
+            userId,
+            customId,
+            action,
+            tag,
+            viewToken: cleanText(context.viewToken, 80),
+            createdAt,
+            expiresAt,
+            item,
+            workspaceContext
+        }]);
+    }
+    entries.sort((left, right) => left[1].createdAt.localeCompare(right[1].createdAt));
+    return Object.fromEntries(entries.slice(-MAX_MODAL_CONTEXTS_PER_GUILD));
+}
+
+function sanitizeMutationError(raw) {
+    const value = raw && typeof raw === 'object' ? raw : {};
+    return {
+        code: cleanText(value.code, 80),
+        status: value.status != null && Number.isFinite(Number(value.status)) ? Number(value.status) : null,
+        message: cleanText(value.message, 1000)
+    };
+}
+
+function sanitizeMutationOutbox(raw) {
+    const value = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+    const allowedStates = new Set(['pending', 'committed', 'conflict', 'failed']);
+    const entries = [];
+    for (const [rawId, rawRecord] of Object.entries(value)) {
+        const record = rawRecord && typeof rawRecord === 'object' ? rawRecord : {};
+        const id = cleanText(rawId || record.id, 80);
+        const request = boundedJsonObject(record.request);
+        const action = cleanText(record.action || request?.action, 40).toLowerCase();
+        const tag = cleanClanTag(record.tag || request?.tag);
+        const createdAt = cleanTimestamp(record.createdAt);
+        const updatedAt = cleanTimestamp(record.updatedAt) || createdAt;
+        if (!/^[a-zA-Z0-9_-]{8,80}$/.test(id) || !request || !action || !tag || !createdAt) continue;
+        const state = allowedStates.has(record.state) ? record.state : 'pending';
+        entries.push([id, {
+            id,
+            state,
+            action,
+            tag,
+            actorId: cleanSnowflake(record.actorId),
+            actorName: cleanText(record.actorName, 80),
+            draftPreview: String(record.draftPreview || '').replace(/\r\n?/g, '\n').slice(0, 6000),
+            request,
+            attempts: Math.max(0, Math.min(1000, Number(record.attempts) || 0)),
+            createdAt,
+            updatedAt,
+            lastAttemptAt: cleanTimestamp(record.lastAttemptAt),
+            nextAttemptAt: cleanTimestamp(record.nextAttemptAt),
+            committedAt: cleanTimestamp(record.committedAt),
+            lastError: sanitizeMutationError(record.lastError)
+        }]);
+    }
+    entries.sort((left, right) => left[1].createdAt.localeCompare(right[1].createdAt));
+    return Object.fromEntries(entries.slice(-MAX_MUTATION_OUTBOX_PER_GUILD));
+}
+
 function sanitizeGuildRecord(raw) {
     const value = raw && typeof raw === 'object' ? raw : {};
     const dashboard = value.dashboard && typeof value.dashboard === 'object' ? value.dashboard : {};
@@ -227,6 +322,8 @@ function sanitizeGuildRecord(raw) {
         },
         deliveries: sanitizeDeliveries(value.deliveries),
         moderators: sanitizeModerators(value.moderators),
+        modalContexts: sanitizeModalContexts(value.modalContexts),
+        mutationOutbox: sanitizeMutationOutbox(value.mutationOutbox),
         observations: {
             caseFingerprints: sanitizeCaseFingerprints(observations.caseFingerprints),
             casesInitializedAt: cleanTimestamp(observations.casesInitializedAt),
@@ -296,11 +393,25 @@ function createWarFollowupStateStore(options = {}) {
             `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`
         );
         fs.mkdirSync(directory, { recursive: true });
-        fs.writeFileSync(temporaryPath, `${JSON.stringify(current, null, 2)}\n`, {
-            encoding: 'utf8',
-            flag: 'wx'
-        });
+        const descriptor = fs.openSync(temporaryPath, 'wx', 0o600);
+        try {
+            fs.writeFileSync(descriptor, `${JSON.stringify(current, null, 2)}\n`, { encoding: 'utf8' });
+            fs.fsyncSync(descriptor);
+        } finally {
+            fs.closeSync(descriptor);
+        }
         fs.renameSync(temporaryPath, filePath);
+        try {
+            const directoryDescriptor = fs.openSync(directory, 'r');
+            try {
+                fs.fsyncSync(directoryDescriptor);
+            } finally {
+                fs.closeSync(directoryDescriptor);
+            }
+        } catch {
+            // Some filesystems do not allow directory fsync. The atomic rename
+            // still leaves either the complete old state or complete new state.
+        }
         state = current;
     }
 
@@ -473,6 +584,147 @@ function createWarFollowupStateStore(options = {}) {
         return changed;
     }
 
+    function modalContextKey(userIdRaw, customIdRaw) {
+        const userId = cleanSnowflake(userIdRaw);
+        const customId = cleanText(customIdRaw, 100);
+        return userId && customId ? `${userId}:${customId}` : '';
+    }
+
+    function recordModalContext(guildIdRaw, userIdRaw, customIdRaw, contextRaw = {}, nowRaw = new Date()) {
+        const { record } = ensureGuild(guildIdRaw);
+        const key = modalContextKey(userIdRaw, customIdRaw);
+        if (!key) throw new Error('A valid modal context identity is required.');
+        const now = nowRaw instanceof Date ? nowRaw : new Date(nowRaw);
+        const createdAt = Number.isFinite(now.getTime()) ? now.toISOString() : new Date().toISOString();
+        const candidate = sanitizeModalContexts({
+            [key]: {
+                ...contextRaw,
+                key,
+                userId: userIdRaw,
+                customId: customIdRaw,
+                createdAt,
+                expiresAt: new Date(new Date(createdAt).getTime() + 60 * 60 * 1000).toISOString()
+            }
+        });
+        if (!candidate[key]) throw new Error('The moderation form context is too large to save safely.');
+        record.modalContexts = sanitizeModalContexts({ ...record.modalContexts, ...candidate });
+        save();
+        return clone(record.modalContexts[key]);
+    }
+
+    function getModalContext(guildIdRaw, userIdRaw, customIdRaw) {
+        const key = modalContextKey(userIdRaw, customIdRaw);
+        const record = getGuild(guildIdRaw);
+        return key && record.modalContexts[key] ? clone(record.modalContexts[key]) : null;
+    }
+
+    function removeModalContext(guildIdRaw, userIdRaw, customIdRaw) {
+        const { record } = ensureGuild(guildIdRaw);
+        const key = modalContextKey(userIdRaw, customIdRaw);
+        if (!key || !record.modalContexts[key]) return false;
+        delete record.modalContexts[key];
+        save();
+        return true;
+    }
+
+    function enqueueMutation(guildIdRaw, mutationRaw = {}) {
+        const { record } = ensureGuild(guildIdRaw);
+        const candidate = sanitizeMutationOutbox({ [mutationRaw.id]: mutationRaw });
+        const id = Object.keys(candidate)[0] || '';
+        if (!id) throw new Error('The moderation change could not be saved safely.');
+        const existing = record.mutationOutbox[id];
+        if (existing) {
+            if (JSON.stringify(existing.request) !== JSON.stringify(candidate[id].request)) {
+                throw new Error('This moderation change ID is already attached to different data.');
+            }
+            return clone(existing);
+        }
+        if (Object.keys(record.mutationOutbox).length >= MAX_MUTATION_OUTBOX_PER_GUILD) {
+            // Confirmed records are retained briefly for UI acknowledgements,
+            // but they must never prevent a new moderation action from being
+            // written durably. Never evict pending or reviewable records.
+            const committed = Object.entries(record.mutationOutbox)
+                .filter(([, entry]) => entry.state === 'committed')
+                .sort((left, right) => left[1].updatedAt.localeCompare(right[1].updatedAt));
+            while (committed.length && Object.keys(record.mutationOutbox).length >= MAX_MUTATION_OUTBOX_PER_GUILD) {
+                delete record.mutationOutbox[committed.shift()[0]];
+            }
+        }
+        if (Object.keys(record.mutationOutbox).length >= MAX_MUTATION_OUTBOX_PER_GUILD) {
+            throw new Error('The local moderation queue is full. Resolve its pending changes before adding another.');
+        }
+        record.mutationOutbox[id] = candidate[id];
+        save();
+        return clone(record.mutationOutbox[id]);
+    }
+
+    function getMutation(guildIdRaw, mutationIdRaw) {
+        const id = cleanText(mutationIdRaw, 80);
+        const record = getGuild(guildIdRaw);
+        return id && record.mutationOutbox[id] ? clone(record.mutationOutbox[id]) : null;
+    }
+
+    function listMutations(guildIdRaw, options = {}) {
+        const states = Array.isArray(options.states) ? new Set(options.states) : null;
+        return Object.values(getGuild(guildIdRaw).mutationOutbox || {})
+            .filter(record => !states || states.has(record.state))
+            .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+    }
+
+    function listGuildIdsWithMutations(options = {}) {
+        const states = Array.isArray(options.states) ? new Set(options.states) : null;
+        return Object.entries(load().guilds)
+            .filter(([, record]) => Object.values(record?.mutationOutbox || {}).some(entry => !states || states.has(entry.state)))
+            .map(([guildId]) => guildId);
+    }
+
+    function patchMutation(guildIdRaw, mutationIdRaw, patchRaw = {}, nowRaw = new Date()) {
+        const { record } = ensureGuild(guildIdRaw);
+        const id = cleanText(mutationIdRaw, 80);
+        const current = record.mutationOutbox[id];
+        if (!current) return null;
+        const now = nowRaw instanceof Date ? nowRaw : new Date(nowRaw);
+        const updatedAt = Number.isFinite(now.getTime()) ? now.toISOString() : new Date().toISOString();
+        const candidate = sanitizeMutationOutbox({
+            [id]: {
+                ...current,
+                ...(patchRaw && typeof patchRaw === 'object' ? patchRaw : {}),
+                id,
+                request: current.request,
+                createdAt: current.createdAt,
+                updatedAt
+            }
+        });
+        if (!candidate[id]) throw new Error('The local moderation queue update was invalid.');
+        record.mutationOutbox[id] = candidate[id];
+        save();
+        return clone(record.mutationOutbox[id]);
+    }
+
+    function removeMutation(guildIdRaw, mutationIdRaw) {
+        const { record } = ensureGuild(guildIdRaw);
+        const id = cleanText(mutationIdRaw, 80);
+        if (!id || !record.mutationOutbox[id]) return false;
+        delete record.mutationOutbox[id];
+        save();
+        return true;
+    }
+
+    function pruneCommittedMutations(guildIdRaw, nowRaw = new Date()) {
+        const { record } = ensureGuild(guildIdRaw);
+        const now = nowRaw instanceof Date ? nowRaw : new Date(nowRaw);
+        const nowMs = Number.isFinite(now.getTime()) ? now.getTime() : Date.now();
+        let removed = 0;
+        for (const [id, entry] of Object.entries(record.mutationOutbox || {})) {
+            const committedMs = new Date(entry.committedAt || entry.updatedAt || '').getTime();
+            if (entry.state !== 'committed' || !Number.isFinite(committedMs) || nowMs - committedMs < 24 * 60 * 60 * 1000) continue;
+            delete record.mutationOutbox[id];
+            removed += 1;
+        }
+        if (removed) save();
+        return removed;
+    }
+
     function replaceCaseObservations(guildIdRaw, observationsRaw, initializedAtRaw = new Date()) {
         const { record } = ensureGuild(guildIdRaw);
         const initializedAt = initializedAtRaw instanceof Date
@@ -533,6 +785,16 @@ function createWarFollowupStateStore(options = {}) {
         upsertModerator,
         recordModeratorAssignment,
         removeDeliveries,
+        recordModalContext,
+        getModalContext,
+        removeModalContext,
+        enqueueMutation,
+        getMutation,
+        listMutations,
+        listGuildIdsWithMutations,
+        patchMutation,
+        removeMutation,
+        pruneCommittedMutations,
         replaceCaseObservations,
         setLastMissingDiscordDigestDate,
         markSummaryBaselineInitialized,
@@ -547,6 +809,8 @@ module.exports = {
     FEATURE_KEYS,
     SUMMARY_FEATURE_KEYS,
     MAX_DELIVERIES_PER_GUILD,
+    MAX_MODAL_CONTEXTS_PER_GUILD,
+    MAX_MUTATION_OUTBOX_PER_GUILD,
     MODERATOR_NOTIFICATION_MODES,
     createDefaultConfig,
     createDefaultGuildRecord,

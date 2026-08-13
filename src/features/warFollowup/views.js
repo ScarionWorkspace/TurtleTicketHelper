@@ -1489,8 +1489,14 @@ function personalCaseGroupValue(items, emptyText) {
 
 function buildMyCasesPayload(workspace, userIdRaw, options = {}) {
     const userId = toText(userIdRaw).trim();
+    const pendingMutations = (Array.isArray(options.pendingMutations) ? options.pendingMutations : [])
+        .filter(record => record && ['pending', 'conflict', 'failed'].includes(record.state))
+        .slice(0, 25);
+    const locallyHeldTags = new Set(pendingMutations.map(record => workflow.normalizeTag(record.tag)));
     const items = (workspace?.work?.items || []).filter(item =>
-        ACTIVE_CASE_STATUSES.has(item.status) && item.case?.assignedModeratorId === userId
+        ACTIVE_CASE_STATUSES.has(item.status) &&
+        item.case?.assignedModeratorId === userId &&
+        !locallyHeldTags.has(item.tag)
     );
     const summary = moderationCaseSummary({ work: { items } }, {}, options.now || new Date());
     const activeRecoveryOrRemoval = [
@@ -1507,15 +1513,25 @@ function buildMyCasesPayload(workspace, userIdRaw, options = {}) {
     const visibleSet = new Set(visibleItems);
     const visible = category => category.filter(item => visibleSet.has(item));
     const embed = new EmbedBuilder()
-        .setColor(summary.actionable.length ? COLORS.review : (items.length ? COLORS.neutral : COLORS.success))
+        .setColor(summary.actionable.length || pendingMutations.some(record => record.state !== 'pending') ? COLORS.review : (items.length || pendingMutations.length ? COLORS.neutral : COLORS.success))
         .setTitle('My moderation cases')
-        .setDescription(items.length
+        .setDescription(items.length || pendingMutations.length
             ? (summary.actionable.length
                 ? '**Start with Needs action.** Waiting and active recovery cases remain visible for reference.'
-                : 'Nothing needs action right now. Waiting and active recovery cases remain visible for reference.') +
+                : (pendingMutations.some(record => record.state !== 'pending')
+                    ? '**A saved draft needs review.** Nothing was overwritten and its submitted text is still available.'
+                    : 'Nothing needs action right now. Waiting and syncing changes remain visible for reference.')) +
                     (items.length > visibleItems.length ? ` Showing 25 of ${items.length}; use **Full queue** for the rest.` : '')
             : 'You have no assigned moderation cases.')
         .addFields(
+            ...(pendingMutations.length ? [{
+                name: `Saved changes (${pendingMutations.length})`,
+                value: truncate(pendingMutations.map(record => {
+                    const label = record.state === 'pending' ? 'Syncing safely' : (record.state === 'conflict' ? 'Needs review' : 'Could not apply');
+                    const icon = record.state === 'pending' ? 'â³' : 'âš ï¸';
+                    return `${icon} **${mutationActionLabel(record.action)}** Â· ${label} Â· \`${record.tag}\``;
+                }).join('\n'), 1024)
+            }] : []),
             {
                 name: `Needs action (${summary.actionable.length})`,
                 value: personalCaseGroupValue(visible(summary.actionable), 'Nothing needs action right now.')
@@ -1534,6 +1550,17 @@ function buildMyCasesPayload(workspace, userIdRaw, options = {}) {
             }
         );
     const components = [];
+    if (pendingMutations.length) {
+        components.push(new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder()
+                .setCustomId(buildCustomId('pendingpick'))
+                .setPlaceholder('Open a saved change')
+                .addOptions(pendingMutations.map(record => new StringSelectMenuOptionBuilder()
+                    .setLabel(truncate(`${mutationActionLabel(record.action)} Â· ${record.tag}`, 100))
+                    .setDescription(truncate(record.state === 'pending' ? 'Syncing safely with the backend' : 'Open the preserved draft', 100))
+                    .setValue(record.id)))
+        ));
+    }
     if (items.length) {
         components.push(new ActionRowBuilder().addComponents(
             new StringSelectMenuBuilder()
@@ -1577,6 +1604,76 @@ function buildSetupSummary(config, channelMention) {
     return { embeds: [embed], flags: EPHEMERAL, allowedMentions: { parse: [] } };
 }
 
+function mutationActionLabel(actionRaw) {
+    const labels = {
+        contact: 'Player message',
+        wait: 'Follow-up',
+        watch: 'Monitoring decision',
+        remove: 'Removal decision',
+        resolve: 'Resolution',
+        hero_down: 'Hero-down decision',
+        extend: 'Recovery extension',
+        add_note: 'Private note',
+        mark_dm_sent: 'Delivered DM record',
+        set_handler: 'Case handler'
+    };
+    return labels[toText(actionRaw).trim()] || 'Moderation change';
+}
+
+function buildMutationOutboxPayload(recordRaw) {
+    const record = recordRaw && typeof recordRaw === 'object' ? recordRaw : {};
+    const state = toText(record.state).trim();
+    const pending = state === 'pending';
+    const committed = state === 'committed';
+    const conflict = state === 'conflict';
+    const deliveredDmUpdate = record.action === 'mark_dm_sent' && record.request?.dmDeliveryMode === 'bot';
+    const title = deliveredDmUpdate && !committed
+        ? 'DM delivered; case update saved'
+        : committed
+        ? 'Change saved'
+        : (conflict ? 'Saved draft needs review' : (state === 'failed' ? 'Saved draft could not be applied' : 'Change saved locally'));
+    const summary = deliveredDmUpdate && !committed
+        ? (conflict || state === 'failed'
+            ? 'The DM was delivered exactly once, but newer case state prevented its delivery record from being applied automatically. Do not resend it; review the preserved delivery details with the current case.'
+            : 'The DM was delivered exactly once. Its case update is saved locally and will retry automatically. Do not send the message again.')
+        : committed
+        ? 'The backend accepted this change. It is now part of the authoritative case history.'
+        : (conflict
+            ? 'The case changed before this queued version could be applied. Nothing was overwritten. Reopen the current case and use the preserved draft below if it is still appropriate.'
+            : (state === 'failed'
+                ? 'The backend rejected this change for a non-temporary reason. Nothing was applied, and the submitted text remains preserved below.'
+                : 'The bot saved this before contacting the backend. It will retry automatically with the same idempotent mutation ID. Nothing is sent to the player until the backend accepts the decision.'));
+    const draft = truncate(safeMultiline(record.draftPreview || 'No text fields were submitted.'), 3000);
+    const error = toText(record.lastError?.message).trim();
+    const timing = pending && record.nextAttemptAt
+        ? `Next automatic attempt ${workflow.discordRelativeTimestamp(record.nextAttemptAt)}.`
+        : '';
+    const description = [
+        summary,
+        timing,
+        error ? `**Backend detail:** ${safeInline(error)}` : '',
+        `**Preserved ${mutationActionLabel(record.action).toLowerCase()}**`,
+        draft.split('\n').map(line => `> ${line || '\u200b'}`).join('\n')
+    ].filter(Boolean).join('\n\n');
+    const embed = new EmbedBuilder()
+        .setColor(committed ? COLORS.success : (pending ? COLORS.neutral : COLORS.review))
+        .setTitle(title)
+        .setDescription(truncate(description, 4096))
+        .setFooter({ text: pending ? 'Safe to close this message; the queue survives bot restarts.' : 'The submitted text remains available here until you discard this record.' });
+    const buttons = [];
+    if (pending) buttons.push(actionButton('pendingcheck', 'Check now', ButtonStyle.Primary, record.id));
+    buttons.push(actionButton('casecurrent', 'Open current case', ButtonStyle.Secondary, record.tag));
+    if (conflict || state === 'failed' || committed) {
+        buttons.push(actionButton('pendingdiscard', committed ? 'Dismiss confirmation' : 'Discard saved draft', ButtonStyle.Secondary, record.id));
+    }
+    return {
+        embeds: [embed],
+        components: buttons.length ? [new ActionRowBuilder().addComponents(...buttons)] : [],
+        flags: EPHEMERAL,
+        allowedMentions: { parse: [] }
+    };
+}
+
 module.exports = {
     COLORS,
     EPHEMERAL,
@@ -1617,6 +1714,7 @@ module.exports = {
     buildMyCasesPayload,
     moderationCaseSummary,
     buildSetupSummary,
+    buildMutationOutboxPayload,
     navigationRow,
     asEditPayload,
     evidenceForDisplay

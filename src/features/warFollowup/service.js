@@ -197,15 +197,38 @@ function mutationBase(itemRaw, actorRaw) {
 }
 
 async function mutateCase(item, action, patch = {}, options = {}) {
-    const request = {
+    const request = buildMutationRequest(item, action, patch, options);
+    const result = await rosterBackend.mutateWarFollowupCase(request, options.requestOptions || {});
+    invalidatePrivateStateCache();
+    return workflow.normalizeCase(result);
+}
+
+function buildMutationRequest(item, action, patch = {}, options = {}) {
+    return {
         ...mutationBase(item, options.actor),
         ...(patch && typeof patch === 'object' ? patch : {}),
         action,
         mutationId: options.mutationId || mutationId(options.seed || `${action}:${item?.tag}:${Date.now()}`)
     };
-    const result = await rosterBackend.mutateWarFollowupCase(request);
+}
+
+function acceptConfirmedCase(workspaceRaw, caseRaw) {
+    const workspace = clone(workspaceRaw);
+    const confirmed = workflow.normalizeCase(caseRaw);
+    if (!workspace || !confirmed?.tag) return workspace;
+    const privateState = workspace.privateState && typeof workspace.privateState === 'object'
+        ? workspace.privateState
+        : { settings: workflow.sanitizeSettings(null), moderators: [], cases: [] };
+    const cases = (Array.isArray(privateState.cases) ? privateState.cases : [])
+        .filter(caseValue => workflow.normalizeTag(caseValue?.tag) !== confirmed.tag);
+    cases.push(confirmed);
+    workspace.privateState = { ...privateState, cases };
+    workspace.work = workflow.buildWorkItems(workspace.rosterData, workspace.privateState);
+    workspace.freshness = { privateStateStale: false };
     invalidatePrivateStateCache();
-    return workflow.normalizeCase(result);
+    latestWorkspace = clone(workspace);
+    latestWorkspaceCachedAt = Date.now();
+    return workspace;
 }
 
 async function ensureManualCase(tagRaw, workspace, actorRaw, seedRaw) {
@@ -336,6 +359,8 @@ module.exports = {
     getActorName,
     mutationId,
     mutationBase,
+    buildMutationRequest,
+    acceptConfirmedCase,
     mutateCase,
     ensureManualCase,
     setTrustedAccount,
