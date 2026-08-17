@@ -143,6 +143,11 @@ test('moderation notifications are grouped per recipient and respect digest cool
     assert.equal(first.notifications[0].content, `<@${moderatorId}>`);
     assert.equal(first.notifications[0].consumeKeys.length, 10);
     assert.match(first.notifications[0].embeds[0].title, /10 updates/);
+    assert.match(first.notifications[0].embeds[0].footer.text, /Open the follow-up queue/);
+    assert.doesNotMatch(
+        JSON.stringify(first.notifications[0].embeds[0]),
+        /grouped|reduce pings|digest|cadence|cooldown/i
+    );
 
     const cadenceKey = first.notifications[0].cadenceKey;
     const coolingDown = prepareNotificationQueue(assignments, {

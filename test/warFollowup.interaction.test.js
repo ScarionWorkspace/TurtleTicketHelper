@@ -213,9 +213,10 @@ test('a submitted Contact player message is saved locally and remains visible wh
     assert.equal(saved[0].request.dmText, typedMessage);
     assert.match(saved[0].draftPreview, /Could you explain/);
     assert.equal(submit.calls.edits.length, 2);
-    assert.match(JSON.stringify(submit.calls.edits[0]), /Change saved locally/);
+    assert.match(JSON.stringify(submit.calls.edits[0]), /Change is being saved/);
     assert.match(JSON.stringify(submit.calls.edits.at(-1)), /Could you explain/);
-    assert.match(JSON.stringify(submit.calls.edits.at(-1)), /Nothing is sent to the player until the backend accepts/);
+    assert.match(JSON.stringify(submit.calls.edits.at(-1)), /Nothing will be sent to the player until it succeeds/);
+    assert.doesNotMatch(JSON.stringify(submit.calls.edits.at(-1)), /backend|idempotent|saved locally/i);
 });
 
 test('a local storage failure returns the complete submitted message instead of losing it', async t => {
@@ -242,7 +243,8 @@ test('a local storage failure returns the complete submitted message instead of 
     assert.equal(await handleWarFollowupInteraction(submit.interaction), true);
     assert.equal(submit.calls.defers, 0);
     assert.equal(submit.calls.replies.length, 1);
-    assert.match(submit.calls.replies[0].content, /local disk unavailable/);
+    assert.match(submit.calls.replies[0].content, /temporarily unavailable/);
+    assert.doesNotMatch(submit.calls.replies[0].content, /disk|backend|filesystem/i);
     assert.match(JSON.stringify(submit.calls.replies[0].embeds), /Please keep this exact explanation request/);
     assert.match(JSON.stringify(submit.calls.replies[0].embeds), /Your submitted text was not discarded/);
 });
@@ -310,7 +312,8 @@ test('a failed slow action restores its controls before reporting the error', as
     assert.equal(calls.edits[1].content, 'Original case view');
     assert.equal(calls.edits[1].components[0].components[0].disabled, undefined);
     assert.equal(calls.followUps.length, 1);
-    assert.match(calls.followUps[0].content, /backend unavailable/);
+    assert.match(calls.followUps[0].content, /temporarily unavailable/);
+    assert.doesNotMatch(calls.followUps[0].content, /backend/i);
 });
 
 test('extension submission preserves the newly selected connected target roster', async t => {
@@ -438,9 +441,10 @@ test('a delivered DM with a failed backend mutation retires the send controls an
     assert.equal(mutations[0].request.dmSentByName, 'Moderator');
     assert.equal(calls.edits.length, 3);
     assert.match(calls.edits[0].content, /Sending DM/);
-    assert.match(JSON.stringify(calls.edits[1]), /DM delivered; case update saved/);
-    assert.match(JSON.stringify(calls.edits[2]), /DM delivered; case update saved/);
+    assert.match(JSON.stringify(calls.edits[1]), /DM delivered; case update pending/);
+    assert.match(JSON.stringify(calls.edits[2]), /DM delivered; case update pending/);
     assert.match(JSON.stringify(calls.edits[2]), /Do not send the message again/);
+    assert.doesNotMatch(JSON.stringify(calls.edits[2]), /backend|saved locally|retry automatically/i);
     assert.doesNotMatch(JSON.stringify(calls.edits[2]), /Send DM now/);
     assert.equal(calls.followUps.length, 0);
 });
@@ -724,6 +728,7 @@ test('read-only panels clearly label a recent cached fallback', async t => {
 
     assert.equal(await handleWarFollowupInteraction(interaction), true);
     assert.equal(calls.edits.length, 2);
-    assert.match(calls.edits[1].content, /Backend temporarily unavailable/);
-    assert.match(calls.edits[1].content, /last confirmed case data/);
+    assert.match(calls.edits[1].content, /Current case data is temporarily unavailable/);
+    assert.match(calls.edits[1].content, /last confirmed information/);
+    assert.doesNotMatch(calls.edits[1].content, /backend|cache/i);
 });

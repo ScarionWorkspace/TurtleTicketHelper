@@ -97,7 +97,7 @@ async function processQueuedDiscordDms(client, guildId, workspace, store, config
             if (delivery?.disposition === 'queued-dm-failed' || !delivery?.messageId) {
                 const failureReason = delivery?.disposition === 'queued-dm-pending'
                     ? 'Discord delivery could not be confirmed after an interrupted attempt. Check with the player before retrying.'
-                    : 'Discord could not deliver the queued message.';
+                    : 'Discord could not deliver the message.';
                 item = await mutateAndReplace(workspace, item, 'dm_delivery_failed', {
                     dmQueueId: queueId,
                     dmDeliveryFailureReason: failureReason
@@ -186,7 +186,7 @@ async function processContactAutomations(client, guildId, workspace, store, conf
                     contactReminderFailureReason: config?.features?.directMessages !== true
                         ? 'Automatic Discord reminders are disabled for this server.'
                         : (interrupted
-                            ? 'Reminder delivery could not be confirmed after an interrupted attempt. Do not resend automatically.'
+                            ? 'Reminder delivery is uncertain. Check the conversation before sending another message.'
                             : 'Discord could not deliver the automatic reminder.')
                 }, `scheduler:contact-reminder-failed:${item.tag}:${item.case?.dmMessageId}`);
                 results.push({ tag: item.tag, action: 'contact_reminder_failed' });

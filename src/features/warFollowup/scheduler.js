@@ -119,9 +119,9 @@ function buildModerationDigest(notifications, groupKey, intervalMs, nowIso) {
             color: personal ? 0x5865f2 : 0xf59e0b,
             title: personal
                 ? `Your moderation work · ${notifications.length} update${notifications.length === 1 ? '' : 's'}`
-                : `Leadership moderation digest · ${notifications.length} update${notifications.length === 1 ? '' : 's'}`,
+                : `Leadership review · ${notifications.length} update${notifications.length === 1 ? '' : 's'}`,
             description: compactDigestLines(notifications).join('\n').slice(0, 4000),
-            footer: { text: 'The panel updates immediately; notifications are grouped to reduce pings.' },
+            footer: { text: 'Open the follow-up queue for current case details.' },
             timestamp: nowIso
         }],
         allowedUserIds: unique(notifications.flatMap(notification => notification.allowedUserIds || [])),

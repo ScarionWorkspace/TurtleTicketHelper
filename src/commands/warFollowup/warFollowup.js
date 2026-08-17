@@ -27,7 +27,7 @@ const FEATURE_OPTIONS = Object.freeze({
     'regular-summaries': 'regularWarSummaries',
     'cwl-daily-updates': 'cwlDailyUpdates',
     'cwl-end-summaries': 'cwlEndSummaries',
-    'discord-gap-digest': 'missingDiscordDigest',
+    'discord-gap-report': 'missingDiscordDigest',
     'direct-dms': 'directMessages'
 });
 const VALID_PLAYER_TAG_PATTERN = /^#[PYLQGRJCUV0289]{3,15}$/;
@@ -54,7 +54,7 @@ function addSetupOptions(subcommand) {
         'regular-summaries': 'Post one deduplicated summary after each regular war.',
         'cwl-daily-updates': 'Post when every tracked CWL attack for the active day is complete.',
         'cwl-end-summaries': 'Post the final CWL report, including everyone who missed attacks.',
-        'discord-gap-digest': 'Post one daily staff digest for roster accounts without Discord links.',
+        'discord-gap-report': 'Post one daily staff report for roster accounts without Discord links.',
         'direct-dms': 'Allow Contact player DMs and capture replies privately in the case.'
     };
 
@@ -490,7 +490,7 @@ async function executeSyncNow(interaction) {
     const result = await runWarFollowupTick(interaction.client);
     if (result.skipped && result.reason === 'already-running') {
         await interaction.editReply({
-            content: 'A War Follow Up sync is already running. It will finish this dashboard and any due notifications shortly.',
+            content: 'War Follow Up is already refreshing. The dashboard and any due notifications will be ready shortly.',
             components: [],
             embeds: [],
             allowedMentions: { parse: [] }
@@ -500,7 +500,7 @@ async function executeSyncNow(interaction) {
     const guildResult = result.results?.find(entry => entry.guildId === interaction.guildId);
     if (!guildResult) {
         await interaction.editReply({
-            content: 'The configured server was not included in the sync. Run setup again and retry.',
+            content: 'War Follow Up could not refresh this server. Run setup again and try once more.',
             components: [],
             embeds: [],
             allowedMentions: { parse: [] }
@@ -509,7 +509,7 @@ async function executeSyncNow(interaction) {
     }
     if (guildResult.error) {
         await interaction.editReply({
-            content: `The sync failed: ${String(guildResult.error).slice(0, 1500)}`,
+            content: 'War Follow Up could not refresh right now. No settings were changed; try again shortly.',
             components: [],
             embeds: [],
             allowedMentions: { parse: [] }
@@ -518,7 +518,7 @@ async function executeSyncNow(interaction) {
     }
     const sentCount = guildResult?.sent?.length || 0;
     await interaction.editReply({
-        content: `War Follow Up is synced. ${sentCount} due notification${sentCount === 1 ? '' : 's'} sent.`,
+        content: `War Follow Up is up to date. ${sentCount} due notification${sentCount === 1 ? '' : 's'} sent.`,
         components: [],
         embeds: [],
         allowedMentions: { parse: [] }

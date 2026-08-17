@@ -132,7 +132,7 @@ async function loadWorkspace(options = {}) {
     ]);
 
     if (!rosterData || typeof rosterData !== 'object') {
-        throw new Error('The published roster snapshot is unavailable. Try again after the next roster refresh.');
+        throw new Error('Current roster data is unavailable. Try again after the next roster refresh.');
     }
 
     const workspace = {

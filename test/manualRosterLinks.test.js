@@ -172,8 +172,9 @@ test('handleLinkCommand passes force true and maps backend conflicts clearly', a
     });
 
     assert.equal(backendCalls[0].force, true);
-    assert.match(interaction.calls.at(-1).payload.content, /Conflict:/);
-    assert.match(interaction.calls.at(-1).payload.content, /force:true/);
+    assert.match(interaction.calls.at(-1).payload.content, /already linked/);
+    assert.match(interaction.calls.at(-1).payload.content, /force option/);
+    assert.doesNotMatch(interaction.calls.at(-1).payload.content, /backend|force:true/i);
 });
 
 test('handleLinkDeleteCommand requires exactly one lookup before deferring', async () => {
@@ -227,7 +228,8 @@ test('handleLinkDeleteCommand deletes by Discord user', async () => {
         discordUsername: 'bravo'
     }]);
     assert.equal(interaction.calls[0].method, 'deferReply');
-    assert.match(interaction.calls.at(-1).payload.content, /Deleted 1 backend link for <@222222222222222222>: #9PYLQG/);
+    assert.match(interaction.calls.at(-1).payload.content, /Deleted 1 saved link for <@222222222222222222>: #9PYLQG/);
+    assert.doesNotMatch(interaction.calls.at(-1).payload.content, /backend/i);
 });
 
 test('manual link commands return clear permission and backend config errors', async () => {
@@ -252,7 +254,8 @@ test('manual link commands return clear permission and backend config errors', a
     });
 
     assert.match(missingPermission.calls[0].payload.content, /Missing permission/);
-    assert.match(missingConfig.calls[0].payload.content, /backend configuration is missing/i);
+    assert.match(missingConfig.calls[0].payload.content, /Roster links are unavailable/i);
+    assert.doesNotMatch(missingConfig.calls[0].payload.content, /backend|ROSTER_BACKEND/i);
     assert.equal(missingPermission.calls[0].payload.flags, 64);
     assert.equal(missingConfig.calls[0].payload.flags, 64);
 });
@@ -269,8 +272,9 @@ test('mapRosterLinkError covers invalid tag, missing player, missing link, and b
 
     assert.match(mapRosterLinkError(invalidTag), /Invalid player tag/);
     assert.match(mapRosterLinkError(notFound, { playerTag: '#PYYQQ' }), /Player not found for #PYYQQ/);
-    assert.match(mapRosterLinkError(missingLink), /No backend link/);
-    assert.match(mapRosterLinkError(htmlResponse), /non-JSON response/);
+    assert.match(mapRosterLinkError(missingLink), /No saved link/);
+    assert.match(mapRosterLinkError(htmlResponse), /temporarily unavailable/);
     assert.doesNotMatch(mapRosterLinkError(htmlResponse), /<html/i);
-    assert.match(mapRosterLinkError(new Error('upstream broke')), /Roster backend failure/);
+    assert.doesNotMatch(mapRosterLinkError(htmlResponse), /backend|JSON/i);
+    assert.match(mapRosterLinkError(new Error('upstream broke')), /Roster links are temporarily unavailable/);
 });

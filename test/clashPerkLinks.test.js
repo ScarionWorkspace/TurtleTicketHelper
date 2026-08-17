@@ -292,8 +292,9 @@ test('successful ClashPerk link delete sync resolves then cleans up the success 
     assert.equal(message.sent.length, 1);
     assert.equal(sentInitialContents(message)[0].includes('\n'), false);
     assert.equal(sentContents(message)[0].includes('\n'), false);
-    assert.match(sentInitialContents(message)[0], /Deleting link for #2PCQ2CGL8 from the roster backend/);
-    assert.match(sentContents(message)[0], /Deleted link for #2PCQ2CGL8 from the roster backend\./);
+    assert.match(sentInitialContents(message)[0], /Deleting the saved link for #2PCQ2CGL8/);
+    assert.match(sentContents(message)[0], /Deleted the saved link for #2PCQ2CGL8\./);
+    assert.doesNotMatch(sentContents(message)[0], /backend|sync/i);
     assert.equal(sentEditContents(message).length, 1);
     assert.equal(message.sent[0].deleted, false);
 
@@ -454,7 +455,8 @@ test('backend create failure leaves the ClashPerk failure status visible', async
     assert.equal(sentInitialContents(message)[0].includes('\n'), false);
     assert.equal(sentContents(message)[0].includes('\n'), false);
     assert.match(sentInitialContents(message)[0], /Saving link for Ashish v2\.0 \(#P2QUL292G\) to sagar/);
-    assert.match(sentContents(message)[0], /Could not save link for Ashish v2\.0 \(#P2QUL292G\) to sagar: the backend sync failed\./);
+    assert.match(sentContents(message)[0], /Could not save link for Ashish v2\.0 \(#P2QUL292G\) to sagar: the website link could not be saved\./);
+    assert.doesNotMatch(sentContents(message)[0], /backend|sync/i);
 
     await sleep(10);
 
@@ -481,8 +483,9 @@ test('backend delete failure leaves the ClashPerk failure status visible', async
     assert.equal(message.sent.length, 1);
     assert.equal(sentInitialContents(message)[0].includes('\n'), false);
     assert.equal(sentContents(message)[0].includes('\n'), false);
-    assert.match(sentInitialContents(message)[0], /Deleting link for #2PCQ2CGL8 from the roster backend/);
-    assert.match(sentContents(message)[0], /Could not delete link for #2PCQ2CGL8: the backend delete sync failed\./);
+    assert.match(sentInitialContents(message)[0], /Deleting the saved link for #2PCQ2CGL8/);
+    assert.match(sentContents(message)[0], /Could not delete link for #2PCQ2CGL8: the website link could not be deleted\./);
+    assert.doesNotMatch(sentContents(message)[0], /backend|sync/i);
 
     await sleep(10);
 
@@ -526,7 +529,8 @@ test('unexpected exception after ClashPerk loading status edits to failure', asy
     assert.equal(sentInitialContents(message)[0].includes('\n'), false);
     assert.equal(sentContents(message)[0].includes('\n'), false);
     assert.match(sentInitialContents(message)[0], /Saving link for Ashish v2\.0 \(#P2QUL292G\) to sagar/);
-    assert.match(sentContents(message)[0], /Could not save link for Ashish v2\.0 \(#P2QUL292G\) to sagar: an unexpected sync error happened\./);
+    assert.match(sentContents(message)[0], /Could not save link for Ashish v2\.0 \(#P2QUL292G\) to sagar: the link could not be saved\./);
+    assert.doesNotMatch(sentContents(message)[0], /sync|backend|exception/i);
     assert.equal(sentEditContents(message).length, 1);
     assert.equal(errors.length, 1);
 
@@ -568,8 +572,9 @@ test('unexpected delete exception after ClashPerk loading status edits to failur
     assert.equal(message.sent.length, 1);
     assert.equal(sentInitialContents(message)[0].includes('\n'), false);
     assert.equal(sentContents(message)[0].includes('\n'), false);
-    assert.match(sentInitialContents(message)[0], /Deleting link for #2PCQ2CGL8 from the roster backend/);
-    assert.match(sentContents(message)[0], /Could not delete link for #2PCQ2CGL8: an unexpected delete sync error happened\./);
+    assert.match(sentInitialContents(message)[0], /Deleting the saved link for #2PCQ2CGL8/);
+    assert.match(sentContents(message)[0], /Could not delete link for #2PCQ2CGL8: the saved link could not be deleted\./);
+    assert.doesNotMatch(sentContents(message)[0], /sync|backend|exception/i);
     assert.equal(sentEditContents(message).length, 1);
     assert.equal(errors.length, 1);
 

@@ -17,18 +17,18 @@ module.exports = {
     data: restrictToGuild(
         new SlashCommandBuilder()
             .setName('link-delete')
-            .setDescription('Staff only: delete a backend Discord link.')
+            .setDescription('Staff only: delete a saved Discord link.')
             .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
             .addUserOption(option =>
                 option
                     .setName('user')
-                    .setDescription('Discord user whose backend link should be deleted')
+                    .setDescription('Discord user whose saved link should be deleted')
                     .setRequired(false)
             )
             .addStringOption(option =>
                 option
                     .setName('player_tag')
-                    .setDescription('Clash player tag whose backend link should be deleted')
+                    .setDescription('Clash player tag whose saved link should be deleted')
                     .setRequired(false)
             )
     ),

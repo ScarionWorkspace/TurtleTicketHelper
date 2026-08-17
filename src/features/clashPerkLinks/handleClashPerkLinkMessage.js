@@ -454,18 +454,26 @@ function getClashPerkFailureReason(parsed, reason, matchCount) {
     const text = String(reason || '').trim();
 
     if (/backend delete sync failed/i.test(text)) {
-        return 'the backend delete sync failed';
+        return 'the website link could not be deleted';
     }
 
     if (/backend sync failed/i.test(text)) {
-        return 'the backend sync failed';
+        return 'the website link could not be saved';
+    }
+
+    if (/website link.+could not be deleted/i.test(text)) {
+        return 'the website link could not be deleted';
+    }
+
+    if (/website link.+could not be saved/i.test(text)) {
+        return 'the website link could not be saved';
     }
 
     return text
         .replace(/^Website sync did not work for\s+#[A-Z0-9]+\s+because\s+/i, '')
         .replace(/\s*Please manually.+$/i, '')
         .replace(/\.$/, '')
-        .trim() || 'the sync failed';
+        .trim() || 'the link could not be updated';
 }
 
 function buildClashPerkStatusMessage({
@@ -478,18 +486,18 @@ function buildClashPerkStatusMessage({
 }) {
     if (parsed?.action === 'deleted') {
         if (status === 'loading') {
-            return `Deleting link for ${parsed.playerTag} from the roster backend...`;
+            return `Deleting the saved link for ${parsed.playerTag}...`;
         }
 
         if (status === 'success') {
             if (result?.found === false || result?.updated === false) {
-                return `Delete sync finished for ${parsed.playerTag}; no active roster link needed to be removed.`;
+                return `No saved link needed to be removed for ${parsed.playerTag}.`;
             }
 
             const removed = result?.removedDiscordUsername || result?.removedDiscordId || '';
             return removed
-                ? `Deleted link for ${parsed.playerTag}; removed ${removed} from the roster backend.`
-                : `Deleted link for ${parsed.playerTag} from the roster backend.`;
+                ? `Deleted the saved link for ${parsed.playerTag}; removed ${removed}.`
+                : `Deleted the saved link for ${parsed.playerTag}.`;
         }
 
         return `Could not delete link for ${parsed.playerTag}: ${getClashPerkFailureReason(parsed, reason, matchCount)}.`;
@@ -498,7 +506,7 @@ function buildClashPerkStatusMessage({
     const summary = getClashPerkCreateSummary(parsed, member);
 
     if (status === 'loading') {
-        return `Saving link for ${summary} in the roster backend...`;
+        return `Saving link for ${summary}...`;
     }
 
     if (status === 'success') {
@@ -630,8 +638,8 @@ function getUnexpectedSyncFailureReason(parsed) {
 
 function getUnexpectedSyncFailureText(parsed) {
     return parsed?.action === 'deleted'
-        ? 'an unexpected delete sync error happened'
-        : 'an unexpected sync error happened';
+        ? 'the saved link could not be deleted'
+        : 'the link could not be saved';
 }
 
 function isConfiguredClashPerkBotMessage(message, clashPerkConfig) {
@@ -778,7 +786,7 @@ async function handleClashPerkLinkMessage(message, options = {}) {
             if (!result || result.ok === false || result.skipped === true) {
                 const reason = formatConfiguredMessage(
                     clashPerkConfig.deleteBackendFailureMessage ||
-                    `Website sync did not work for ${parsed.playerTag} because the backend delete sync failed. Please manually delete the link or sync using the import function in the admin panel.`,
+                    `The website link for ${parsed.playerTag} could not be deleted. Please remove it from the admin panel.`,
                     parsed
                 );
 
@@ -837,8 +845,8 @@ async function handleClashPerkLinkMessage(message, options = {}) {
                 ? clashPerkConfig.ambiguousDisplayNameMessage
                 : clashPerkConfig.missingDisplayNameMessage;
             const fallback = matches.length > 1
-                ? `Website sync did not work for ${parsed.playerTag} because the Discord display name "${parsed.displayName}" is ambiguous. Please manually create the link or sync using the import function in the admin panel.`
-                : `Website sync did not work for ${parsed.playerTag} because no Discord member with display name "${parsed.displayName}" was found. Please manually create the link or sync using the import function in the admin panel.`;
+                ? `The website link for ${parsed.playerTag} was not saved because the Discord display name "${parsed.displayName}" matches multiple members. Use the admin panel to choose the correct account.`
+                : `The website link for ${parsed.playerTag} was not saved because no Discord member named "${parsed.displayName}" was found. Use the admin panel to choose the correct account.`;
 
             await updateChannelMessage(
                 hydratedMessage,
@@ -871,7 +879,7 @@ async function handleClashPerkLinkMessage(message, options = {}) {
         if (!result || result.ok === false || result.skipped === true) {
             const reason = formatConfiguredMessage(
                 clashPerkConfig.backendFailureMessage ||
-                `Website sync did not work for ${parsed.playerTag} because the backend sync failed. Please manually create the link or sync using the import function in the admin panel.`,
+                `The website link for ${parsed.playerTag} could not be saved. Please add it from the admin panel.`,
                 parsed
             );
 

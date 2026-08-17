@@ -604,7 +604,7 @@ function buildClearPreferenceResultMessage(preference, result) {
         default:
             return {
                 ok: false,
-                content: 'Unable to clear that CWL league preference because the backend did not confirm the clear.'
+                content: 'That CWL league preference could not be cleared. Please try again.'
             };
     }
 }
@@ -739,14 +739,14 @@ async function sendCwlLeagueSignupMessage(interaction) {
     const result = await rosterBackend.getCwlLeagueSignupOptions({ fetchMissing: true });
     const signupId = String(result?.signupId || '').trim();
     if (!signupId) {
-        throw new Error('Roster backend did not return a CWL signup id.');
+        throw new Error('Current CWL signup information is unavailable.');
     }
     const options = Array.isArray(result?.options) ? result.options : [];
     const skippedRosterLines = buildSkippedRosterLines(result?.diagnostics?.skippedRosters);
 
     if (!options.length) {
         await interaction.editReply({
-            content: 'I did not send a CWL signup message because no roster league options were available. Check the connected clan tags and Clash API access, then try again.'
+            content: 'I did not send a CWL signup message because no roster league options were available. Check the connected clan tags and clan data, then try again.'
         });
         return;
     }
@@ -781,7 +781,7 @@ async function sendCwlLeagueSignupMessage(interaction) {
     const responseLines = chunks.length === 1
         ? [`CWL league signup message sent: ${messages[0].url}`]
         : [
-            `${chunks.length} CWL league signup messages sent because each message shows up to ${DISCORD_LEAGUE_BUTTONS_PER_MESSAGE} league choices while reserving utility buttons.`,
+            `${chunks.length} CWL league signup messages sent.`,
             ...messages.map((message, index) => `Part ${index + 1}: ${message.url}`)
         ];
 
@@ -880,7 +880,7 @@ async function savePreference(interaction, signupId, leagueKey, account, sourceM
         } else if (status === 'unchanged') {
             content = `${accountLabel(account)} is already signed up for ${preferenceLeagueLabel(preference) || 'that CWL league'}.`;
         } else if (!result || result.ok === false || (!result.preference && !preference.leagueName)) {
-            content = 'Unable to change that CWL league preference because the backend did not confirm the change.';
+            content = 'That CWL league preference change could not be confirmed. Please try again.';
         }
     }
 
@@ -1094,7 +1094,7 @@ async function handleChooseButton(interaction, parsed) {
 
     await interaction.editReply({
         content: selectableAccounts.length > DISCORD_SELECT_OPTIONS_MAX * DISCORD_ACTION_ROWS_MAX
-            ? `Choose which linked account to use. Showing the first ${DISCORD_SELECT_OPTIONS_MAX * DISCORD_ACTION_ROWS_MAX} accounts because Discord limits one response to ${DISCORD_ACTION_ROWS_MAX} select menus.`
+            ? `Choose which linked account to use. Showing the first ${DISCORD_SELECT_OPTIONS_MAX * DISCORD_ACTION_ROWS_MAX} available accounts.`
             : 'Choose which linked account to use for this CWL league preference.',
         components: accountRows
     });
@@ -1259,7 +1259,7 @@ async function handleClearVoteButton(interaction, parsed) {
 
     await interaction.editReply({
         content: clearablePreferences.length > maxShown
-            ? `Choose which CWL league preference to clear. Showing the first ${maxShown} saved preferences because Discord limits one response to ${DISCORD_ACTION_ROWS_MAX} select menus.`
+            ? `Choose which CWL league preference to clear. Showing the first ${maxShown} saved preferences.`
             : 'Choose which CWL league preference to clear.',
         components: rows
     });
@@ -1456,7 +1456,7 @@ async function showResetCwlLeaguePreferencesConfirmation(interaction) {
     }
 
     const preferenceCountText = preferenceCount === null
-        ? 'Unknown. The reset will still clear any active preferences found by the backend.'
+        ? 'Unknown. The reset will still clear any active preferences it finds.'
         : `${preferenceCount} saved preference${preferenceCount === 1 ? '' : 's'}`;
 
     const warning = new EmbedBuilder()

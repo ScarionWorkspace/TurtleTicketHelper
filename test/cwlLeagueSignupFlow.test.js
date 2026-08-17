@@ -435,7 +435,8 @@ test('Clear vote reports unknown backend clear results as errors', async () => {
     });
 
     assert.equal(await handleCwlLeagueSignupInteraction(interaction), true);
-    assert.match(interaction.editReplyPayload.content, /did not confirm the clear/i);
+    assert.match(interaction.editReplyPayload.content, /could not be cleared/i);
+    assert.doesNotMatch(interaction.editReplyPayload.content, /backend|confirm the clear/i);
     assert.doesNotMatch(interaction.editReplyPayload.content, /no longer has/i);
     assert.deepEqual(interaction.editReplyPayload.components, []);
 });

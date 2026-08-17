@@ -128,6 +128,18 @@ function busyLabel(interaction, fallback = 'Working\u2026') {
     return BUSY_LABELS[parsed?.action] || fallback;
 }
 
+function userFacingErrorMessage(error) {
+    const detail = String(error?.message || error || 'Unknown error').replace(/\s+/g, ' ').trim();
+    const code = String(error?.code || '').trim();
+    const exposesServiceDetails = error?.name === 'RosterBackendError' ||
+        /^(?:BACKEND_|ROSTER_BACKEND_|APPS_SCRIPT_|HTTP_ERROR|INVALID_JSON|TIMEOUT|UNSAFE_REDIRECT)/.test(code) ||
+        /backend|apps script|cloudflare|firebase|request url|invalid json|non-?2xx|unexpected redirect|delivery marker|idempotent|mutation|local disk|file system|filesystem|econn|enotfound|fetch failed/i.test(detail);
+    if (exposesServiceDetails) {
+        return 'War Follow Up is temporarily unavailable. No changes were made; try again shortly.';
+    }
+    return detail || 'War Follow Up could not complete that action.';
+}
+
 function buildBusyPayload(interaction, label = busyLabel(interaction)) {
     const original = messageSnapshot(interaction);
     const notice = `\u23f3 **${label}** Controls will unlock when this finishes.`;
@@ -144,7 +156,7 @@ function addStaleDataNotice(payloadRaw, workspace) {
     const payload = payloadRaw && typeof payloadRaw === 'object' ? { ...payloadRaw } : {};
     const cachedAtSeconds = Math.floor(Number(workspace.freshness.privateStateCachedAt) / 1000);
     const age = cachedAtSeconds > 0 ? ` from <t:${cachedAtSeconds}:R>` : '';
-    const notice = `\u26a0\ufe0f **Backend temporarily unavailable** \u2014 showing the last confirmed case data${age}. No changes were made.`;
+    const notice = `\u26a0\ufe0f **Current case data is temporarily unavailable** \u2014 showing the last confirmed information${age}. No changes were made.`;
     const original = String(payload.content || '');
     payload.content = original && notice.length + original.length + 2 <= 2000
         ? `${notice}\n\n${original}`
@@ -191,7 +203,7 @@ async function restoreBusyUpdate(interaction) {
 }
 
 async function replyError(interaction, error, prefix = '') {
-    const detail = String(error?.message || error || 'Unknown error').slice(0, 1500);
+    const detail = userFacingErrorMessage(error).slice(0, 1500);
     const payload = {
         content: `${prefix}${detail}`,
         flags: views.EPHEMERAL,
@@ -699,12 +711,11 @@ async function handleDirectMessage(interaction, tagRaw, viewTokenRaw) {
             await interaction.editReply({
                 content: [
                     caseMarkedSent
-                        ? '⚠️ The DM was delivered and the case update succeeded, but the final Discord confirmation could not be completed.'
-                        : '⚠️ The DM was delivered, but the case could not be marked sent.',
+                        ? '⚠️ The DM was delivered and recorded, but this confirmation could not be refreshed.'
+                        : '⚠️ The DM was delivered, but it could not be recorded in the case.',
                     caseMarkedSent
-                        ? 'This copy of the controls has been retired. Reopen the case to see the authoritative status; do not send the DM again.'
-                        : 'To prevent a duplicate DM, this copy of the controls has been retired. Reopen the case and use **Mark DM sent** once the backend is available.',
-                    `Detail: ${String(error?.message || error).slice(0, 1000)}`
+                        ? 'Reopen the case to see its current status; do not send the DM again.'
+                        : 'Do not send the DM again. Reopen the case and use **Mark DM sent** once saving is available.'
                 ].join('\n'),
                 embeds: [],
                 components: [views.navigationRow()],
@@ -752,7 +763,7 @@ async function handleButtonOrSelect(interaction, parsed) {
     if (action === 'pendingcheck') {
         await beginBusyUpdate(interaction);
         const current = warFollowupStateStore.getMutation(interaction.guildId, first);
-        if (!current) throw new Error('This saved change is no longer in the local queue. Open the current case to see its authoritative state.');
+        if (!current) throw new Error('This saved change is no longer available. Open the current case to see its latest status.');
         const outcome = await mutationOutbox.executeMutation(interaction.guildId, first, {
             store: warFollowupStateStore,
             force: true
@@ -785,7 +796,7 @@ async function handleButtonOrSelect(interaction, parsed) {
         }
         warFollowupStateStore.removeMutation(interaction.guildId, first);
         await interaction.editReply({
-            content: record.state === 'committed' ? 'Saved-change confirmation dismissed.' : 'Saved draft discarded. No backend change was made by this record.',
+            content: record.state === 'committed' ? 'Saved-change confirmation dismissed.' : 'Saved draft discarded. The case was not changed.',
             embeds: [],
             components: [views.navigationRow()],
             allowedMentions: { parse: [] }
@@ -864,7 +875,7 @@ async function handleButtonOrSelect(interaction, parsed) {
         const synced = await syncModeratorPreferenceQuietly(interaction, preference);
         if (!synced) {
             await interaction.followUp({
-                content: 'Your Discord settings were saved. Website access will sync automatically when the backend is reachable.',
+                content: 'Your Discord settings were saved. Website access will update automatically when available.',
                 flags: views.EPHEMERAL,
                 allowedMentions: { parse: [] }
             });
@@ -898,7 +909,7 @@ async function handleButtonOrSelect(interaction, parsed) {
         const synced = await syncModeratorPreferenceQuietly(interaction, preference);
         if (!synced) {
             await interaction.followUp({
-                content: 'Your Discord settings were saved. Website access will sync automatically when the backend is reachable.',
+                content: 'Your Discord settings were saved. Website access will update automatically when available.',
                 flags: views.EPHEMERAL,
                 allowedMentions: { parse: [] }
             });

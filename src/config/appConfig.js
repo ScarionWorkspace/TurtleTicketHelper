@@ -35,13 +35,13 @@ const appConfig = {
         linkDeletedMessage: 'Link Deleted',
         successStatusDeleteDelayMs: 10000,
         ambiguousDisplayNameMessage:
-            'Website sync did not work for {playerTag} because the Discord display name "{displayName}" is ambiguous. Please manually create the link or sync using the import function in the admin panel.',
+            'The website link for {playerTag} was not saved because the Discord display name "{displayName}" matches multiple members. Use the admin panel to choose the correct account.',
         missingDisplayNameMessage:
-            'Website sync did not work for {playerTag} because no Discord member with display name "{displayName}" was found. Please manually create the link or sync using the import function in the admin panel.',
+            'The website link for {playerTag} was not saved because no Discord member named "{displayName}" was found. Use the admin panel to choose the correct account.',
         backendFailureMessage:
-            'Website sync did not work for {playerTag} because the backend sync failed. Please manually create the link or sync using the import function in the admin panel.',
+            'The website link for {playerTag} could not be saved. Please add it from the admin panel.',
         deleteBackendFailureMessage:
-            'Website sync did not work for {playerTag} because the backend delete sync failed. Please manually delete the link or sync using the import function in the admin panel.'
+            'The website link for {playerTag} could not be deleted. Please remove it from the admin panel.'
     },
 
     // Settings used when a new ticket channel is created

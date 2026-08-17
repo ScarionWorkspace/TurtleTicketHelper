@@ -107,7 +107,7 @@ test('/war-follow-up exposes the private tools and public moderation-panel publi
         'regular-summaries',
         'cwl-daily-updates',
         'cwl-end-summaries',
-        'discord-gap-digest',
+        'discord-gap-report',
         'direct-dms'
     ]) {
         assert.ok(setup.options.some(option => option.name === name), `missing setup option ${name}`);
@@ -305,7 +305,8 @@ test('public Moderation Hub is a clean personalized entry point with stable auto
     assert.match(rendered, /1 leader/);
     assert.match(rendered, /Current workload/);
     assert.match(rendered, /No attacks pending/);
-    assert.match(rendered, /Updates automatically/);
+    assert.match(rendered, /Use My cases for your assigned work/);
+    assert.doesNotMatch(rendered, /digest|grouped|cadence|cooldown/i);
     assert.doesNotMatch(rendered, /Fair workload assignment|24h\/48h|72h reassignment/);
     assert.equal(Object.prototype.hasOwnProperty.call(json, 'flags'), false, 'the singleton panel itself is public');
     assert.equal(json.components.length, 2);
@@ -470,7 +471,8 @@ test('My cases replaces a stale backend task with its durable local syncing stat
 
     assert.match(rendered, /Saved changes \(1\)/);
     assert.match(rendered, /Player message/);
-    assert.match(rendered, /Syncing safely/);
+    assert.match(rendered, /Saving/);
+    assert.doesNotMatch(rendered, /backend|local|restart/i);
     assert.match(rendered, /Needs action \(0\)/);
     assert.match(rendered, /Open a saved change/);
     assert.equal(payload.components.length <= 5, true);
@@ -569,7 +571,8 @@ test('moderator settings, coverage, and personal ownership views stay within Dis
     const assignedCase = workspace.work.items.find(item => item.tag === '#P0LYGQ');
     const caseJson = views.buildCasePayload(assignedCase, workspace, { features: {} }).embeds[0].toJSON();
     assert.match(JSON.stringify(caseJson), /Assigned moderator/);
-    assert.match(JSON.stringify(caseJson), /Case source snapshot/);
+    assert.match(JSON.stringify(caseJson), /Case source/);
+    assert.doesNotMatch(JSON.stringify(caseJson), /Case source snapshot/);
 
     const monitoringWorkspace = buildWorkspace({
         tag: '#PLAYER',

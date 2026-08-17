@@ -172,7 +172,7 @@ function formatLinkListError(error) {
     }
 
     if (message === 'COC_API_TOKEN is missing in .env') {
-        return 'The Clash API token is not configured, so I cannot read live clan members.';
+        return 'Live clan-member access is not configured. Contact a bot administrator.';
     }
 
     if (message === 'INVALID_CLAN_TAG') {
@@ -180,7 +180,7 @@ function formatLinkListError(error) {
     }
 
     if (message === 'CLAN_NOT_FOUND') {
-        return 'The Clash API could not find that clan tag.';
+        return 'That clan tag could not be found.';
     }
 
     if (message === 'CLASH_API_TIMEOUT') {
@@ -188,23 +188,23 @@ function formatLinkListError(error) {
     }
 
     if (message === 'CLASH_API_REQUEST_FAILED') {
-        return 'The live Clash member request failed before the API returned a response.';
+        return 'Live clan-member data is temporarily unavailable. Please try again.';
     }
 
     if (message === 'CLASH_API_INVALID_JSON' || message === 'CLASH_API_INVALID_RESPONSE') {
-        return 'The Clash API returned an unexpected response for the clan member list.';
+        return 'Live clan-member data is temporarily unavailable. Please try again.';
     }
 
     if (/^CLASH_API_HTTP_(401|403)$/.test(message)) {
-        return 'The Clash API rejected the configured token.';
+        return 'Live clan-member access is not configured correctly. Contact a bot administrator.';
     }
 
     if (/^CLASH_API_HTTP_429$/.test(message)) {
-        return 'The Clash API rate limit was reached. Please try again shortly.';
+        return 'Live clan-member data is busy right now. Please try again shortly.';
     }
 
     if (/^CLASH_API_HTTP_5\d\d$/.test(message)) {
-        return 'The Clash API is temporarily unavailable. Please try again shortly.';
+        return 'Live clan-member data is temporarily unavailable. Please try again shortly.';
     }
 
     return 'Could not build the link list from the live Clash member list.';

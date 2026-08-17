@@ -19,7 +19,7 @@ function prepareContactMessage(messageRaw, contactPurposeRaw) {
         message += suffix;
     }
     if (message.length > MAX_DISCORD_MESSAGE_LENGTH) {
-        throw new Error('The prepared decision message exceeds Discord\'s 2,000-character limit. Reopen the decision and shorten it first.');
+        throw new Error('The prepared decision message is too long. Reopen the decision and shorten it first.');
     }
     return message;
 }

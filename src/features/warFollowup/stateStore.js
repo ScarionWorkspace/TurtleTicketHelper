@@ -651,7 +651,7 @@ function createWarFollowupStateStore(options = {}) {
             }
         }
         if (Object.keys(record.mutationOutbox).length >= MAX_MUTATION_OUTBOX_PER_GUILD) {
-            throw new Error('The local moderation queue is full. Resolve its pending changes before adding another.');
+            throw new Error('Too many moderation changes are still pending. Resolve them before adding another.');
         }
         record.mutationOutbox[id] = candidate[id];
         save();
@@ -695,7 +695,7 @@ function createWarFollowupStateStore(options = {}) {
                 updatedAt
             }
         });
-        if (!candidate[id]) throw new Error('The local moderation queue update was invalid.');
+        if (!candidate[id]) throw new Error('That moderation change could not be updated safely.');
         record.mutationOutbox[id] = candidate[id];
         save();
         return clone(record.mutationOutbox[id]);

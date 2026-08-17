@@ -669,7 +669,7 @@ function getFooterText(event, rows, type) {
     if (type === 'cwl') {
         const cwlState = String(event?.cwlTrackingState || event?.cwlStatus || '').trim().toLowerCase();
         const stateLabel = cwlState ? formatStatusText(cwlState) : 'Waiting';
-        return `Confirmed ${participantCount}/${MAX_SIGNUPS} | CWL ${stateLabel} | Backend-ranked standings`;
+        return `Confirmed ${participantCount}/${MAX_SIGNUPS} | CWL ${stateLabel} | Ranked standings`;
     }
 
     const townHallRange = getTownHallRange(rows, event);

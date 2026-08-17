@@ -92,10 +92,9 @@ function isInvalidBackendResponseError(error) {
 function mapRosterLinkError(error, context = {}) {
     const action = context.action === 'delete' ? 'delete that link' : 'save that link';
     const tag = normalizePlayerTag(context.playerTag);
-    const message = getBackendErrorMessage(error);
 
     if (isBackendConfigMissing(error)) {
-        return 'Roster backend configuration is missing. Set `ROSTER_BACKEND_URL` and `ROSTER_BOT_SECRET`, then try again.';
+        return 'Roster links are unavailable right now. Contact a bot administrator.';
     }
 
     if (isInvalidTagError(error)) {
@@ -109,26 +108,22 @@ function mapRosterLinkError(error, context = {}) {
     }
 
     if (isConflictError(error)) {
-        return `Conflict: ${message || 'that Discord user or player is already linked.'} Use \`force:true\` to overwrite existing links.`;
+        return 'That Discord user or player is already linked. Retry with the force option enabled only if the existing link should be replaced.';
     }
 
     if (isMissingLinkError(error)) {
-        return 'No backend link was found for that lookup.';
+        return 'No saved link was found for that lookup.';
     }
 
     if (isInvalidBackendResponseError(error)) {
-        return 'Roster backend returned a non-JSON response. Check the deployed backend URL and backend logs, then try again.';
+        return 'Roster links are temporarily unavailable. Try again shortly.';
     }
 
     if (error?.code === 'PLAYER_LOOKUP_FAILED') {
-        return `The backend could not verify that Clash player: ${message || 'player lookup failed'}.`;
+        return 'That Clash player could not be verified. Check the tag and try again.';
     }
 
-    if (message) {
-        return `Roster backend failure: could not ${action}: ${message}`;
-    }
-
-    return `Roster backend failure: could not ${action}.`;
+    return `Roster links are temporarily unavailable, so I could not ${action}. Try again shortly.`;
 }
 
 function assertGuildAndStaff(interaction, staffCheck) {
@@ -146,7 +141,7 @@ function assertGuildAndStaff(interaction, staffCheck) {
 function assertBackendConfigured(backend) {
     return backend.isRosterBackendConfigured()
         ? ''
-        : 'Roster backend configuration is missing. Set `ROSTER_BACKEND_URL` and `ROSTER_BOT_SECRET`, then try again.';
+        : 'Roster links are unavailable right now. Contact a bot administrator.';
 }
 
 function buildLinkSuccessMessage(result, user, playerTag) {
@@ -178,7 +173,7 @@ function buildDeleteSuccessMessage(result, user, playerTag) {
 
     if (user) {
         const tagText = uniqueTags.length ? `: ${uniqueTags.join(', ')}` : '.';
-        return `Deleted ${count} backend link${count === 1 ? '' : 's'} for ${formatDiscordUser(user)}${tagText}`;
+        return `Deleted ${count} saved link${count === 1 ? '' : 's'} for ${formatDiscordUser(user)}${tagText}`;
     }
 
     const tag = normalizePlayerTag(playerTag || uniqueTags[0] || result?.tag);
@@ -190,7 +185,7 @@ function buildDeleteSuccessMessage(result, user, playerTag) {
             ? ` Removed ${removedUsername}.`
             : '';
 
-    return `Deleted backend link for ${tag || 'that player'}.${removedUserText}`;
+    return `Deleted the saved link for ${tag || 'that player'}.${removedUserText}`;
 }
 
 async function handleLinkCommand(interaction, options = {}) {

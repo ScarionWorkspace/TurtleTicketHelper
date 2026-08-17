@@ -238,7 +238,7 @@ function buildModerationHubPayload(workspace, guildRecord, options = {}) {
                 ].join('\n')
             }
         )
-        .setFooter({ text: 'Updates automatically · moderator digests 4h · leadership digests 6h' });
+        .setFooter({ text: 'Use My cases for your assigned work.' });
 
     return {
         payload: {
@@ -443,7 +443,7 @@ function recentConversationValue(item) {
 function casePresentation(item) {
     const caseValue = item?.case || {};
     if (item?.status === 'needs_dm' && caseValue.dmQueueId) {
-        return { label: 'Sending DM', next: 'Queued for secure Discord bot delivery', emoji: '⏳' };
+        return { label: 'Sending DM', next: 'Waiting to be sent', emoji: '⏳' };
     }
     if (item?.status === 'needs_dm' && caseValue.dmDeliveryFailedAt) {
         return { label: 'DM delivery failed', next: 'Retry the bot DM or record a manual message', emoji: '⚠️' };
@@ -617,7 +617,7 @@ function buildConversationPayload(item, pageRaw = 'latest') {
     const footerParts = [
         visible.length ? `Messages ${firstIndex}-${lastIndex} of ${entries.length}` : 'No messages',
         `page ${page + 1}/${pages.length}`,
-        trimmed ? `${trimmed} oldest message${trimmed === 1 ? '' : 's'} archived by the storage limit` : ''
+        trimmed ? `${trimmed} older message${trimmed === 1 ? '' : 's'} not shown` : ''
     ].filter(Boolean);
     return {
         embeds: [new EmbedBuilder()
@@ -694,14 +694,14 @@ function buildCasePayload(item, workspace, config) {
     });
     if (item.case?.sourceRosterTitle || item.case?.sourceClanTag) {
         embed.addFields({
-            name: 'Case source snapshot',
+            name: 'Case source',
             value: [safeInline(item.case.sourceRosterTitle), workflow.normalizeTag(item.case.sourceClanTag)].filter(Boolean).join(' · '),
             inline: true
         });
     }
     if (item.case?.waitingUntil) embed.addFields({ name: 'Follow-up due', value: workflow.discordRelativeTimestamp(item.case.waitingUntil), inline: true });
     if (item.case?.dmQueueId) {
-        embed.addFields({ name: 'Discord delivery', value: `Queued ${workflow.discordRelativeTimestamp(item.case.dmQueuedAt)}. The bot will update this case after sending; do not send it again.` });
+        embed.addFields({ name: 'Discord delivery', value: `Scheduled ${workflow.discordRelativeTimestamp(item.case.dmQueuedAt)}. Do not send this message again.` });
     }
     if (item.case?.dmDeliveryFailedAt) {
         embed.addFields({ name: 'Discord delivery failed', value: truncate(safeInline(item.case.dmDeliveryFailureReason || 'The message could not be delivered.'), 1024) });
@@ -728,7 +728,7 @@ function buildCasePayload(item, workspace, config) {
         embed.addFields({
             name: 'In-game removal',
             value: item.case.removalActionedAt
-                ? `Recorded ${workflow.discordRelativeTimestamp(item.case.removalActionedAt)} · waiting for the next roster sync to confirm the player left.`
+                ? `Recorded ${workflow.discordRelativeTimestamp(item.case.removalActionedAt)} · this case will update when the roster confirms the player left.`
                 : 'Remove the player from the clan in game, then record it below. The case closes only after roster data confirms they left.'
         });
     }
@@ -1334,7 +1334,7 @@ function buildModeratorSettingsPayload(workspace, guildRecord, userIdRaw, displa
         .setColor(preference.accepting ? COLORS.success : COLORS.closed)
         .setTitle('Moderation settings')
         .setDescription([
-            'Choose the clans you help with and where assignment digests should go.',
+            'Choose the clans you help with and where new assignment alerts should go.',
             'Turn on new assignments when you are ready. Changes save immediately.'
         ].join('\n'))
         .addFields(
@@ -1345,7 +1345,7 @@ function buildModeratorSettingsPayload(workspace, guildRecord, userIdRaw, displa
                         .map(roster => safeInline(roster.title || roster.clanTag)).join(', ') || 'Saved clans are no longer connected.', 1024)
                     : 'No clans selected'
             },
-            { name: 'Notifications', value: preference.notificationMode === 'both' ? 'DM and channel digests' : (preference.notificationMode === 'dm' ? 'DM digest' : 'Channel digest'), inline: true },
+            { name: 'Notifications', value: preference.notificationMode === 'both' ? 'DM and channel alerts' : (preference.notificationMode === 'dm' ? 'DM alerts' : 'Channel alerts'), inline: true },
             { name: 'New assignments', value: preference.accepting ? 'On — accepting cases' : 'Paused', inline: true }
         );
     const components = [];
@@ -1520,14 +1520,14 @@ function buildMyCasesPayload(workspace, userIdRaw, options = {}) {
                 ? '**Start with Needs action.** Waiting and active recovery cases remain visible for reference.'
                 : (pendingMutations.some(record => record.state !== 'pending')
                     ? '**A saved draft needs review.** Nothing was overwritten and its submitted text is still available.'
-                    : 'Nothing needs action right now. Waiting and syncing changes remain visible for reference.')) +
+                    : 'Nothing needs action right now. Waiting cases and saved changes remain visible for reference.')) +
                     (items.length > visibleItems.length ? ` Showing 25 of ${items.length}; use **Full queue** for the rest.` : '')
             : 'You have no assigned moderation cases.')
         .addFields(
             ...(pendingMutations.length ? [{
                 name: `Saved changes (${pendingMutations.length})`,
                 value: truncate(pendingMutations.map(record => {
-                    const label = record.state === 'pending' ? 'Syncing safely' : (record.state === 'conflict' ? 'Needs review' : 'Could not apply');
+                    const label = record.state === 'pending' ? 'Saving' : (record.state === 'conflict' ? 'Needs review' : 'Could not apply');
                     const icon = record.state === 'pending' ? 'â³' : 'âš ï¸';
                     return `${icon} **${mutationActionLabel(record.action)}** Â· ${label} Â· \`${record.tag}\``;
                 }).join('\n'), 1024)
@@ -1557,7 +1557,7 @@ function buildMyCasesPayload(workspace, userIdRaw, options = {}) {
                 .setPlaceholder('Open a saved change')
                 .addOptions(pendingMutations.map(record => new StringSelectMenuOptionBuilder()
                     .setLabel(truncate(`${mutationActionLabel(record.action)} Â· ${record.tag}`, 100))
-                    .setDescription(truncate(record.state === 'pending' ? 'Syncing safely with the backend' : 'Open the preserved draft', 100))
+                    .setDescription(truncate(record.state === 'pending' ? 'Saving; no action needed' : 'Open the preserved draft', 100))
                     .setValue(record.id)))
         ));
     }
@@ -1584,7 +1584,7 @@ function buildSetupSummary(config, channelMention) {
         regularWarSummaries: 'Regular-war summaries',
         cwlDailyUpdates: 'CWL all-clear updates',
         cwlEndSummaries: 'CWL end summaries',
-        missingDiscordDigest: 'Daily Discord-gap digest',
+        missingDiscordDigest: 'Daily Discord-link report',
         directMessages: 'Contact-player DMs with private reply capture'
     };
     const featureLines = Object.entries(labels).map(([key, label]) =>
@@ -1628,30 +1628,28 @@ function buildMutationOutboxPayload(recordRaw) {
     const conflict = state === 'conflict';
     const deliveredDmUpdate = record.action === 'mark_dm_sent' && record.request?.dmDeliveryMode === 'bot';
     const title = deliveredDmUpdate && !committed
-        ? 'DM delivered; case update saved'
+        ? 'DM delivered; case update pending'
         : committed
         ? 'Change saved'
-        : (conflict ? 'Saved draft needs review' : (state === 'failed' ? 'Saved draft could not be applied' : 'Change saved locally'));
+        : (conflict ? 'Saved draft needs review' : (state === 'failed' ? 'Saved draft could not be applied' : 'Change is being saved'));
     const summary = deliveredDmUpdate && !committed
         ? (conflict || state === 'failed'
-            ? 'The DM was delivered exactly once, but newer case state prevented its delivery record from being applied automatically. Do not resend it; review the preserved delivery details with the current case.'
-            : 'The DM was delivered exactly once. Its case update is saved locally and will retry automatically. Do not send the message again.')
+            ? 'The DM was delivered, but the case changed before the delivery could be recorded. Do not resend it; compare the saved details with the current case.'
+            : 'The DM was delivered. Its case record is still being saved. Do not send the message again.')
         : committed
-        ? 'The backend accepted this change. It is now part of the authoritative case history.'
+        ? 'This change is now part of the case history.'
         : (conflict
-            ? 'The case changed before this queued version could be applied. Nothing was overwritten. Reopen the current case and use the preserved draft below if it is still appropriate.'
+            ? 'The case changed before this update could be saved. Nothing was overwritten. Reopen the current case and use the preserved draft below if it is still appropriate.'
             : (state === 'failed'
-                ? 'The backend rejected this change for a non-temporary reason. Nothing was applied, and the submitted text remains preserved below.'
-                : 'The bot saved this before contacting the backend. It will retry automatically with the same idempotent mutation ID. Nothing is sent to the player until the backend accepts the decision.'));
+                ? 'This change could not be saved. Nothing was applied, and the submitted text remains available below.'
+                : 'This change is still being saved. Nothing will be sent to the player until it succeeds.'));
     const draft = truncate(safeMultiline(record.draftPreview || 'No text fields were submitted.'), 3000);
-    const error = toText(record.lastError?.message).trim();
     const timing = pending && record.nextAttemptAt
-        ? `Next automatic attempt ${workflow.discordRelativeTimestamp(record.nextAttemptAt)}.`
+        ? `The next save attempt is ${workflow.discordRelativeTimestamp(record.nextAttemptAt)}.`
         : '';
     const description = [
         summary,
         timing,
-        error ? `**Backend detail:** ${safeInline(error)}` : '',
         `**Preserved ${mutationActionLabel(record.action).toLowerCase()}**`,
         draft.split('\n').map(line => `> ${line || '\u200b'}`).join('\n')
     ].filter(Boolean).join('\n\n');
@@ -1659,7 +1657,7 @@ function buildMutationOutboxPayload(recordRaw) {
         .setColor(committed ? COLORS.success : (pending ? COLORS.neutral : COLORS.review))
         .setTitle(title)
         .setDescription(truncate(description, 4096))
-        .setFooter({ text: pending ? 'Safe to close this message; the queue survives bot restarts.' : 'The submitted text remains available here until you discard this record.' });
+        .setFooter({ text: pending ? 'Safe to close; check My cases for the latest status.' : 'The submitted text remains available until you discard this record.' });
     const buttons = [];
     if (pending) buttons.push(actionButton('pendingcheck', 'Check now', ButtonStyle.Primary, record.id));
     buttons.push(actionButton('casecurrent', 'Open current case', ButtonStyle.Secondary, record.tag));

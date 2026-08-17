@@ -13,7 +13,7 @@ It automatically renames ticket channels, handles join clan applications, and fe
 - Lets staff recommend clans directly inside the ticket
 - Mirrors the private web-admin War Follow Up queue in Discord
 - Supports staff review, watch periods, hero-down decisions, prepared/direct DMs, recovery tracking, notes, assignments, closes, reopen, and reversible permanent ignores
-- Provides independently opt-in attack reminders, staff alerts, regular-war summaries, CWL all-clear updates, final CWL missed-attack reports, and Discord-link gap digests
+- Provides independently opt-in attack reminders, staff alerts, regular-war summaries, CWL all-clear updates, final CWL missed-attack reports, and Discord-link gap reports
 
 ## Requirements
 
