@@ -851,9 +851,13 @@ async function handleButtonOrSelect(interaction, parsed) {
     }
     if (action === 'mycases') {
         const identity = moderatorIdentity(interaction);
+        const guildRecord = warFollowupStateStore.getGuild(interaction.guildId);
         const pendingMutations = warFollowupStateStore.listMutations(interaction.guildId)
             .filter(record => record.actorId === identity.discordId && ['pending', 'conflict', 'failed'].includes(record.state));
-        await renderView(interaction, workspace => views.buildMyCasesPayload(workspace, identity.discordId, { pendingMutations }), {
+        await renderView(interaction, workspace => views.buildMyCasesPayload(workspace, identity.discordId, {
+            pendingMutations,
+            moderatorPreference: guildRecord.moderators?.[identity.discordId] || { clanTags: [], accepting: false }
+        }), {
             forcePrivate: true
         });
         return;

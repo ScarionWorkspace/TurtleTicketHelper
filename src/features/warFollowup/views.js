@@ -296,8 +296,7 @@ function buildModerationHubPayload(workspace, guildRecord, options = {}) {
                     ].filter(Boolean).join(' · ')
                 ].join('\n')
             }
-        )
-        .setFooter({ text: 'Use My cases for your assigned work.' });
+        );
 
     return {
         payload: {
@@ -305,8 +304,8 @@ function buildModerationHubPayload(workspace, guildRecord, options = {}) {
             embeds: [embed],
             components: [
                 new ActionRowBuilder().addComponents(
-                    actionButton('modsettings', 'Choose clans', ButtonStyle.Primary),
-                    actionButton('mycases', 'My cases', ButtonStyle.Secondary)
+                    actionButton('mycases', 'My cases', ButtonStyle.Primary).setEmoji('📥'),
+                    actionButton('modsettings', 'Choose clans', ButtonStyle.Primary).setEmoji('⚙️')
                 ),
                 new ActionRowBuilder().addComponents(
                     actionButton('attention', `Needs attention (${attentionItems.length})`, attentionItems.length ? ButtonStyle.Danger : ButtonStyle.Secondary, '0'),
@@ -1807,17 +1806,27 @@ function buildMyCasesPayload(workspace, userIdRaw, options = {}) {
     const visibleItems = orderedItems.slice(0, 25);
     const visibleSet = new Set(visibleItems);
     const visible = category => category.filter(item => visibleSet.has(item));
+    const hasModeratorPreference = Object.prototype.hasOwnProperty.call(options, 'moderatorPreference');
+    const connectedClanTags = new Set(connectedRosters(workspace).map(roster => workflow.normalizeTag(roster.clanTag)));
+    const selectedConnectedClan = (options.moderatorPreference?.clanTags || [])
+        .map(workflow.normalizeTag)
+        .some(clanTag => connectedClanTags.has(clanTag));
+    const setupIncomplete = hasModeratorPreference && connectedClanTags.size > 0 && !selectedConnectedClan;
+    const caseDescription = items.length || pendingMutations.length
+        ? (summary.actionable.length
+            ? '**Start with Needs action.** Waiting and active recovery cases remain visible for reference.'
+            : (pendingMutations.some(record => record.state !== 'pending')
+                ? '**A saved draft needs review.** Nothing was overwritten and its submitted text is still available.'
+                : 'Nothing needs action right now. Waiting cases and saved changes remain visible for reference.')) +
+                (items.length > visibleItems.length ? ` Showing 25 of ${items.length}; use **Full queue** for the rest.` : '')
+        : 'You have no assigned moderation cases.';
     const embed = new EmbedBuilder()
         .setColor(summary.actionable.length || pendingMutations.some(record => record.state !== 'pending') ? COLORS.review : (items.length || pendingMutations.length ? COLORS.neutral : COLORS.success))
         .setTitle('My moderation cases')
-        .setDescription(items.length || pendingMutations.length
-            ? (summary.actionable.length
-                ? '**Start with Needs action.** Waiting and active recovery cases remain visible for reference.'
-                : (pendingMutations.some(record => record.state !== 'pending')
-                    ? '**A saved draft needs review.** Nothing was overwritten and its submitted text is still available.'
-                    : 'Nothing needs action right now. Waiting cases and saved changes remain visible for reference.')) +
-                    (items.length > visibleItems.length ? ` Showing 25 of ${items.length}; use **Full queue** for the rest.` : '')
-            : 'You have no assigned moderation cases.')
+        .setDescription([
+            setupIncomplete ? '**Choose clans to finish your setup.** Select at least one clan to become eligible for automatic assignments.' : '',
+            caseDescription
+        ].filter(Boolean).join('\n\n'))
         .addFields(
             ...(pendingMutations.length ? [{
                 name: `Saved changes (${pendingMutations.length})`,
@@ -1864,10 +1873,16 @@ function buildMyCasesPayload(workspace, userIdRaw, options = {}) {
                 .addOptions(visibleItems.map(caseOption))
         ));
     }
+    const settingsButton = actionButton(
+        'modsettings',
+        setupIncomplete ? 'Choose clans' : 'My settings',
+        setupIncomplete ? ButtonStyle.Primary : ButtonStyle.Secondary
+    );
+    if (setupIncomplete) settingsButton.setEmoji('⚙️');
     components.push(new ActionRowBuilder().addComponents(
-        actionButton('modsettings', 'My settings', ButtonStyle.Secondary),
+        settingsButton,
         actionButton('recent', 'Recent activity', ButtonStyle.Secondary, '0'),
-        actionButton('home', 'Full queue', ButtonStyle.Primary)
+        actionButton('home', 'Full queue', setupIncomplete ? ButtonStyle.Secondary : ButtonStyle.Primary)
     ));
     return { embeds: [embed], components, flags: EPHEMERAL, allowedMentions: { parse: [] } };
 }

@@ -368,9 +368,14 @@ async function executeOverview(interaction) {
 async function executeMine(interaction) {
     await interaction.deferReply({ flags: views.EPHEMERAL });
     const workspace = await service.loadWorkspace({ forcePrivate: true });
+    const identity = interactionModeratorIdentity(interaction);
+    const record = warFollowupStateStore.getGuild(interaction.guildId);
     await interaction.editReply(views.asEditPayload(views.buildMyCasesPayload(
         workspace,
-        interactionModeratorIdentity(interaction).discordId
+        identity.discordId,
+        {
+            moderatorPreference: record.moderators?.[identity.discordId] || { clanTags: [], accepting: false }
+        }
     )));
 }
 

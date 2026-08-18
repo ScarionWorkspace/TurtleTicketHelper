@@ -305,15 +305,17 @@ test('public Moderation Hub is a clean personalized entry point with stable auto
     assert.match(rendered, /1 leader/);
     assert.match(rendered, /Current workload/);
     assert.match(rendered, /No attacks pending/);
-    assert.match(rendered, /Use My cases for your assigned work/);
+    assert.equal(Object.prototype.hasOwnProperty.call(json.embeds[0], 'footer'), false);
     assert.doesNotMatch(rendered, /digest|grouped|cadence|cooldown/i);
     assert.doesNotMatch(rendered, /Fair workload assignment|24h\/48h|72h reassignment/);
     assert.equal(Object.prototype.hasOwnProperty.call(json, 'flags'), false, 'the singleton panel itself is public');
     assert.equal(json.components.length, 2);
     assert.deepEqual(json.components.map(row => row.components.map(component => component.label)), [
-        ['Choose clans', 'My cases'],
+        ['My cases', 'Choose clans'],
         ['Needs attention (1)', 'Recent activity', 'All cases']
     ]);
+    assert.deepEqual(json.components[0].components.map(component => component.style), [1, 1]);
+    assert.deepEqual(json.components[0].components.map(component => component.emoji?.name), ['📥', '⚙️']);
     assert.doesNotMatch(rendered, /"label":"Coverage"/);
     assert.equal(collectCustomIds(json).every(id => id.length <= 100), true);
 
@@ -653,6 +655,26 @@ test('My cases replaces a stale backend task with its durable local syncing stat
     assert.match(rendered, /Needs action \(0\)/);
     assert.match(rendered, /Open a saved change/);
     assert.equal(payload.components.length <= 5, true);
+});
+
+test('My cases privately emphasizes clan setup only for an unconfigured moderator', () => {
+    const workspace = buildWorkspace();
+    const moderatorId = '222222222222222222';
+    const unconfigured = serialize(views.buildMyCasesPayload(workspace, moderatorId, {
+        moderatorPreference: { discordId: moderatorId, clanTags: [], accepting: false }
+    }));
+    const configured = serialize(views.buildMyCasesPayload(workspace, moderatorId, {
+        moderatorPreference: { discordId: moderatorId, clanTags: ['#MAIN'], accepting: true }
+    }));
+    const unconfiguredButton = unconfigured.components.flatMap(row => row.components)
+        .find(component => component.label === 'Choose clans');
+    const configuredButton = configured.components.flatMap(row => row.components)
+        .find(component => component.label === 'My settings');
+
+    assert.match(unconfigured.embeds[0].description, /Choose clans to finish your setup/i);
+    assert.equal(unconfiguredButton.style, 1);
+    assert.doesNotMatch(configured.embeds[0].description, /finish your setup/i);
+    assert.equal(configuredButton.style, 2);
 });
 
 test('assignment picker makes taking ownership explicit while retaining manual reassignment', () => {
