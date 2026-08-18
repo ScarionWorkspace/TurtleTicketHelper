@@ -330,15 +330,28 @@ function interactionModeratorIdentity(interaction) {
     };
 }
 
+async function eligibleModeratorIds(interaction, workspace, record) {
+    const resolveMember = moderation.createMemberResolver(interaction.guild);
+    const eligibleIds = new Set();
+    for (const roster of workspace.work.directory.rosters || []) {
+        const eligible = await moderation.getEligibleModerators(interaction.guild, record, roster.clanTag, { resolveMember });
+        for (const moderator of eligible) eligibleIds.add(moderator.discordId);
+    }
+    return eligibleIds;
+}
+
 async function executeModeration(interaction) {
     await interaction.deferReply({ flags: views.EPHEMERAL });
     const workspace = await service.loadWorkspace({ forcePrivate: true });
     const identity = interactionModeratorIdentity(interaction);
+    const record = warFollowupStateStore.getGuild(interaction.guildId);
+    const eligibleIdsForGuild = await eligibleModeratorIds(interaction, workspace, record);
     await interaction.editReply(views.asEditPayload(views.buildModeratorSettingsPayload(
         workspace,
-        warFollowupStateStore.getGuild(interaction.guildId),
+        record,
         identity.discordId,
-        identity.displayName
+        identity.displayName,
+        { eligibleIds: eligibleIdsForGuild }
     )));
 }
 
@@ -346,13 +359,10 @@ async function executeOverview(interaction) {
     await interaction.deferReply({ flags: views.EPHEMERAL });
     const workspace = await service.loadWorkspace({ forcePrivate: true });
     const record = warFollowupStateStore.getGuild(interaction.guildId);
-    const resolveMember = moderation.createMemberResolver(interaction.guild);
-    const eligibleIds = new Set();
-    for (const roster of workspace.work.directory.rosters || []) {
-        const eligible = await moderation.getEligibleModerators(interaction.guild, record, roster.clanTag, { resolveMember });
-        for (const moderator of eligible) eligibleIds.add(moderator.discordId);
-    }
-    await interaction.editReply(views.asEditPayload(views.buildCoveragePayload(workspace, record, { eligibleIds })));
+    const eligibleIdsForGuild = await eligibleModeratorIds(interaction, workspace, record);
+    await interaction.editReply(views.asEditPayload(views.buildCoveragePayload(workspace, record, {
+        eligibleIds: eligibleIdsForGuild
+    })));
 }
 
 async function executeMine(interaction) {

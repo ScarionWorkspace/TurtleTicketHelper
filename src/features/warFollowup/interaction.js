@@ -30,6 +30,8 @@ const BUSY_LABELS = Object.freeze({
     refresh: 'Refreshing cases\u2026',
     modsettings: 'Loading settings\u2026',
     mycases: 'Loading your cases\u2026',
+    attention: 'Loading cases that need attention\u2026',
+    recent: 'Loading recent activity\u2026',
     coverage: 'Loading coverage\u2026',
     modclans: 'Saving clan coverage\u2026',
     modnotify: 'Saving notifications\u2026',
@@ -410,7 +412,7 @@ async function renderView(interaction, buildPayload, options = {}) {
         forcePrivate: options.forcePrivate === true,
         allowStalePrivateOnError: true
     });
-    const payload = addStaleDataNotice(buildPayload(workspace, getConfig(interaction)), workspace);
+    const payload = addStaleDataNotice(await buildPayload(workspace, getConfig(interaction)), workspace);
     await interaction.editReply(views.asEditPayload(payload));
     return workspace;
 }
@@ -436,7 +438,7 @@ async function syncModeratorPreferenceQuietly(interaction, preference) {
     }
 }
 
-async function buildCoverageForInteraction(interaction, workspace) {
+async function eligibleModeratorIdsForInteraction(interaction, workspace) {
     const guildRecord = warFollowupStateStore.getGuild(interaction.guildId);
     const resolveMember = moderation.createMemberResolver(interaction.guild);
     const eligibleIds = new Set();
@@ -449,7 +451,26 @@ async function buildCoverageForInteraction(interaction, workspace) {
         );
         for (const moderator of eligible) eligibleIds.add(moderator.discordId);
     }
+    return eligibleIds;
+}
+
+async function buildCoverageForInteraction(interaction, workspace) {
+    const guildRecord = warFollowupStateStore.getGuild(interaction.guildId);
+    const eligibleIds = await eligibleModeratorIdsForInteraction(interaction, workspace);
     return views.buildCoveragePayload(workspace, guildRecord, { eligibleIds });
+}
+
+async function buildModeratorSettingsForInteraction(interaction, workspace) {
+    const identity = moderatorIdentity(interaction);
+    const guildRecord = warFollowupStateStore.getGuild(interaction.guildId);
+    const eligibleIds = await eligibleModeratorIdsForInteraction(interaction, workspace);
+    return views.buildModeratorSettingsPayload(
+        workspace,
+        guildRecord,
+        identity.discordId,
+        identity.displayName,
+        { eligibleIds }
+    );
 }
 
 async function showCachedModal(interaction, builder) {
@@ -823,15 +844,9 @@ async function handleButtonOrSelect(interaction, parsed) {
         return;
     }
     if (action === 'modsettings') {
-        await renderView(interaction, workspace => {
-            const identity = moderatorIdentity(interaction);
-            return views.buildModeratorSettingsPayload(
-                workspace,
-                warFollowupStateStore.getGuild(interaction.guildId),
-                identity.discordId,
-                identity.displayName
-            );
-        }, { forcePrivate: true });
+        await renderView(interaction, workspace => buildModeratorSettingsForInteraction(interaction, workspace), {
+            forcePrivate: true
+        });
         return;
     }
     if (action === 'mycases') {
@@ -841,6 +856,20 @@ async function handleButtonOrSelect(interaction, parsed) {
         await renderView(interaction, workspace => views.buildMyCasesPayload(workspace, identity.discordId, { pendingMutations }), {
             forcePrivate: true
         });
+        return;
+    }
+    if (action === 'attention') {
+        await renderView(interaction, workspace => views.buildAttentionPayload(
+            workspace,
+            warFollowupStateStore.getGuild(interaction.guildId),
+            { page: Number(first) || 0 }
+        ), { forcePrivate: true });
+        return;
+    }
+    if (action === 'recent') {
+        await renderView(interaction, workspace => views.buildRecentActivityPayload(workspace, {
+            page: Number(first) || 0
+        }), { forcePrivate: true });
         return;
     }
     if (action === 'coverage') {
@@ -865,12 +894,7 @@ async function handleButtonOrSelect(interaction, parsed) {
             displayName: identity.displayName,
             clanTags
         });
-        await interaction.editReply(views.asEditPayload(views.buildModeratorSettingsPayload(
-            workspace,
-            warFollowupStateStore.getGuild(interaction.guildId),
-            identity.discordId,
-            identity.displayName
-        )));
+        await interaction.editReply(views.asEditPayload(await buildModeratorSettingsForInteraction(interaction, workspace)));
         await refreshModerationHubQuietly(interaction, workspace);
         const synced = await syncModeratorPreferenceQuietly(interaction, preference);
         if (!synced) {
@@ -899,12 +923,7 @@ async function handleButtonOrSelect(interaction, parsed) {
         }
         const preference = warFollowupStateStore.upsertModerator(interaction.guildId, identity.discordId, patch);
         const workspace = await service.loadWorkspace({ forcePrivate: false });
-        await interaction.editReply(views.asEditPayload(views.buildModeratorSettingsPayload(
-            workspace,
-            warFollowupStateStore.getGuild(interaction.guildId),
-            identity.discordId,
-            identity.displayName
-        )));
+        await interaction.editReply(views.asEditPayload(await buildModeratorSettingsForInteraction(interaction, workspace)));
         await refreshModerationHubQuietly(interaction, workspace);
         const synced = await syncModeratorPreferenceQuietly(interaction, preference);
         if (!synced) {

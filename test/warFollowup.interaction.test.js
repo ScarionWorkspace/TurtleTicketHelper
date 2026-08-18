@@ -704,6 +704,43 @@ test('public Moderation Hub controls always open a private personalized response
     assert.equal(calls.edits.length, 1);
 });
 
+test('public Hub attention and recent-activity controls open private read-only views', async t => {
+    const workspace = buildWorkspace({
+        tag: '#P0LYGQ',
+        name: 'Alpha',
+        status: 'needs_review',
+        updatedAt: '2026-08-18T10:00:00.000Z',
+        activity: [{
+            id: 'opened',
+            at: '2026-08-18T10:00:00.000Z',
+            type: 'automatic_case',
+            actor: 'War Follow Up',
+            text: 'Opened from automated evidence.'
+        }]
+    });
+    t.mock.method(service, 'loadWorkspace', async () => workspace);
+    t.mock.method(warFollowupStateStore, 'getGuild', () => ({
+        config: { enabled: true, channelId: '444444444444444444', features: {} },
+        moderationHub: {},
+        moderators: {}
+    }));
+
+    for (const [action, title] of [['attention', 'Needs attention'], ['recent', 'Recent case activity']]) {
+        const deferPayloads = [];
+        const built = baseInteraction(buildCustomId(action, '0'), {
+            message: { flags: { bitfield: 0 } },
+            deferReply: async payload => {
+                built.interaction.deferred = true;
+                deferPayloads.push(payload);
+            }
+        });
+
+        assert.equal(await handleWarFollowupInteraction(built.interaction), true);
+        assert.equal(deferPayloads[0].flags, views.EPHEMERAL);
+        assert.equal(built.calls.edits.at(-1).embeds[0].data.title, title);
+    }
+});
+
 test('read-only panels clearly label a recent cached fallback', async t => {
     const workspace = buildWorkspace({
         tag: '#P0LYGQ',

@@ -310,7 +310,11 @@ test('public Moderation Hub is a clean personalized entry point with stable auto
     assert.doesNotMatch(rendered, /Fair workload assignment|24h\/48h|72h reassignment/);
     assert.equal(Object.prototype.hasOwnProperty.call(json, 'flags'), false, 'the singleton panel itself is public');
     assert.equal(json.components.length, 2);
-    assert.equal(json.components.every(row => row.components.length === 2), true);
+    assert.deepEqual(json.components.map(row => row.components.map(component => component.label)), [
+        ['Choose clans', 'My cases'],
+        ['Needs attention (1)', 'Recent activity', 'All cases']
+    ]);
+    assert.doesNotMatch(rendered, /"label":"Coverage"/);
     assert.equal(collectCustomIds(json).every(id => id.length <= 100), true);
 
     const paused = views.buildModerationHubPayload(workspace, {
@@ -322,6 +326,179 @@ test('public Moderation Hub is a clean personalized entry point with stable auto
         }
     }, { now: new Date('2026-08-09T12:00:00.000Z') });
     assert.notEqual(paused.semanticHash, built.semanticHash, 'changing coverage causes an in-place panel refresh');
+});
+
+test('Choose clans includes live team coverage and workload without a separate coverage view', () => {
+    const workspace = buildWorkspace({
+        tag: '#PLAYER',
+        status: 'needs_review',
+        assignedModeratorId: '222222222222222222',
+        assignedModeratorName: 'Leader',
+        updatedAt: '2026-08-10T10:00:00.000Z'
+    });
+    const guildRecord = {
+        moderators: {
+            '222222222222222222': {
+                discordId: '222222222222222222',
+                displayName: 'Leader',
+                clanTags: ['#MAIN'],
+                notificationMode: 'both',
+                accepting: true,
+                lastAssignedAt: '2026-08-10T10:00:00.000Z'
+            },
+            '333333333333333333': {
+                discordId: '333333333333333333',
+                displayName: 'Paused Leader',
+                clanTags: ['#HERO'],
+                notificationMode: 'channel',
+                accepting: false
+            }
+        }
+    };
+
+    const payload = serialize(views.buildModeratorSettingsPayload(
+        workspace,
+        guildRecord,
+        '222222222222222222',
+        'Leader',
+        {
+            eligibleIds: new Set(['222222222222222222']),
+            now: new Date('2026-08-10T12:00:00.000Z')
+        }
+    ));
+    const rendered = JSON.stringify(payload);
+
+    assert.match(rendered, /Team coverage/);
+    assert.match(rendered, /Team workload/);
+    assert.match(rendered, /Leader.*1 active case/);
+    assert.match(rendered, /Paused Leader.*paused/);
+    assert.match(rendered, /#MAIN.*1 available/);
+    assert.match(rendered, /#HER0.*needs coverage.*1 paused/i);
+    assert.doesNotMatch(rendered, /"label":"Coverage"/);
+});
+
+test('Recent activity combines case audits, sorts newest first, and keeps private text inside cases', () => {
+    const workspace = buildWorkspace();
+    workspace.privateState.cases = [{
+        tag: '#PLAYER',
+        name: 'Player',
+        status: 'closed',
+        activity: [{
+            id: 'old-note',
+            at: '2026-08-10T10:00:00.000Z',
+            type: 'note',
+            actor: 'Alex',
+            text: 'Sensitive private note contents'
+        }, {
+            id: 'new-resolution',
+            at: '2026-08-10T11:00:00.000Z',
+            type: 'resolved',
+            actor: 'Sam',
+            text: 'Case closed: internal resolution details'
+        }]
+    }];
+
+    const payload = serialize(views.buildRecentActivityPayload(workspace, { page: 0 }));
+    const rendered = JSON.stringify(payload);
+    const description = payload.embeds[0].description;
+
+    assert.match(rendered, /Recent case activity/);
+    assert.ok(description.indexOf('Resolved case') < description.indexOf('Added a private note'));
+    assert.doesNotMatch(rendered, /Sensitive private note contents|internal resolution details/);
+    assert.match(rendered, /Open a case from this page/);
+});
+
+test('Needs attention deduplicates shared exceptions and explains why each case is listed', () => {
+    const workspace = buildWorkspace();
+    workspace.work.items = [{
+        tag: '#UNASSIGNED',
+        status: 'needs_review',
+        player: { name: 'Unassigned Player' },
+        case: {
+            status: 'needs_review',
+            updatedAt: '2026-08-08T10:00:00.000Z',
+            lastMeaningfulActionAt: '2026-08-08T10:00:00.000Z'
+        }
+    }, {
+        tag: '#RESPONSE',
+        status: 'needs_review',
+        player: { name: 'Reply Player' },
+        case: {
+            status: 'needs_review',
+            assignedModeratorId: '222222222222222222',
+            assignedModeratorName: 'Leader',
+            contactStage: 'responded',
+            playerResponseAt: '2026-08-10T11:00:00.000Z',
+            lastMeaningfulActionAt: '2026-08-10T11:00:00.000Z'
+        }
+    }, {
+        tag: '#NORMAL',
+        status: 'needs_review',
+        player: { name: 'Normal Assigned Case' },
+        case: {
+            status: 'needs_review',
+            assignedModeratorId: '222222222222222222',
+            lastMeaningfulActionAt: '2026-08-10T11:30:00.000Z'
+        }
+    }, {
+        tag: '#DUE',
+        status: 'waiting',
+        player: { name: 'Due Follow-up' },
+        case: {
+            status: 'waiting',
+            assignedModeratorId: '222222222222222222',
+            assignedModeratorName: 'Leader',
+            waitingUntil: '2026-08-10T11:30:00.000Z',
+            lastMeaningfulActionAt: '2026-08-09T11:30:00.000Z'
+        }
+    }];
+
+    const entries = views.moderationAttentionItems(workspace, {}, new Date('2026-08-10T12:00:00.000Z'));
+    const payload = serialize(views.buildAttentionPayload(workspace, {}, {
+        now: new Date('2026-08-10T12:00:00.000Z')
+    }));
+    const rendered = JSON.stringify(payload);
+
+    assert.equal(entries.length, 3);
+    assert.deepEqual(entries[0].reasons, ['Unassigned']);
+    assert.deepEqual(entries.find(entry => entry.item.tag === '#RESPONSE').reasons, ['Player replied']);
+    assert.deepEqual(entries.find(entry => entry.item.tag === '#DUE').reasons, ['Follow-up due']);
+    assert.match(rendered, /Unassigned Player.*Unassigned/);
+    assert.match(rendered, /Reply Player.*Player replied/);
+    assert.doesNotMatch(rendered, /Normal Assigned Case/);
+});
+
+test('new Hub views paginate safely within Discord limits', () => {
+    const workspace = buildWorkspace();
+    workspace.work.items = Array.from({ length: 30 }, (_, index) => ({
+        tag: `#CASE${index}`,
+        status: 'needs_review',
+        player: { name: `Player ${index} ${'Long name '.repeat(8)}` },
+        case: { status: 'needs_review', updatedAt: `2026-08-10T10:${String(index).padStart(2, '0')}:00.000Z` }
+    }));
+    workspace.privateState.cases = workspace.work.items.map((item, index) => ({
+        tag: item.tag,
+        name: item.player.name,
+        status: 'needs_review',
+        activity: [{
+            id: `activity-${index}`,
+            at: `2026-08-10T10:${String(index).padStart(2, '0')}:00.000Z`,
+            type: 'automatic_case',
+            actor: 'War Follow Up',
+            text: 'Opened from automated evidence.'
+        }]
+    }));
+
+    const payloads = [
+        serialize(views.buildAttentionPayload(workspace, {}, { now: new Date('2026-08-10T12:00:00.000Z') })),
+        serialize(views.buildRecentActivityPayload(workspace, { page: 0 }))
+    ];
+    for (const payload of payloads) {
+        assert.ok(payload.embeds[0].description.length <= 4096);
+        assert.ok(payload.components.length <= 5);
+        assert.equal(payload.components.every(row => row.components.length <= 5), true);
+        assert.equal(collectCustomIds(payload).every(id => id.length <= 100), true);
+    }
 });
 
 test('Moderation Hub separates actionable work from cases awaiting player replies', () => {

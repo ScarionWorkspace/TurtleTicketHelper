@@ -132,8 +132,8 @@ function navigationRow() {
 function moderationNavigationRow() {
     return new ActionRowBuilder().addComponents(
         actionButton('mycases', 'My cases', ButtonStyle.Secondary),
-        actionButton('modsettings', 'Moderation settings', ButtonStyle.Secondary),
-        actionButton('coverage', 'Coverage overview', ButtonStyle.Secondary)
+        actionButton('attention', 'Needs attention', ButtonStyle.Secondary, '0'),
+        actionButton('recent', 'Recent activity', ButtonStyle.Secondary, '0')
     );
 }
 
@@ -145,6 +145,63 @@ function connectedRosters(workspace) {
         seenClanTags.add(clanTag);
         return true;
     });
+}
+
+function moderationAttentionItems(workspace, guildRecord, nowRaw = new Date()) {
+    const summary = moderationCaseSummary(workspace, guildRecord, nowRaw);
+    const unassigned = new Set(summary.unassigned);
+    const overdue = new Set(summary.overdue);
+    const nowMs = nowRaw instanceof Date ? nowRaw.getTime() : new Date(nowRaw).getTime();
+    const priority = new Map([
+        ['Unassigned', 0],
+        ['Delivery failed', 1],
+        ['Overdue', 2],
+        ['Escalated', 3],
+        ['Player replied', 4],
+        ['Follow-up due', 5]
+    ]);
+    const entries = [];
+    for (const item of summary.items) {
+        const caseValue = item.case || {};
+        const reasons = [];
+        const meaningfulAt = workflow.parseMs(caseValue.lastMeaningfulActionAt || caseValue.updatedAt);
+        const waitingUntilMs = workflow.parseMs(caseValue.waitingUntil);
+        const waitingDue = item.status === 'waiting' && waitingUntilMs > 0 && waitingUntilMs <= nowMs;
+        const isCurrentEvent = timestamp => {
+            const eventAt = workflow.parseMs(timestamp);
+            return eventAt > 0 && (!meaningfulAt || eventAt >= meaningfulAt);
+        };
+        if (unassigned.has(item)) reasons.push('Unassigned');
+        if (overdue.has(item) && !waitingDue) reasons.push('Overdue');
+        if (isCurrentEvent(caseValue.dmDeliveryFailedAt) || isCurrentEvent(caseValue.contactReminderFailedAt)) {
+            reasons.push('Delivery failed');
+        }
+        if (isCurrentEvent(caseValue.escalatedAt)) reasons.push('Escalated');
+        if (caseValue.contactStage === 'responded' && isCurrentEvent(caseValue.playerResponseAt)) {
+            reasons.push('Player replied');
+        }
+        if (waitingDue) reasons.push('Follow-up due');
+        const uniqueReasons = Array.from(new Set(reasons));
+        if (!uniqueReasons.length) continue;
+        entries.push({
+            item,
+            reasons: uniqueReasons,
+            priority: Math.min(...uniqueReasons.map(reason => priority.get(reason) ?? 99)),
+            at: Math.max(
+                meaningfulAt,
+                workflow.parseMs(caseValue.playerResponseAt),
+                workflow.parseMs(caseValue.escalatedAt),
+                workflow.parseMs(caseValue.dmDeliveryFailedAt),
+                workflow.parseMs(caseValue.contactReminderFailedAt),
+                waitingUntilMs
+            )
+        });
+    }
+    return entries.sort((left, right) =>
+        left.priority - right.priority ||
+        right.at - left.at ||
+        left.item.tag.localeCompare(right.item.tag)
+    );
 }
 
 function buildModerationHubPayload(workspace, guildRecord, options = {}) {
@@ -171,6 +228,7 @@ function buildModerationHubPayload(workspace, guildRecord, options = {}) {
     )).length;
     const snapshot = workflow.discordRelativeTimestamp(workspace?.rosterData?.lastUpdatedAt);
     const attention = summary.actionable.length + summary.unassigned.length + summary.overdue.length;
+    const attentionItems = moderationAttentionItems(workspace, guildRecord, options.now || new Date());
     const stateParts = [
         summary.awaitingPlayer.length ? `**${summary.awaitingPlayer.length} awaiting player repl${summary.awaitingPlayer.length === 1 ? 'y' : 'ies'}**` : '',
         summary.scheduledWaiting.length ? `**${summary.scheduledWaiting.length} scheduled follow-up${summary.scheduledWaiting.length === 1 ? '' : 's'}**` : '',
@@ -199,7 +257,8 @@ function buildModerationHubPayload(workspace, guildRecord, options = {}) {
             scheduledWaiting: summary.scheduledWaiting.length,
             heroDownRecovery: summary.heroDownRecovery.length,
             awaitingRemovalConfirmation: summary.awaitingRemovalConfirmation.length,
-            overdue: summary.overdue.length
+            overdue: summary.overdue.length,
+            needsAttention: attentionItems.length
         },
         pending,
         notificationChannelId: guildRecord?.config?.channelId || '',
@@ -250,7 +309,8 @@ function buildModerationHubPayload(workspace, guildRecord, options = {}) {
                     actionButton('mycases', 'My cases', ButtonStyle.Secondary)
                 ),
                 new ActionRowBuilder().addComponents(
-                    actionButton('coverage', 'Coverage', ButtonStyle.Secondary),
+                    actionButton('attention', `Needs attention (${attentionItems.length})`, attentionItems.length ? ButtonStyle.Danger : ButtonStyle.Secondary, '0'),
+                    actionButton('recent', 'Recent activity', ButtonStyle.Secondary, '0'),
                     actionButton('home', 'All cases', ButtonStyle.Secondary)
                 )
             ],
@@ -344,6 +404,172 @@ function caseOption(item) {
         .setLabel(truncate(`${meta.emoji} ${item.player?.name || item.tag}`, 100))
         .setDescription(truncate(`${meta.label} · ${description}`, 100))
         .setValue(item.tag);
+}
+
+const ACTIVITY_PRESENTATION = Object.freeze({
+    automatic_case: ['\uD83D\uDD0E', 'Opened automatically'],
+    manual_review: ['\uD83D\uDD0E', 'Opened for review'],
+    assigned: ['\uD83D\uDCE5', 'Changed assignment'],
+    unassigned: ['\uD83D\uDCE4', 'Cleared assignment'],
+    handler: ['\uD83D\uDCE5', 'Changed assignment'],
+    dismissed: ['\u2705', 'Closed with no action'],
+    watching: ['\uD83D\uDC40', 'Started war monitoring'],
+    watch_triggered: ['\u26A0\uFE0F', 'Monitoring reopened the case'],
+    watch_complete: ['\u2705', 'Monitoring completed cleanly'],
+    waiting: ['\u23F3', 'Set a follow-up'],
+    waiting_due: ['\u23F0', 'Follow-up became due'],
+    contact_prepared: ['\u2709\uFE0F', 'Prepared a player message'],
+    dm_sent: ['\u2709\uFE0F', 'Sent a player message'],
+    dm_delivery_failed: ['\u26A0\uFE0F', 'Player message delivery failed'],
+    contact_reminder_sent: ['\uD83D\uDD14', 'Sent the automatic reminder'],
+    contact_reminder_failed: ['\u26A0\uFE0F', 'Automatic reminder failed'],
+    contact_no_response: ['\u23F0', 'Player did not respond'],
+    player_response: ['\uD83D\uDCAC', 'Player replied'],
+    hero_down_decision: ['\uD83D\uDEE1\uFE0F', 'Started hero-down recovery'],
+    extended: ['\uD83D\uDEE1\uFE0F', 'Extended hero-down recovery'],
+    removal_decision: ['\uD83D\uDEAB', 'Started community removal'],
+    removal_no_dm: ['\uD83D\uDEAB', 'Continued removal without a DM'],
+    removal_actioned: ['\uD83D\uDEAB', 'Recorded the in-game removal'],
+    removal_confirmed: ['\u2705', 'Roster confirmed the removal'],
+    removal_rejoined: ['\uD83D\uDEA8', 'Detected a removed player rejoining'],
+    removal_cancelled: ['\u21A9\uFE0F', 'Cancelled community removal'],
+    rejoin_approved: ['\u2705', 'Approved the player rejoining'],
+    approved_return: ['\u2705', 'Approved return to regular wars'],
+    closed: ['\u2705', 'Closed the follow-up'],
+    resolved: ['\u2705', 'Resolved case'],
+    reopened: ['\uD83D\uDD0E', 'Reopened the follow-up'],
+    note: ['\uD83D\uDCDD', 'Added a private note'],
+    escalated: ['\uD83D\uDEA8', 'Escalated for leadership review']
+});
+
+function activityPresentation(activityRaw) {
+    const activity = activityRaw && typeof activityRaw === 'object' ? activityRaw : {};
+    const type = toText(activity.type).trim().toLowerCase();
+    const mapped = ACTIVITY_PRESENTATION[type] || ['\u2022', 'Updated the case'];
+    if (type === 'assigned') {
+        const assigned = /^Assigned to\s+(.+?)(?:\s+\(\d{17,20}\))?\.(?:\s|$)/i.exec(toText(activity.text));
+        if (assigned?.[1]) return [mapped[0], `Assigned to ${truncate(safeInline(assigned[1]), 70)}`];
+    }
+    return mapped;
+}
+
+function recentCaseActivity(workspace) {
+    const itemsByTag = new Map((workspace?.work?.items || []).map(item => [workflow.normalizeTag(item.tag), item]));
+    const entries = [];
+    for (const caseRaw of Array.isArray(workspace?.privateState?.cases) ? workspace.privateState.cases : []) {
+        const caseValue = workflow.normalizeCase(caseRaw);
+        if (!caseValue) continue;
+        const item = itemsByTag.get(caseValue.tag) || null;
+        for (const activity of Array.isArray(caseValue.activity) ? caseValue.activity : []) {
+            const at = workflow.parseMs(activity?.at);
+            const type = toText(activity?.type).trim().toLowerCase();
+            if (!at || !type || type === 'dm_queued') continue;
+            const [emoji, label] = activityPresentation(activity);
+            entries.push({
+                id: toText(activity.id).trim() || `${caseValue.tag}:${activity.at}:${type}`,
+                at,
+                atIso: activity.at,
+                tag: caseValue.tag,
+                name: toText(item?.player?.name || caseValue.name || caseValue.tag).trim(),
+                actor: toText(activity.actor).trim() || 'War Follow Up',
+                emoji,
+                label,
+                item
+            });
+        }
+    }
+    return entries.sort((left, right) => right.at - left.at || right.id.localeCompare(left.id));
+}
+
+function recentActivityNavigationRow() {
+    return new ActionRowBuilder().addComponents(
+        actionButton('mycases', 'My cases', ButtonStyle.Secondary),
+        actionButton('attention', 'Needs attention', ButtonStyle.Secondary, '0'),
+        actionButton('home', 'All cases', ButtonStyle.Primary)
+    );
+}
+
+function buildRecentActivityPayload(workspace, options = {}) {
+    const pageSize = 12;
+    const entries = recentCaseActivity(workspace);
+    const pageCount = Math.max(1, Math.ceil(entries.length / pageSize));
+    const page = Math.min(Math.max(0, Number(options.page) || 0), pageCount - 1);
+    const visible = entries.slice(page * pageSize, (page + 1) * pageSize);
+    const lines = visible.map(entry => [
+        entry.emoji,
+        workflow.discordRelativeTimestamp(entry.atIso),
+        `**${safeInline(entry.name || entry.tag)}**`,
+        `${safeInline(entry.actor)} \u2014 ${entry.label}`
+    ].filter(Boolean).join(' \u00B7 '));
+    const embed = new EmbedBuilder()
+        .setColor(COLORS.neutral)
+        .setTitle('Recent case activity')
+        .setDescription(truncate(lines.join('\n') || 'No case activity has been recorded yet.', 4096))
+        .setFooter({ text: `Private note and message contents stay inside each case \u00B7 page ${page + 1}/${pageCount}` });
+    const components = [];
+    const selectable = [];
+    const seenTags = new Set();
+    for (const entry of visible) {
+        if (!entry.item || seenTags.has(entry.tag)) continue;
+        seenTags.add(entry.tag);
+        selectable.push(new StringSelectMenuOptionBuilder()
+            .setLabel(truncate(entry.name || entry.tag, 100))
+            .setDescription(truncate(`${entry.label} \u00B7 ${entry.tag}`, 100))
+            .setValue(entry.tag));
+    }
+    if (selectable.length) {
+        components.push(new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder()
+                .setCustomId(buildCustomId('pick'))
+                .setPlaceholder('Open a case from this page')
+                .addOptions(selectable)
+        ));
+    }
+    if (pageCount > 1) {
+        components.push(new ActionRowBuilder().addComponents(
+            actionButton('recent', 'Previous', ButtonStyle.Secondary, String(page - 1)).setDisabled(page <= 0),
+            actionButton('recent', 'Next', ButtonStyle.Secondary, String(page + 1)).setDisabled(page >= pageCount - 1)
+        ));
+    }
+    components.push(recentActivityNavigationRow());
+    return { embeds: [embed], components, flags: EPHEMERAL, allowedMentions: { parse: [] } };
+}
+
+function buildAttentionPayload(workspace, guildRecord, options = {}) {
+    const entries = moderationAttentionItems(workspace, guildRecord, options.now || new Date());
+    const pageCount = Math.max(1, Math.ceil(entries.length / PAGE_SIZE));
+    const page = Math.min(Math.max(0, Number(options.page) || 0), pageCount - 1);
+    const visible = entries.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+    const lines = visible.map(({ item, reasons }) => {
+        const owner = item.case?.assignedModeratorName || item.case?.handledBy || 'No owner';
+        return `\u26A0\uFE0F **${safeInline(item.player?.name || item.tag)}** \u00B7 ${reasons.join(', ')} \u00B7 ${safeInline(owner)}`;
+    });
+    const embed = new EmbedBuilder()
+        .setColor(entries.length ? COLORS.review : COLORS.success)
+        .setTitle('Needs attention')
+        .setDescription(truncate(lines.join('\n') || 'Nothing needs team attention right now.', 4096))
+        .setFooter({ text: `Shared exceptions only; assigned routine work stays in My cases \u00B7 page ${page + 1}/${pageCount}` });
+    const components = [];
+    if (visible.length) {
+        components.push(new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder()
+                .setCustomId(buildCustomId('pick'))
+                .setPlaceholder('Open a case that needs attention')
+                .addOptions(visible.map(({ item }) => caseOption(item)))
+        ));
+    }
+    if (pageCount > 1) {
+        components.push(new ActionRowBuilder().addComponents(
+            actionButton('attention', 'Previous', ButtonStyle.Secondary, String(page - 1)).setDisabled(page <= 0),
+            actionButton('attention', 'Next', ButtonStyle.Secondary, String(page + 1)).setDisabled(page >= pageCount - 1)
+        ));
+    }
+    components.push(new ActionRowBuilder().addComponents(
+        actionButton('mycases', 'My cases', ButtonStyle.Secondary),
+        actionButton('recent', 'Recent activity', ButtonStyle.Secondary, '0'),
+        actionButton('home', 'All cases', ButtonStyle.Primary)
+    ));
+    return { embeds: [embed], components, flags: EPHEMERAL, allowedMentions: { parse: [] } };
 }
 
 function buildHomePayload(workspace, config, options = {}) {
@@ -1319,7 +1545,62 @@ function buildWorkflowRulesModal(settings) {
     ]);
 }
 
-function buildModeratorSettingsPayload(workspace, guildRecord, userIdRaw, displayNameRaw) {
+function moderatorTeamSnapshot(workspace, guildRecord, options = {}) {
+    const moderators = Object.values(guildRecord?.moderators || {});
+    const rosters = connectedRosters(workspace).slice(0, 25);
+    const eligibleIds = options.eligibleIds instanceof Set ? options.eligibleIds : null;
+    const activeCases = moderationCaseSummary(workspace, guildRecord, options.now || new Date()).items;
+    const openCounts = {};
+    for (const item of activeCases) {
+        const moderatorId = toText(item.case?.assignedModeratorId).trim();
+        if (moderatorId) openCounts[moderatorId] = (openCounts[moderatorId] || 0) + 1;
+    }
+    const statusFor = moderator => {
+        if (!moderator.accepting) return 'paused';
+        if (eligibleIds && !eligibleIds.has(moderator.discordId)) return 'unavailable';
+        return 'available';
+    };
+    const rosterSummaries = new Map();
+    const coverageLines = rosters.map(roster => {
+        const clanTag = workflow.normalizeTag(roster.clanTag);
+        const subscribed = moderators.filter(moderator =>
+            (moderator.clanTags || []).map(workflow.normalizeTag).includes(clanTag)
+        );
+        const byStatus = {
+            available: subscribed.filter(moderator => statusFor(moderator) === 'available'),
+            paused: subscribed.filter(moderator => statusFor(moderator) === 'paused'),
+            unavailable: subscribed.filter(moderator => statusFor(moderator) === 'unavailable')
+        };
+        const summaryParts = [
+            byStatus.available.length ? `${byStatus.available.length} available` : 'needs coverage',
+            byStatus.paused.length ? `${byStatus.paused.length} paused` : '',
+            byStatus.unavailable.length ? `${byStatus.unavailable.length} unavailable` : ''
+        ].filter(Boolean);
+        rosterSummaries.set(clanTag, `${clanTag} \u00B7 ${summaryParts.join(' \u00B7 ')}`);
+        const names = [
+            ...byStatus.available.map(moderator => safeInline(moderator.displayName || moderator.discordId)),
+            ...byStatus.paused.map(moderator => `${safeInline(moderator.displayName || moderator.discordId)} (paused)`),
+            ...byStatus.unavailable.map(moderator => `${safeInline(moderator.displayName || moderator.discordId)} (unavailable)`)
+        ];
+        const indicator = byStatus.available.length ? '\uD83D\uDFE2' : (subscribed.length ? '\uD83D\uDFE1' : '\uD83D\uDD34');
+        return `${indicator} **${safeInline(roster.title || clanTag)}** \u00B7 ${summaryParts.join(' \u00B7 ')}${names.length ? `\n${names.join(', ')}` : ''}`;
+    });
+    const workloadModerators = moderators
+        .filter(moderator => Array.isArray(moderator.clanTags) && moderator.clanTags.length)
+        .sort((left, right) =>
+            Number(right.discordId === options.currentUserId) - Number(left.discordId === options.currentUserId) ||
+            safeInline(left.displayName || left.discordId).localeCompare(safeInline(right.displayName || right.discordId))
+        );
+    const workloadLines = workloadModerators.map(moderator => {
+        const count = openCounts[moderator.discordId] || 0;
+        const status = statusFor(moderator);
+        const lastAssigned = workflow.discordRelativeTimestamp(moderator.lastAssignedAt);
+        return `**${safeInline(moderator.displayName || moderator.discordId)}** \u00B7 ${count} active case${count === 1 ? '' : 's'} \u00B7 ${status}${lastAssigned ? ` \u00B7 last assignment ${lastAssigned}` : ''}`;
+    });
+    return { coverageLines, workloadLines, rosterSummaries };
+}
+
+function buildModeratorSettingsPayload(workspace, guildRecord, userIdRaw, displayNameRaw, options = {}) {
     const userId = toText(userIdRaw).trim();
     const preference = guildRecord?.moderators?.[userId] || {
         discordId: userId,
@@ -1330,6 +1611,10 @@ function buildModeratorSettingsPayload(workspace, guildRecord, userIdRaw, displa
     };
     const selectedClanTags = new Set((preference.clanTags || []).map(workflow.normalizeTag));
     const rosters = connectedRosters(workspace).slice(0, 25);
+    const team = moderatorTeamSnapshot(workspace, guildRecord, {
+        ...options,
+        currentUserId: userId
+    });
     const embed = new EmbedBuilder()
         .setColor(preference.accepting ? COLORS.success : COLORS.closed)
         .setTitle('Moderation settings')
@@ -1348,6 +1633,16 @@ function buildModeratorSettingsPayload(workspace, guildRecord, userIdRaw, displa
             { name: 'Notifications', value: preference.notificationMode === 'both' ? 'DM and channel alerts' : (preference.notificationMode === 'dm' ? 'DM alerts' : 'Channel alerts'), inline: true },
             { name: 'New assignments', value: preference.accepting ? 'On — accepting cases' : 'Paused', inline: true }
         );
+    embed.addFields(
+        {
+            name: 'Team coverage',
+            value: truncate(team.coverageLines.join('\n') || 'No connected clans are available.', 1024)
+        },
+        {
+            name: 'Team workload',
+            value: truncate(team.workloadLines.join('\n') || 'No moderators have selected clans yet.', 1024)
+        }
+    );
     const components = [];
     if (rosters.length) {
         components.push(new ActionRowBuilder().addComponents(
@@ -1359,7 +1654,7 @@ function buildModeratorSettingsPayload(workspace, guildRecord, userIdRaw, displa
                 .addOptions(rosters.map(roster =>
                     new StringSelectMenuOptionBuilder()
                         .setLabel(truncate(roster.title || roster.id, 100))
-                        .setDescription(truncate(roster.clanTag, 100))
+                        .setDescription(truncate(team.rosterSummaries.get(workflow.normalizeTag(roster.clanTag)) || roster.clanTag, 100))
                         .setValue(workflow.normalizeTag(roster.clanTag))
                         .setDefault(selectedClanTags.has(workflow.normalizeTag(roster.clanTag)))
                 ))
@@ -1376,7 +1671,7 @@ function buildModeratorSettingsPayload(workspace, guildRecord, userIdRaw, displa
         ),
         new ActionRowBuilder().addComponents(
             actionButton('mycases', 'My cases', ButtonStyle.Secondary),
-            actionButton('coverage', 'Coverage', ButtonStyle.Secondary),
+            actionButton('recent', 'Recent activity', ButtonStyle.Secondary, '0'),
             actionButton('home', 'All cases', ButtonStyle.Primary)
         )
     );
@@ -1571,7 +1866,7 @@ function buildMyCasesPayload(workspace, userIdRaw, options = {}) {
     }
     components.push(new ActionRowBuilder().addComponents(
         actionButton('modsettings', 'My settings', ButtonStyle.Secondary),
-        actionButton('coverage', 'Coverage overview', ButtonStyle.Secondary),
+        actionButton('recent', 'Recent activity', ButtonStyle.Secondary, '0'),
         actionButton('home', 'Full queue', ButtonStyle.Primary)
     ));
     return { embeds: [embed], components, flags: EPHEMERAL, allowedMentions: { parse: [] } };
@@ -1683,6 +1978,8 @@ module.exports = {
     discordGapCount,
     buildDashboardPayload,
     buildModerationHubPayload,
+    buildRecentActivityPayload,
+    buildAttentionPayload,
     buildHomePayload,
     buildCasePayload,
     buildEvidencePayload,
@@ -1711,6 +2008,7 @@ module.exports = {
     buildCoveragePayload,
     buildMyCasesPayload,
     moderationCaseSummary,
+    moderationAttentionItems,
     buildSetupSummary,
     buildMutationOutboxPayload,
     navigationRow,
