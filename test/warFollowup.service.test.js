@@ -91,6 +91,30 @@ test('interactive workspace reads reuse a short private cache and expose only a 
     assert.equal(service.peekWorkspace(), null);
 });
 
+test('simultaneous forced refreshes share one bounded request until a mutation invalidates it', async () => {
+    const requests = [];
+    const service = loadService({
+        getWarFollowupState: options => {
+            const request = deferred();
+            requests.push({ ...request, options });
+            return request.promise;
+        }
+    });
+    const first = service.loadWorkspace({ forcePrivate: true });
+    const second = service.loadWorkspace({ forcePrivate: true });
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].options.maxAttempts, 1, 'a stalled read must not restart a second full timeout');
+    assert.ok(requests[0].options.timeoutMs <= 15_000, 'read-only fallback must not wait 90 seconds');
+    service.invalidatePrivateStateCache();
+    const afterMutation = service.loadWorkspace({ forcePrivate: true });
+    assert.equal(requests.length, 2);
+    requests[1].resolve({ settings: { moderatorNames: ['Current'] }, cases: [] });
+    await afterMutation;
+    requests[0].resolve({ settings: { moderatorNames: ['Old'] }, cases: [] });
+    await Promise.all([first, second]);
+    assert.deepEqual((await service.readPrivateState({ cacheTtlMs: 60_000 })).settings.moderatorNames, ['Current']);
+});
+
 test('read-only workspace loads fall back to recent confirmed private state during a backend failure', async () => {
     let backendReads = 0;
     const service = loadService({

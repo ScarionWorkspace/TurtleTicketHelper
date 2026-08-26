@@ -5,7 +5,9 @@ const workflow = require('./workflow');
 const { warFollowupStateStore } = require('./stateStore');
 
 const MAX_MUTATIONS_PER_TICK = 4;
-const OUTBOX_REQUEST_TIMEOUT_MS = 12_000;
+// Apps Script cold starts plus the Firebase round trip can exceed 12 seconds.
+// Persist first and allow the backend to answer before declaring an ambiguity.
+const OUTBOX_REQUEST_TIMEOUT_MS = 45_000;
 const MANUAL_RETRY_MIN_INTERVAL_MS = 30_000;
 const RETRY_DELAYS_MS = Object.freeze([
     60 * 1000,

@@ -394,10 +394,9 @@ async function runWarFollowupTick(client, options = {}) {
             outboxResults = await processPendingMutations({
                 store,
                 now: options.now || new Date(),
-                // Keep the five-minute scheduler bounded even if Apps Script is
-                // unavailable. Remaining records stay durable for the next tick.
-                limit: 2,
-                timeoutMs: 8_000
+                // Bound work by record count, not a timeout shorter than a
+                // normal Apps Script response. Other records remain durable.
+                limit: 1
             });
         } catch (error) {
             // A damaged queue record must not suppress the existing war and

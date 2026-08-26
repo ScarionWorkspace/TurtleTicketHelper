@@ -353,12 +353,17 @@ test('saved moderation changes retry even if the Discord integration is later di
         createdAt: '2026-08-10T08:01:00.000Z',
         updatedAt: '2026-08-10T08:01:00.000Z'
     });
-    t.mock.method(rosterBackend, 'mutateWarFollowupCase', async () => ({
-        tag: '#P0LYGQ',
-        status: 'needs_dm',
-        updatedAt: '2026-08-10T08:02:00.000Z',
-        mutationLedger: [{ mutationId, action: 'contact' }]
-    }));
+    t.mock.method(rosterBackend, 'mutateWarFollowupCase', async (_request, options) => {
+        // Production can take longer than the old 8s scheduler/12s outbox
+        // deadlines even when the write has succeeded.
+        if (options.timeoutMs < 20_000) throw Object.assign(new Error('response timed out'), { code: 'TIMEOUT' });
+        return {
+            tag: '#P0LYGQ',
+            status: 'needs_dm',
+            updatedAt: '2026-08-10T08:02:00.000Z',
+            mutationLedger: [{ mutationId, action: 'contact' }]
+        };
+    });
     t.mock.method(rosterBackend, 'getWarFollowupCase', async () => null);
 
     const result = await runWarFollowupTick({}, { store, now: NOW });

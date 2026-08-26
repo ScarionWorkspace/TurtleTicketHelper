@@ -10,6 +10,7 @@ const INTERACTION_PUBLIC_CACHE_TTL_MS = 30 * 1000;
 const INTERACTION_PRIVATE_CACHE_TTL_MS = 30 * 1000;
 const INTERACTION_VIEW_CACHE_TTL_MS = 15 * 60 * 1000;
 const INTERACTION_STALE_FALLBACK_MAX_AGE_MS = 15 * 60 * 1000;
+const PRIVATE_READ_TIMEOUT_MS = 15_000;
 
 let privateStateCache = null;
 let privateStateCachedAt = 0;
@@ -63,7 +64,6 @@ async function readPrivateState(options = {}) {
 
     const generation = privateStateGeneration;
     if (
-        options.force !== true &&
         pendingPrivateStateRead?.generation === generation
     ) {
         try {
@@ -81,7 +81,10 @@ async function readPrivateState(options = {}) {
         promise: null
     };
     pending.promise = rosterBackend.getWarFollowupState({
-        timeoutMs: options.timeoutMs
+        // One bounded read: retrying a slow request doubled the time before a
+        // read-only view could use its explicitly marked stale fallback.
+        maxAttempts: 1,
+        timeoutMs: options.timeoutMs ?? PRIVATE_READ_TIMEOUT_MS
     }).then(result => {
         const state = {
             schemaVersion: 3,
@@ -127,7 +130,7 @@ async function loadWorkspace(options = {}) {
             cacheTtlMs: options.privateCacheTtlMs ?? (
                 scheduler ? SCHEDULER_PRIVATE_CACHE_TTL_MS : INTERACTION_PRIVATE_CACHE_TTL_MS
             ),
-            timeoutMs: options.privateTimeoutMs ?? 45_000
+            timeoutMs: options.privateTimeoutMs ?? PRIVATE_READ_TIMEOUT_MS
         })
     ]);
 
