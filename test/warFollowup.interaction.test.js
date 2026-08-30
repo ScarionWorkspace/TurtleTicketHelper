@@ -136,6 +136,47 @@ test('a stale case control is rejected before any modal or mutation', async t =>
     assert.match(calls.replies[0].content, /changed after it was opened/);
 });
 
+test('War details reads and paginates history beyond the case evidence lookback', async t => {
+    const workspace = buildWorkspace({
+        tag: '#P0LYGQ',
+        status: 'needs_review',
+        updatedAt: '2026-08-01T00:00:00.000Z'
+    });
+    const item = workspace.work.items[0];
+    workspace.rosterData.rosters[0].warPerformance = {
+        lastRefreshedAt: '2026-08-10T00:00:00.000Z',
+        regularWarHistoryByKey: Object.fromEntries(Array.from({ length: 10 }, (_, index) => {
+            const day = String(index + 1).padStart(2, '0');
+            return [`history-${day}`, {
+                warKey: `history-${day}`,
+                authoritative: true,
+                finalizedAt: `2026-08-${day}T00:00:00.000Z`,
+                statsByTag: {
+                    '#P0LYGQ': { possibleAttacks: 2, usedAttacks: 2, countedAttacks: 2, starsTotal: 5, totalDestruction: 180 }
+                },
+                formStatsByTag: {
+                    '#P0LYGQ': { possibleAttacks: 2, usedAttacks: 2, countedAttacks: 2, starsTotal: 5, totalDestruction: 180 }
+                }
+            }];
+        }))
+    };
+    t.mock.method(service, 'loadWorkspace', async () => workspace);
+    t.mock.method(warFollowupStateStore, 'getGuild', () => ({
+        config: { enabled: false, channelId: '', features: {} }
+    }));
+    const { interaction, calls } = baseInteraction(
+        buildCustomId('evidence', item.tag, views.caseToken(item), '1')
+    );
+
+    assert.equal(await handleWarFollowupInteraction(interaction), true);
+    const rendered = JSON.stringify(calls.edits.at(-1));
+    assert.match(rendered, /All available history/);
+    assert.match(rendered, /10 wars/);
+    assert.match(rendered, /page 2\/2/);
+    assert.match(rendered, /1 Aug 2026/);
+    assert.equal(calls.updateDefers, 1);
+});
+
 test('No action snapshots the evidence visible when the Discord case is closed', async t => {
     const workspace = buildWorkspace({
         tag: '#P0LYGQ',

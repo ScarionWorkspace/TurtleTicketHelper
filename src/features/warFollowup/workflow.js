@@ -377,8 +377,9 @@ function buildIgnoredPlayerEntries(directoryRaw, settingsRaw, casesRaw) {
         );
 }
 
-function buildRegularEvidence(entryRaw, settingsRaw) {
+function buildRegularEvidence(entryRaw, settingsRaw, limitRaw = null) {
     const settings = sanitizeSettings(settingsRaw);
+    const limit = limitRaw == null ? settings.regularLookbackWars : Math.max(1, toInt(limitRaw));
     const entry = entryRaw && typeof entryRaw === 'object' ? entryRaw : {};
     const events = (Array.isArray(entry.recentRegularWarForm) ? entry.recentRegularWarForm : [])
         .map(eventRaw => {
@@ -400,7 +401,7 @@ function buildRegularEvidence(entryRaw, settingsRaw) {
         })
         .filter(Boolean)
         .sort((left, right) => parseMs(right.at) - parseMs(left.at) || left.id.localeCompare(right.id))
-        .slice(0, settings.regularLookbackWars);
+        .slice(0, limit);
     const totals = emptyStats();
     for (const event of events) addStats(totals, event.stats);
     totals.warCount = events.length;
@@ -416,8 +417,9 @@ function cwlSeasonStartAt(seasonRaw) {
     return ms > 0 ? new Date(ms).toISOString() : '';
 }
 
-function buildCwlEvidence(entryRaw, settingsRaw) {
+function buildCwlEvidence(entryRaw, settingsRaw, limitRaw = null) {
     const settings = sanitizeSettings(settingsRaw);
+    const limit = limitRaw == null ? settings.cwlLookbackSeasons : Math.max(1, toInt(limitRaw));
     const entry = entryRaw && typeof entryRaw === 'object' ? entryRaw : {};
     const seasons = entry.cwlSeasonContext?.bySeason && typeof entry.cwlSeasonContext.bySeason === 'object'
         ? entry.cwlSeasonContext.bySeason
@@ -425,7 +427,7 @@ function buildCwlEvidence(entryRaw, settingsRaw) {
     const events = Object.keys(seasons)
         .sort()
         .reverse()
-        .slice(0, settings.cwlLookbackSeasons)
+        .slice(0, limit)
         .map(season => {
             const value = seasons[season] && typeof seasons[season] === 'object' ? seasons[season] : {};
             const stats = normalizeStats(value.stats);
@@ -469,8 +471,9 @@ function combineRegularHistoryStats(statsRaw, formStatsRaw) {
     return stats;
 }
 
-function buildRosterRegularEvidence(rosterRaw, tagRaw, settingsRaw) {
+function buildRosterRegularEvidence(rosterRaw, tagRaw, settingsRaw, limitRaw = null) {
     const settings = sanitizeSettings(settingsRaw);
+    const limit = limitRaw == null ? settings.regularLookbackWars : Math.max(1, toInt(limitRaw));
     const roster = rosterRaw && typeof rosterRaw === 'object' ? rosterRaw : {};
     const history = roster.warPerformance?.regularWarHistoryByKey && typeof roster.warPerformance.regularWarHistoryByKey === 'object'
         ? roster.warPerformance.regularWarHistoryByKey
@@ -501,15 +504,16 @@ function buildRosterRegularEvidence(rosterRaw, tagRaw, settingsRaw) {
         })
         .filter(Boolean)
         .sort((left, right) => parseMs(right.at) - parseMs(left.at) || right.id.localeCompare(left.id))
-        .slice(0, settings.regularLookbackWars);
+        .slice(0, limit);
     const totals = emptyStats();
     for (const event of events) addStats(totals, event.stats);
     totals.warCount = events.length;
     return { events, totals: statsSummary(totals) };
 }
 
-function buildRosterRegularEvidenceForTag(rosterData, tagRaw, settingsRaw, preferredRosterRaw) {
+function buildRosterRegularEvidenceForTag(rosterData, tagRaw, settingsRaw, preferredRosterRaw, limitRaw = null) {
     const settings = sanitizeSettings(settingsRaw);
+    const limit = limitRaw == null ? settings.regularLookbackWars : Math.max(1, toInt(limitRaw));
     const preferredRoster = preferredRosterRaw && typeof preferredRosterRaw === 'object' ? preferredRosterRaw : null;
     const rosters = getRosters(rosterData);
     const ordered = preferredRoster
@@ -519,7 +523,7 @@ function buildRosterRegularEvidenceForTag(rosterData, tagRaw, settingsRaw, prefe
     const events = [];
 
     for (const roster of ordered) {
-        for (const event of buildRosterRegularEvidence(roster, tagRaw, settings).events) {
+        for (const event of buildRosterRegularEvidence(roster, tagRaw, settings, limit).events) {
             const key = `${normalizeTag(event.clanTag)}|${event.id}`;
             if (seen.has(key)) continue;
             seen.add(key);
@@ -528,7 +532,7 @@ function buildRosterRegularEvidenceForTag(rosterData, tagRaw, settingsRaw, prefe
     }
 
     events.sort((left, right) => parseMs(right.at) - parseMs(left.at) || right.id.localeCompare(left.id));
-    events.splice(settings.regularLookbackWars);
+    events.splice(limit);
     const totals = emptyStats();
     for (const event of events) addStats(totals, event.stats);
     totals.warCount = events.length;
@@ -566,8 +570,9 @@ function buildRosterCwlEvidence(rosterRaw, tagRaw) {
     return { events: [event], totals: statsSummary(totals) };
 }
 
-function buildRosterCwlEvidenceForTag(rosterData, tagRaw, settingsRaw, preferredRosterRaw) {
+function buildRosterCwlEvidenceForTag(rosterData, tagRaw, settingsRaw, preferredRosterRaw, limitRaw = null) {
     const settings = sanitizeSettings(settingsRaw);
+    const limit = limitRaw == null ? settings.cwlLookbackSeasons : Math.max(1, toInt(limitRaw));
     const preferredRoster = preferredRosterRaw && typeof preferredRosterRaw === 'object' ? preferredRosterRaw : null;
     const rosters = getRosters(rosterData);
     const ordered = preferredRoster
@@ -585,7 +590,7 @@ function buildRosterCwlEvidenceForTag(rosterData, tagRaw, settingsRaw, preferred
     }
 
     events.sort((left, right) => parseMs(right.at) - parseMs(left.at) || right.id.localeCompare(left.id));
-    events.splice(settings.cwlLookbackSeasons);
+    events.splice(limit);
     const totals = emptyStats();
     for (const event of events) addStats(totals, event.stats);
     totals.warCount = events.reduce((sum, event) => sum + toInt(event.stats?.warCount), 0);
@@ -656,7 +661,7 @@ function mergeEvidenceSources(primaryRaw, secondaryRaw, limitRaw, kindRaw) {
     return { events, totals: statsSummary(totals) };
 }
 
-function buildEvidenceForTag(rosterData, tagRaw, settingsRaw, identityRaw) {
+function buildEvidenceForTagWithLimits(rosterData, tagRaw, settingsRaw, identityRaw, regularLimitRaw, cwlLimitRaw) {
     const tag = normalizeTag(tagRaw);
     const store = rosterData?.playerWarPerformance && typeof rosterData.playerWarPerformance === 'object'
         ? rosterData.playerWarPerformance
@@ -664,19 +669,21 @@ function buildEvidenceForTag(rosterData, tagRaw, settingsRaw, identityRaw) {
     const byTag = store.byTag && typeof store.byTag === 'object' ? store.byTag : {};
     const entry = getTaggedValue(byTag, tag) || {};
     const roster = findEvidenceRoster(rosterData, tag, identityRaw);
-    const globalRegular = buildRegularEvidence(entry, settingsRaw);
-    const globalCwl = buildCwlEvidence(entry, settingsRaw);
     const settings = sanitizeSettings(settingsRaw);
+    const regularLimit = Math.max(1, toInt(regularLimitRaw) || settings.regularLookbackWars);
+    const cwlLimit = Math.max(1, toInt(cwlLimitRaw) || settings.cwlLookbackSeasons);
+    const globalRegular = buildRegularEvidence(entry, settings, regularLimit);
+    const globalCwl = buildCwlEvidence(entry, settings, cwlLimit);
     const regular = mergeEvidenceSources(
         globalRegular,
-        buildRosterRegularEvidenceForTag(rosterData, tag, settings, roster),
-        settings.regularLookbackWars,
+        buildRosterRegularEvidenceForTag(rosterData, tag, settings, roster, regularLimit),
+        regularLimit,
         'regular'
     );
     const cwl = mergeEvidenceSources(
         globalCwl,
-        buildRosterCwlEvidenceForTag(rosterData, tag, settings, roster),
-        settings.cwlLookbackSeasons,
+        buildRosterCwlEvidenceForTag(rosterData, tag, settings, roster, cwlLimit),
+        cwlLimit,
         'cwl'
     );
     const rosterPerformance = roster?.warPerformance && typeof roster.warPerformance === 'object' ? roster.warPerformance : {};
@@ -694,6 +701,29 @@ function buildEvidenceForTag(rosterData, tagRaw, settingsRaw, identityRaw) {
         regularEvents: regular.events,
         cwlEvents: cwl.events
     };
+}
+
+function buildEvidenceForTag(rosterData, tagRaw, settingsRaw, identityRaw) {
+    const settings = sanitizeSettings(settingsRaw);
+    return buildEvidenceForTagWithLimits(
+        rosterData,
+        tagRaw,
+        settings,
+        identityRaw,
+        settings.regularLookbackWars,
+        settings.cwlLookbackSeasons
+    );
+}
+
+function buildWarHistoryForTag(rosterData, tagRaw, identityRaw) {
+    return buildEvidenceForTagWithLimits(
+        rosterData,
+        tagRaw,
+        DEFAULT_SETTINGS,
+        identityRaw,
+        Number.MAX_SAFE_INTEGER,
+        Number.MAX_SAFE_INTEGER
+    );
 }
 
 function buildSignals(evidenceRaw, settingsRaw) {
@@ -1246,6 +1276,7 @@ module.exports = {
     buildPlayerDirectory,
     buildIgnoredPlayerEntries,
     buildEvidenceForTag,
+    buildWarHistoryForTag,
     buildSignals,
     normalizeCase,
     buildRecoveryProgress,

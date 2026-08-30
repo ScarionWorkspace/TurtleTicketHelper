@@ -1044,7 +1044,8 @@ async function handleButtonOrSelect(interaction, parsed) {
         await renderView(interaction, workspace => {
             const item = findItem(workspace, first);
             assertCurrentCaseView(item, second);
-            return views.buildEvidencePayload(item);
+            const history = workflow.buildWarHistoryForTag(workspace.rosterData, item.tag, item.player);
+            return views.buildEvidencePayload(item, { history, page: Number(third) || 0 });
         });
         return;
     }

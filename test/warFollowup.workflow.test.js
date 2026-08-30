@@ -208,6 +208,49 @@ test('Discord merges canonical and per-roster regular-war evidence without doubl
     assert.deepEqual(workflow.buildSignals(evidence, settings).map(signal => signal.reasonCode), ['regular_missed']);
 });
 
+test('full player war history is independent from moderation lookback limits', () => {
+    const rosterData = buildRosterData();
+    rosterData.rosters[0].warPerformance = {
+        lastRefreshedAt: '2026-08-20T00:00:00.000Z',
+        regularWarHistoryByKey: Object.fromEntries(Array.from({ length: 12 }, (_, index) => {
+            const day = String(index + 1).padStart(2, '0');
+            const id = `history-${day}`;
+            return [id, {
+                warKey: id,
+                authoritative: true,
+                finalizedAt: `2026-08-${day}T00:00:00.000Z`,
+                statsByTag: {
+                    '#P0LYGQ': { possibleAttacks: 2, usedAttacks: 2, countedAttacks: 2, starsTotal: 5, totalDestruction: 180 }
+                },
+                formStatsByTag: {
+                    '#P0LYGQ': { possibleAttacks: 2, usedAttacks: 2, countedAttacks: 2, starsTotal: 5, totalDestruction: 180 }
+                }
+            }];
+        }))
+    };
+    rosterData.playerWarPerformance.byTag['#P0LYGQ'].cwlSeasonContext.bySeason = Object.fromEntries(
+        Array.from({ length: 8 }, (_, index) => {
+            const month = String(index + 1).padStart(2, '0');
+            return [`2026-${month}`, {
+                finalizedEventIds: [`cwl-${month}`],
+                lastEventAt: `2026-${month}-07T00:00:00.000Z`,
+                stats: { possibleAttacks: 1, usedAttacks: 1, countedAttacks: 1, starsTotal: 2, totalDestruction: 80 }
+            }];
+        })
+    );
+    const settings = { regularLookbackWars: 3, cwlLookbackSeasons: 2 };
+
+    const moderationEvidence = workflow.buildEvidenceForTag(rosterData, '#P0LYGQ', settings);
+    const fullHistory = workflow.buildWarHistoryForTag(rosterData, '#P0LYGQ');
+
+    assert.equal(moderationEvidence.regularEvents.length, 3);
+    assert.equal(moderationEvidence.cwlEvents.length, 2);
+    assert.equal(fullHistory.regularEvents.length, 14);
+    assert.equal(fullHistory.cwlEvents.length, 8);
+    assert.equal(fullHistory.regular.possibleAttacks, 28);
+    assert.equal(fullHistory.cwl.possibleAttacks, 8);
+});
+
 test('Discord keeps the more complete same-season CWL snapshot', () => {
     const rosterData = buildRosterData();
     rosterData.rosters[0].cwlStats = {

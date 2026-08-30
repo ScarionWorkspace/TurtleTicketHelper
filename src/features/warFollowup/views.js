@@ -743,45 +743,127 @@ function evidenceForDisplay(itemRaw) {
     };
 }
 
-function evidenceEventLines(eventsRaw, kind) {
-    const events = Array.isArray(eventsRaw) ? eventsRaw : [];
-    return events.map(event => {
-        const stats = workflow.statsSummary(event?.stats);
-        const label = kind === 'cwl'
-            ? (safeInline(event?.label) || 'CWL')
-            : (workflow.formatDate(event?.at) || 'Regular war');
-        const details = [
-            workflow.normalizeTag(event?.clanTag),
-            stats.possibleAttacks ? `${stats.usedAttacks}/${stats.possibleAttacks} used` : '',
-            stats.countedAttacks ? `${workflow.formatNumber(stats.averageStars, 1)} avg stars` : '',
-            stats.missedAttacks ? `${stats.missedAttacks} missed` : ''
-        ].filter(Boolean).join(' · ');
-        return `• **${label}**${details ? ` — ${details}` : ''}`;
-    });
+function sameEvidenceHistoryEvent(leftRaw, rightRaw, kind) {
+    const left = leftRaw && typeof leftRaw === 'object' ? leftRaw : {};
+    const right = rightRaw && typeof rightRaw === 'object' ? rightRaw : {};
+    if (left === right) return true;
+    if (kind === 'regular') {
+        const leftClan = workflow.normalizeTag(left.clanTag);
+        const rightClan = workflow.normalizeTag(right.clanTag);
+        if (leftClan && rightClan && leftClan !== rightClan) return false;
+    }
+    const ids = event => new Set([event.id, ...(Array.isArray(event.legacyIds) ? event.legacyIds : [])]
+        .map(value => toText(value).trim())
+        .filter(Boolean));
+    const leftIds = ids(left);
+    return Array.from(ids(right)).some(id => leftIds.has(id));
 }
 
-function buildEvidencePayload(item) {
+function evidenceHistoryEvent(eventRaw, kind, options = {}) {
+    const event = eventRaw && typeof eventRaw === 'object' ? eventRaw : {};
+    const stats = workflow.statsSummary(event.stats);
+    const clanTag = workflow.normalizeTag(event.clanTag);
+    const date = workflow.formatDate(event.at);
+    const warCount = Math.max(0, Number(stats.warCount) || 0);
+    const baseName = kind === 'cwl'
+        ? ['CWL', safeInline(event.label || event.id?.replace(/^cwl:/, '')), warCount ? `${warCount} war day${warCount === 1 ? '' : 's'}` : '', clanTag]
+            .filter(Boolean).join(' · ')
+        : ['Regular war', date || 'Unknown date', clanTag].filter(Boolean).join(' · ');
+    const name = [baseName, options.caseEvidence ? 'Case evidence' : ''].filter(Boolean).join(' · ');
+    const matchupCount = stats.hitUpCount + stats.sameThHitCount + stats.hitDownCount;
+    const details = [
+        stats.possibleAttacks
+            ? `Attacks: **${stats.usedAttacks}/${stats.possibleAttacks} used** · **${stats.missedAttacks} missed**`
+            : 'No tracked attack opportunities.',
+        stats.countedAttacks
+            ? `Results: **${workflow.formatNumber(stats.averageStars, 1)} avg stars** · **${workflow.formatNumber(stats.averageDestruction, 0)}% avg destruction** · **${stats.threeStarCount}/${stats.countedAttacks} triples**`
+            : '',
+        matchupCount
+            ? `Matchups: **${stats.hitUpCount} up** · **${stats.sameThHitCount} same TH** · **${stats.hitDownCount} down**`
+            : '',
+        options.snapshotOnly ? '_Saved with this case; no longer present in the current retained history._' : ''
+    ].filter(Boolean).join('\n');
+    return { name: truncate(name, 256), value: truncate(details, 1024) };
+}
+
+function buildEvidencePayload(item, options = {}) {
     if (!item) return buildCasePayload(null);
     const shown = evidenceForDisplay(item);
-    const evidence = shown.evidence;
-    const regularLines = evidenceEventLines(evidence.regularEvents, 'regular');
-    const cwlLines = evidenceEventLines(evidence.cwlEvents, 'cwl');
+    const snapshot = shown.evidence;
+    const history = options.history && typeof options.history === 'object' ? options.history : snapshot;
+    const snapshotEvents = [
+        ...(Array.isArray(snapshot.regularEvents) ? snapshot.regularEvents : []).map(event => ({ kind: 'regular', event })),
+        ...(Array.isArray(snapshot.cwlEvents) ? snapshot.cwlEvents : []).map(event => ({ kind: 'cwl', event }))
+    ];
+    const events = [
+        ...(Array.isArray(history.regularEvents) ? history.regularEvents : []).map(event => ({ kind: 'regular', event })),
+        ...(Array.isArray(history.cwlEvents) ? history.cwlEvents : []).map(event => ({ kind: 'cwl', event }))
+    ].map(entry => ({
+        ...entry,
+        caseEvidence: snapshotEvents.some(snapshotEntry =>
+            snapshotEntry.kind === entry.kind && sameEvidenceHistoryEvent(snapshotEntry.event, entry.event, entry.kind)
+        ),
+        snapshotOnly: false
+    }));
+    for (const snapshotEntry of snapshotEvents) {
+        if (events.some(entry =>
+            entry.kind === snapshotEntry.kind && sameEvidenceHistoryEvent(entry.event, snapshotEntry.event, entry.kind)
+        )) continue;
+        events.push({ ...snapshotEntry, caseEvidence: true, snapshotOnly: true });
+    }
+    events.sort((left, right) =>
+        workflow.parseMs(right.event?.at) - workflow.parseMs(left.event?.at) ||
+        toText(right.event?.id).localeCompare(toText(left.event?.id))
+    );
+    const pageSize = 8;
+    const pageCount = Math.max(1, Math.ceil(events.length / pageSize));
+    const page = Math.min(Math.max(0, Number(options.page) || 0), pageCount - 1);
+    const visible = events.slice(page * pageSize, (page + 1) * pageSize);
+    const snapshotCaptured = snapshot.capturedAt ? workflow.discordRelativeTimestamp(snapshot.capturedAt) : '';
+    const historyCaptured = history.capturedAt ? workflow.discordRelativeTimestamp(history.capturedAt) : '';
+    const regularCount = Array.isArray(history.regularEvents) ? history.regularEvents.length : 0;
+    const cwlCount = Array.isArray(history.cwlEvents) ? history.cwlEvents.length : 0;
     const embed = new EmbedBuilder()
         .setColor(COLORS.neutral)
         .setTitle(truncate(`War details · ${item.player?.name || item.tag}`, 256))
         .setDescription(shown.usesDecisionEvidence
-            ? `This is the evidence snapshot used for the current decision${evidence.capturedAt ? `, captured ${workflow.discordRelativeTimestamp(evidence.capturedAt)}` : ''}.`
-            : 'This is the latest evidence used by the automatic follow-up rules.')
+            ? 'This preserves the evidence snapshot used for the current decision. The history below also includes every finalized record currently retained for this player.'
+            : 'The case snapshot follows the configured moderation lookback. The history below includes every finalized record currently retained for this player.')
         .addFields(
-            { name: 'Regular-war totals', value: evidenceValue(evidence.regular), inline: true },
-            { name: 'CWL totals', value: evidenceValue(evidence.cwl), inline: true },
-            { name: 'Regular war details', value: truncate(regularLines.join('\n') || 'No regular-war details in this lookback.', 1024) },
-            { name: 'CWL details', value: truncate(cwlLines.join('\n') || 'No CWL details in this lookback.', 1024) }
-        );
+            {
+                name: shown.usesDecisionEvidence ? 'Decision snapshot' : 'Case snapshot',
+                value: [
+                    snapshotCaptured ? `Captured ${snapshotCaptured}` : '',
+                    `Regular: ${evidenceValue(snapshot.regular)}`,
+                    `CWL: ${evidenceValue(snapshot.cwl)}`
+                ].filter(Boolean).join('\n').slice(0, 1024)
+            },
+            {
+                name: 'All available history',
+                value: [
+                    `Regular: **${regularCount} war${regularCount === 1 ? '' : 's'}** · ${evidenceValue(history.regular)}`,
+                    `CWL: **${cwlCount} season${cwlCount === 1 ? '' : 's'}** · ${evidenceValue(history.cwl)}`,
+                    historyCaptured ? `Available through ${historyCaptured}` : ''
+                ].filter(Boolean).join('\n').slice(0, 1024)
+            },
+            ...visible.map(({ event, kind, caseEvidence, snapshotOnly }) =>
+                evidenceHistoryEvent(event, kind, { caseEvidence, snapshotOnly })
+            )
+        )
+        .setFooter({
+            text: events.length
+                ? `Retained history${events.some(event => event.snapshotOnly) ? ' + saved case evidence' : ''} · ${events.length} record${events.length === 1 ? '' : 's'} · page ${page + 1}/${pageCount}`
+                : 'No finalized war history is currently retained for this player.'
+        });
+    const token = caseToken(item);
     return {
         embeds: [embed],
         components: [
-            new ActionRowBuilder().addComponents(actionButton('case', 'Back to follow-up', ButtonStyle.Primary, item.tag))
+            new ActionRowBuilder().addComponents(
+                actionButton('evidence', 'Previous', ButtonStyle.Secondary, item.tag, token, String(page - 1)).setDisabled(page <= 0),
+                actionButton('case', 'Back to follow-up', ButtonStyle.Primary, item.tag),
+                actionButton('evidence', 'Next', ButtonStyle.Secondary, item.tag, token, String(page + 1)).setDisabled(page >= pageCount - 1)
+            )
         ],
         flags: EPHEMERAL,
         allowedMentions: { parse: [] }

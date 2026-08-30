@@ -971,6 +971,72 @@ test('decision views preserve the captured evidence and expose war-by-war detail
     assert.match(JSON.stringify(evidence), /captured-war|30 Jun 2026/);
 });
 
+test('War details paginates every available regular war and CWL season beyond the case snapshot', () => {
+    const workspace = buildWorkspace({
+        tag: '#PLAYER',
+        status: 'needs_dm',
+        dmText: 'Prepared moderation decision.',
+        evidence: {
+            capturedAt: '2026-07-01T00:00:00.000Z',
+            regular: { possibleAttacks: 2, usedAttacks: 0, missedAttacks: 2 },
+            cwl: {},
+            regularEvents: [{
+                id: 'case-trigger',
+                at: '2026-06-30T00:00:00.000Z',
+                clanTag: '#MAIN',
+                stats: { possibleAttacks: 2, usedAttacks: 0, missedAttacks: 2 }
+            }],
+            cwlEvents: []
+        },
+        updatedAt: '2026-08-20T01:00:00.000Z'
+    });
+    const item = workspace.work.items[0];
+    const regularEvents = Array.from({ length: 12 }, (_, index) => ({
+        id: `full-war-${index + 1}`,
+        at: `2026-08-${String(index + 1).padStart(2, '0')}T00:00:00.000Z`,
+        clanTag: '#MAIN',
+        stats: { possibleAttacks: 2, usedAttacks: 2, countedAttacks: 2, starsTotal: 5, totalDestruction: 180 }
+    }));
+    const cwlEvents = Array.from({ length: 3 }, (_, index) => ({
+        id: `cwl:2026-0${index + 1}`,
+        label: `2026-0${index + 1}`,
+        at: `2026-0${index + 1}-07T00:00:00.000Z`,
+        clanTag: '#MAIN',
+        stats: { warCount: 7, possibleAttacks: 7, usedAttacks: 6, missedAttacks: 1, countedAttacks: 6, starsTotal: 14, totalDestruction: 520 }
+    }));
+    const history = {
+        capturedAt: '2026-08-20T00:00:00.000Z',
+        regular: regularEvents.reduce((stats, event) => {
+            stats.possibleAttacks += event.stats.possibleAttacks;
+            stats.usedAttacks += event.stats.usedAttacks;
+            stats.countedAttacks += event.stats.countedAttacks;
+            stats.starsTotal += event.stats.starsTotal;
+            stats.totalDestruction += event.stats.totalDestruction;
+            return stats;
+        }, { possibleAttacks: 0, usedAttacks: 0, countedAttacks: 0, starsTotal: 0, totalDestruction: 0 }),
+        cwl: { warCount: 21, possibleAttacks: 21, usedAttacks: 18, missedAttacks: 3, countedAttacks: 18, starsTotal: 42, totalDestruction: 1560 },
+        regularEvents,
+        cwlEvents
+    };
+    const first = serialize(views.buildEvidencePayload(item, { history, page: 0 }));
+    const second = serialize(views.buildEvidencePayload(item, { history, page: 1 }));
+    const combined = `${JSON.stringify(first)}\n${JSON.stringify(second)}`;
+
+    assert.match(JSON.stringify(first), /Decision snapshot/);
+    assert.match(JSON.stringify(first), /All available history/);
+    assert.match(combined, /30 Jun 2026/);
+    assert.match(combined, /Case evidence/);
+    assert.match(combined, /no longer present in the current retained history/);
+    assert.match(JSON.stringify(first), /page 1\/2/);
+    assert.match(JSON.stringify(second), /page 2\/2/);
+    for (let day = 1; day <= 12; day += 1) {
+        assert.match(combined, new RegExp(`${day} Aug 2026`));
+    }
+    for (const season of ['2026-01', '2026-02', '2026-03']) assert.match(combined, new RegExp(season));
+    assert.equal(first.components.length, 1);
+    assert.equal(first.components[0].components.length, 3);
+});
+
 test('private activity remains fully available through the paged audit log', () => {
     const activity = Array.from({ length: 12 }, (_, index) => ({
         id: `entry-${index}`,
