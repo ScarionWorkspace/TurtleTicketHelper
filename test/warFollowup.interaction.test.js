@@ -62,7 +62,7 @@ function buildWorkspace(caseValue) {
 }
 
 function baseInteraction(customId, overrides = {}) {
-    const calls = { replies: [], edits: [], modals: [], defers: 0, followUps: [] };
+    const calls = { replies: [], edits: [], modals: [], defers: 0, updateDefers: 0, replyDefers: 0, followUps: [] };
     const interaction = {
         id: '333333333333333333',
         customId,
@@ -79,6 +79,7 @@ function baseInteraction(customId, overrides = {}) {
         deferred: false,
         inGuild: () => true,
         isModalSubmit: () => false,
+        isFromMessage: () => Boolean(interaction.message),
         reply: async payload => {
             interaction.replied = true;
             calls.replies.push(payload);
@@ -87,10 +88,12 @@ function baseInteraction(customId, overrides = {}) {
         deferUpdate: async () => {
             interaction.deferred = true;
             calls.defers += 1;
+            calls.updateDefers += 1;
         },
         deferReply: async () => {
             interaction.deferred = true;
             calls.defers += 1;
+            calls.replyDefers += 1;
         },
         editReply: async payload => calls.edits.push(payload),
         showModal: async modal => calls.modals.push(modal.toJSON()),
@@ -217,6 +220,109 @@ test('a submitted Contact player message is saved locally and remains visible wh
     assert.match(JSON.stringify(submit.calls.edits.at(-1)), /Could you explain/);
     assert.match(JSON.stringify(submit.calls.edits.at(-1)), /Nothing will be sent to the player until it succeeds/);
     assert.doesNotMatch(JSON.stringify(submit.calls.edits.at(-1)), /backend|idempotent|saved locally/i);
+    assert.equal(submit.calls.replyDefers, 0);
+    assert.equal(submit.calls.updateDefers, 1);
+    assert.equal(submit.calls.followUps.length, 0, 'unfinished work must not open the continuation list');
+});
+
+test('a completed modal decision updates its original case and opens My cases exactly once', async t => {
+    const workspace = buildWorkspace({
+        tag: '#P0LYGQ',
+        status: 'needs_review',
+        assignedModeratorId: '777777777777777777',
+        assignedModeratorName: 'Moderator',
+        updatedAt: '2026-08-13T10:00:00.000Z'
+    });
+    const item = workspace.work.items[0];
+    const mutations = [];
+    t.mock.method(service, 'peekWorkspace', () => workspace);
+    t.mock.method(warFollowupStateStore, 'enqueueMutation', (_guildId, record) => {
+        mutations.push(structuredClone(record));
+        return structuredClone(record);
+    });
+    t.mock.method(warFollowupStateStore, 'listMutations', () => []);
+    t.mock.method(mutationOutbox, 'executeMutation', async (_guildId, mutationId) => ({
+        record: { ...mutations[0], id: mutationId, state: 'committed' },
+        result: {
+            ...item.case,
+            ...mutations[0].request,
+            status: 'closed',
+            outcome: 'resolved',
+            closedAt: '2026-08-13T10:01:00.000Z',
+            updatedAt: '2026-08-13T10:01:00.000Z'
+        }
+    }));
+    t.mock.method(warFollowupStateStore, 'getGuild', () => ({
+        config: { enabled: false, channelId: '', features: {} },
+        moderationHub: {},
+        moderators: {
+            '777777777777777777': {
+                discordId: '777777777777777777',
+                clanTags: ['#2LUCULP'],
+                accepting: true
+            }
+        }
+    }));
+
+    const opener = baseInteraction(buildCustomId('resolveask', item.tag, views.caseToken(item)));
+    assert.equal(await handleWarFollowupInteraction(opener.interaction), true);
+    assert.equal(opener.calls.modals.length, 1);
+
+    const submit = baseInteraction(opener.calls.modals[0].custom_id, {
+        isModalSubmit: () => true,
+        fields: { getTextInputValue: id => id === 'resolution' ? 'Issue explained and resolved.' : '' }
+    });
+    assert.equal(await handleWarFollowupInteraction(submit.interaction), true);
+
+    assert.equal(submit.calls.replyDefers, 0, 'the modal must not create another case response');
+    assert.equal(submit.calls.updateDefers, 1, 'the originating ephemeral case is acknowledged in place');
+    assert.equal(submit.calls.replies.length, 0);
+    assert.equal(submit.calls.followUps.length, 1);
+    assert.match(JSON.stringify(submit.calls.edits.at(-1)), /Closed/);
+    assert.match(JSON.stringify(submit.calls.followUps[0]), /My moderation cases/);
+});
+
+test('a completed button decision keeps the case in place and opens one continuation list', async t => {
+    const workspace = buildWorkspace({
+        tag: '#P0LYGQ',
+        status: 'needs_review',
+        assignedModeratorId: '777777777777777777',
+        assignedModeratorName: 'Moderator',
+        updatedAt: '2026-08-13T10:00:00.000Z'
+    });
+    const item = workspace.work.items[0];
+    const mutations = [];
+    t.mock.method(service, 'peekWorkspace', () => workspace);
+    t.mock.method(warFollowupStateStore, 'enqueueMutation', (_guildId, record) => {
+        mutations.push(structuredClone(record));
+        return structuredClone(record);
+    });
+    t.mock.method(warFollowupStateStore, 'listMutations', () => []);
+    t.mock.method(mutationOutbox, 'executeMutation', async (_guildId, mutationId) => ({
+        record: { ...mutations[0], id: mutationId, state: 'committed' },
+        result: {
+            ...item.case,
+            ...mutations[0].request,
+            status: 'dismissed',
+            closedAt: '2026-08-13T10:01:00.000Z',
+            updatedAt: '2026-08-13T10:01:00.000Z'
+        }
+    }));
+    t.mock.method(warFollowupStateStore, 'getGuild', () => ({
+        config: { enabled: false, channelId: '', features: {} },
+        moderationHub: {},
+        moderators: {}
+    }));
+    const { interaction, calls } = baseInteraction(
+        buildCustomId('dismiss', item.tag, views.caseToken(item))
+    );
+
+    assert.equal(await handleWarFollowupInteraction(interaction), true);
+    assert.equal(calls.updateDefers, 1);
+    assert.equal(calls.replyDefers, 0);
+    assert.equal(calls.followUps.length, 1);
+    assert.match(JSON.stringify(calls.edits.at(-1)), /Closed/);
+    assert.match(JSON.stringify(calls.followUps[0]), /My moderation cases/);
 });
 
 test('a local storage failure returns the complete submitted message instead of losing it', async t => {
@@ -333,6 +439,7 @@ test('extension submission preserves the newly selected connected target roster'
     const item = workspace.work.items[0];
     const target = workspace.work.directory.rosters.find(roster => roster.id === 'hero-down');
     const mutations = [];
+    t.mock.method(service, 'peekWorkspace', () => null);
     t.mock.method(service, 'loadWorkspace', async () => workspace);
     t.mock.method(warFollowupStateStore, 'enqueueMutation', (_guildId, record) => {
         mutations.push(record);

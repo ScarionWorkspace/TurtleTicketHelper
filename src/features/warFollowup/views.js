@@ -25,6 +25,7 @@ const COLORS = Object.freeze({
 });
 const EPHEMERAL = 64;
 const PAGE_SIZE = 25;
+const MODERATION_HUB_UI_REVISION = 2;
 const ACTIVE_CASE_STATUSES = new Set(['needs_review', 'waiting', 'needs_dm', 'removal_pending', 'hero_down', 'ready']);
 
 function toText(value) {
@@ -242,6 +243,7 @@ function buildModerationHubPayload(workspace, guildRecord, options = {}) {
         ? `**${pending.cwlPlayers} attack${pending.cwlPlayers === 1 ? '' : 's'} pending**`
         : '**No attacks pending**';
     const semantic = JSON.stringify({
+        uiRevision: MODERATION_HUB_UI_REVISION,
         rosters: rosters.map(roster => [roster.id, roster.title, workflow.normalizeTag(roster.clanTag)]),
         moderators: moderators.map(moderator => [
             moderator.discordId,
@@ -311,6 +313,11 @@ function buildModerationHubPayload(workspace, guildRecord, options = {}) {
                     actionButton('attention', `Needs attention (${attentionItems.length})`, attentionItems.length ? ButtonStyle.Danger : ButtonStyle.Secondary, '0'),
                     actionButton('recent', 'Recent activity', ButtonStyle.Secondary, '0'),
                     actionButton('home', 'All cases', ButtonStyle.Secondary)
+                ),
+                new ActionRowBuilder().addComponents(
+                    actionButton('gaps', 'Discord gaps', ButtonStyle.Secondary),
+                    actionButton('rules', 'Rules', ButtonStyle.Secondary),
+                    actionButton('ignored', 'Ignored', ButtonStyle.Secondary)
                 )
             ],
             allowedMentions: { parse: [] }
@@ -636,16 +643,6 @@ function evidenceValue(statsRaw) {
     return parts.join('\n').slice(0, 1024);
 }
 
-function activityValue(item) {
-    const activity = Array.isArray(item?.case?.activity) ? item.case.activity.slice(-5).reverse() : [];
-    if (!activity.length) return 'No private activity yet.';
-    return activity.map(entry => {
-        const date = workflow.formatDate(entry.at);
-        const actor = entry.actor ? ` · ${safeInline(entry.actor)}` : '';
-        return `• ${date || 'Unknown date'}${actor} — ${truncate(safeInline(entry.text || entry.type), 180)}`;
-    }).join('\n').slice(0, 1024);
-}
-
 function conversationEntries(item) {
     return Array.isArray(item?.case?.conversation) ? item.case.conversation : [];
 }
@@ -784,8 +781,7 @@ function buildEvidencePayload(item) {
     return {
         embeds: [embed],
         components: [
-            new ActionRowBuilder().addComponents(actionButton('case', 'Back to follow-up', ButtonStyle.Primary, item.tag)),
-            navigationRow()
+            new ActionRowBuilder().addComponents(actionButton('case', 'Back to follow-up', ButtonStyle.Primary, item.tag))
         ],
         flags: EPHEMERAL,
         allowedMentions: { parse: [] }
@@ -817,8 +813,7 @@ function buildActivityPayload(item, pageRaw = 0) {
                 actionButton('activity', 'Next', ButtonStyle.Secondary, item.tag, token, String(page + 1)).setDisabled(page >= pageCount - 1),
                 actionButton('conversation', 'Conversation', ButtonStyle.Secondary, item.tag, token, 'latest')
                     .setDisabled(conversationEntries(item).length === 0)
-            ),
-            navigationRow()
+            )
         ],
         flags: EPHEMERAL,
         allowedMentions: { parse: [] }
@@ -856,8 +851,7 @@ function buildConversationPayload(item, pageRaw = 'latest') {
                 actionButton('case', 'Back to follow-up', ButtonStyle.Primary, item.tag),
                 actionButton('conversation', 'Next', ButtonStyle.Secondary, item.tag, token, String(page + 1)).setDisabled(page >= pages.length - 1),
                 actionButton('activity', 'Audit log', ButtonStyle.Secondary, item.tag, token, '0')
-            ),
-            navigationRow()
+            )
         ],
         flags: EPHEMERAL,
         allowedMentions: { parse: [] }
@@ -888,16 +882,28 @@ function buildCasePayload(item, workspace, config) {
             `\`${item.tag}\` · ${safeInline(player.rosterTitle || 'No current roster')} · TH${player.th || '?'}`,
             `Discord: ${player.discordId ? `<@${player.discordId}>` : safeInline(player.discord || 'Not linked')}`,
             `**${meta.label}:** ${meta.next}`
-        ].join('\n'))
-        .addFields(
-            { name: shownEvidence.usesDecisionEvidence ? 'Decision evidence · regular' : 'Regular-war evidence', value: evidenceValue(shownEvidence.evidence?.regular), inline: true },
-            { name: shownEvidence.usesDecisionEvidence ? 'Decision evidence · CWL' : 'CWL evidence', value: evidenceValue(shownEvidence.evidence?.cwl), inline: true }
-        );
+        ].join('\n'));
 
-    if (item.signals?.length) {
+    if (shownEvidence.usesDecisionEvidence) {
         embed.addFields({
-            name: 'Why this is here',
+            name: 'Why this decision was made',
+            value: [
+                `**Regular:** ${evidenceValue(shownEvidence.evidence?.regular)}`,
+                `**CWL:** ${evidenceValue(shownEvidence.evidence?.cwl)}`
+            ].join('\n').slice(0, 1024)
+        });
+    } else if (item.signals?.length) {
+        embed.addFields({
+            name: 'Why this needs review',
             value: item.signals.map(signal => `• **${safeInline(signal.title)}:** ${safeInline(signal.text)}`).join('\n').slice(0, 1024)
+        });
+    } else if (hasEvidenceData(shownEvidence.evidence)) {
+        embed.addFields({
+            name: 'Evidence snapshot',
+            value: [
+                `**Regular:** ${evidenceValue(shownEvidence.evidence?.regular)}`,
+                `**CWL:** ${evidenceValue(shownEvidence.evidence?.cwl)}`
+            ].join('\n').slice(0, 1024)
         });
     }
     if (item.recovery) {
@@ -917,10 +923,17 @@ function buildCasePayload(item, workspace, config) {
         value: safeInline(item.case?.assignedModeratorName || item.case?.handledBy || 'Unassigned'),
         inline: true
     });
-    if (item.case?.sourceRosterTitle || item.case?.sourceClanTag) {
+    const currentRosterTitle = toText(player.rosterTitle).trim();
+    const currentClanTag = workflow.normalizeTag(player.clanTag);
+    const sourceRosterTitle = toText(item.case?.sourceRosterTitle).trim();
+    const sourceClanTag = workflow.normalizeTag(item.case?.sourceClanTag);
+    const sourceDiffersFromCurrent = (!currentRosterTitle && !currentClanTag) ||
+        (currentRosterTitle && sourceRosterTitle && currentRosterTitle.toLowerCase() !== sourceRosterTitle.toLowerCase()) ||
+        (currentClanTag && sourceClanTag && currentClanTag !== sourceClanTag);
+    if ((sourceRosterTitle || sourceClanTag) && sourceDiffersFromCurrent) {
         embed.addFields({
-            name: 'Case source',
-            value: [safeInline(item.case.sourceRosterTitle), workflow.normalizeTag(item.case.sourceClanTag)].filter(Boolean).join(' · '),
+            name: 'Opened from',
+            value: [safeInline(sourceRosterTitle), sourceClanTag].filter(Boolean).join(' · '),
             inline: true
         });
     }
@@ -986,8 +999,6 @@ function buildCasePayload(item, workspace, config) {
             value: 'Player replies are added to the private conversation and forwarded privately. The bot never makes a moderation decision from a reply.'
         });
     }
-    if (item.case) embed.addFields({ name: 'Recent private activity', value: activityValue(item) });
-
     const components = [];
     const tag = item.tag;
     const token = caseToken(item);
@@ -1099,6 +1110,14 @@ function buildCasePayload(item, workspace, config) {
         ));
     }
 
+    if (!(item.status === 'needs_dm' && item.case?.dmQueueId)) {
+        const refreshButton = actionButton('case', 'Refresh case', ButtonStyle.Secondary, tag);
+        const availableDecisionRow = components.slice().reverse()
+            .find(row => row.components.length < 5);
+        if (availableDecisionRow) availableDecisionRow.addComponents(refreshButton);
+        else components.push(new ActionRowBuilder().addComponents(refreshButton));
+    }
+
     const coordination = new ActionRowBuilder();
     if (ACTIVE_CASE_STATUSES.has(item.status)) {
         coordination.addComponents(actionButton(
@@ -1118,7 +1137,6 @@ function buildCasePayload(item, workspace, config) {
     );
     if (!removedMonitoring && !removalEvasion) coordination.addComponents(actionButton('ignoreask', 'Always ignore', ButtonStyle.Danger, tag, token));
     components.push(coordination);
-    components.push(moderationNavigationRow(), navigationRow());
     return { embeds: [embed], components, flags: EPHEMERAL, allowedMentions: { parse: [] } };
 }
 
@@ -1141,12 +1159,31 @@ function buildConfirmationPayload(kind, item) {
     };
 }
 
+function buildIgnoredCasePayload(item) {
+    return {
+        embeds: [new EmbedBuilder()
+            .setColor(COLORS.closed)
+            .setTitle(truncate(`Ignored · ${item?.player?.name || item?.tag || 'Account'}`, 256))
+            .setDescription([
+                `\`${item?.tag || 'Unknown tag'}\` is no longer included in automatic war follow-up or Discord-gap reports.`,
+                'This account can be restored from **Ignored** in the Moderation Hub.'
+            ].join('\n'))],
+        components: [],
+        flags: EPHEMERAL,
+        allowedMentions: { parse: [] }
+    };
+}
+
 function buildHeroRosterPicker(item, workspace, options = {}) {
     const extending = options.extending === true;
     const rosters = (Array.isArray(workspace?.work?.directory?.rosters) ? workspace.work.directory.rosters : [])
         .filter(roster => workflow.normalizeTag(roster.clanTag));
     if (!rosters.length) {
-        return { content: 'No connected roster is available for a hero-down period.', components: [navigationRow()], flags: EPHEMERAL };
+        return {
+            content: 'No connected roster is available for a hero-down period.',
+            components: [new ActionRowBuilder().addComponents(actionButton('case', 'Back to case', ButtonStyle.Secondary, item.tag))],
+            flags: EPHEMERAL
+        };
     }
     const select = new StringSelectMenuBuilder()
         .setCustomId(buildCustomId(extending ? 'extendtarget' : 'herotarget', item.tag, caseToken(item)))
@@ -1167,7 +1204,10 @@ function buildHeroRosterPicker(item, workspace, options = {}) {
     return {
         content: `Choose where **${safeInline(item.player?.name || item.tag)}** should complete the ${extending ? 'extended ' : ''}hero-down period.`,
         embeds: [],
-        components: [new ActionRowBuilder().addComponents(select), navigationRow()],
+        components: [
+            new ActionRowBuilder().addComponents(select),
+            new ActionRowBuilder().addComponents(actionButton('case', 'Back to case', ButtonStyle.Secondary, item.tag))
+        ],
         flags: EPHEMERAL,
         allowedMentions: { parse: [] }
     };
@@ -2001,6 +2041,7 @@ module.exports = {
     buildActivityPayload,
     buildConversationPayload,
     buildConfirmationPayload,
+    buildIgnoredCasePayload,
     buildHeroRosterPicker,
     buildGapsPayload,
     buildIgnoredPayload,

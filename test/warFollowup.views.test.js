@@ -309,10 +309,11 @@ test('public Moderation Hub is a clean personalized entry point with stable auto
     assert.doesNotMatch(rendered, /digest|grouped|cadence|cooldown/i);
     assert.doesNotMatch(rendered, /Fair workload assignment|24h\/48h|72h reassignment/);
     assert.equal(Object.prototype.hasOwnProperty.call(json, 'flags'), false, 'the singleton panel itself is public');
-    assert.equal(json.components.length, 2);
+    assert.equal(json.components.length, 3);
     assert.deepEqual(json.components.map(row => row.components.map(component => component.label)), [
         ['My cases', 'Choose clans'],
-        ['Needs attention (1)', 'Recent activity', 'All cases']
+        ['Needs attention (1)', 'Recent activity', 'All cases'],
+        ['Discord gaps', 'Rules', 'Ignored']
     ]);
     assert.deepEqual(json.components[0].components.map(component => component.style), [1, 1]);
     assert.deepEqual(json.components[0].components.map(component => component.emoji?.name), ['📥', '⚙️']);
@@ -770,8 +771,7 @@ test('moderator settings, coverage, and personal ownership views stay within Dis
     const assignedCase = workspace.work.items.find(item => item.tag === '#P0LYGQ');
     const caseJson = views.buildCasePayload(assignedCase, workspace, { features: {} }).embeds[0].toJSON();
     assert.match(JSON.stringify(caseJson), /Assigned moderator/);
-    assert.match(JSON.stringify(caseJson), /Case source/);
-    assert.doesNotMatch(JSON.stringify(caseJson), /Case source snapshot/);
+    assert.doesNotMatch(JSON.stringify(caseJson), /Case source|Opened from/);
 
     const monitoringWorkspace = buildWorkspace({
         tag: '#PLAYER',
@@ -858,6 +858,53 @@ test('case views expose every admin lifecycle action in context', () => {
     assert.doesNotMatch(JSON.stringify(evasionJson), /No action/);
 });
 
+test('case tickets show evidence once and keep Hub navigation out of the decision surface', () => {
+    const workspace = buildWorkspace();
+    const item = workspace.work.items[0];
+    const payload = serialize(views.buildCasePayload(item, workspace, config()));
+    const rendered = JSON.stringify(payload);
+    const labels = payload.components.flatMap(row => row.components.map(component => component.label));
+
+    assert.match(rendered, /Why this needs review/);
+    assert.doesNotMatch(rendered, /Regular-war evidence|CWL evidence|Recent private activity/);
+    assert.doesNotMatch(rendered, /Case source|Opened from/);
+    assert.deepEqual(
+        labels.filter(label => ['My cases', 'Needs attention', 'Recent activity', 'Queue', 'Discord gaps', 'Rules', 'Ignored'].includes(label)),
+        []
+    );
+    assert.ok(labels.includes('War details'));
+    assert.ok(labels.includes('Activity'));
+    assert.ok(labels.includes('Refresh case'));
+
+    for (const relatedPayload of [
+        views.buildEvidencePayload(item),
+        views.buildActivityPayload(item),
+        views.buildConversationPayload(item),
+        views.buildHeroRosterPicker(item, workspace)
+    ].map(serialize)) {
+        const relatedLabels = relatedPayload.components.flatMap(row => row.components.map(component => component.label));
+        assert.deepEqual(
+            relatedLabels.filter(label => ['My cases', 'Needs attention', 'Recent activity', 'Queue', 'Discord gaps', 'Rules', 'Ignored'].includes(label)),
+            []
+        );
+    }
+
+    const movedWorkspace = buildWorkspace({
+        tag: '#PLAYER',
+        status: 'needs_review',
+        sourceRosterId: 'former-roster',
+        sourceRosterTitle: 'Former clan',
+        sourceClanTag: '#9LD',
+        updatedAt: '2026-08-01T01:00:00.000Z'
+    });
+    const movedRendered = JSON.stringify(serialize(
+        views.buildCasePayload(movedWorkspace.work.items[0], movedWorkspace, config())
+    ));
+    assert.match(movedRendered, /Opened from/);
+    assert.match(movedRendered, /Former clan/);
+    assert.match(movedRendered, /#9LD/);
+});
+
 test('all workflow and rule modals serialize with at most five input rows', () => {
     const workspace = buildWorkspace({
         tag: '#PLAYER',
@@ -917,12 +964,14 @@ test('decision views preserve the captured evidence and expose war-by-war detail
     const item = workspace.work.items[0];
     const detail = serialize(views.buildCasePayload(item, workspace, config()));
     const evidence = serialize(views.buildEvidencePayload(item));
-    assert.match(JSON.stringify(detail), /Decision evidence/);
+    assert.match(JSON.stringify(detail), /Why this decision was made/);
+    assert.match(JSON.stringify(detail), /1\/4 attacks/);
+    assert.doesNotMatch(JSON.stringify(detail), /2 of 2 available attacks missed/);
     assert.match(JSON.stringify(evidence), /evidence snapshot used for the current decision/);
     assert.match(JSON.stringify(evidence), /captured-war|30 Jun 2026/);
 });
 
-test('private activity remains available beyond the five-entry case summary', () => {
+test('private activity remains fully available through the paged audit log', () => {
     const activity = Array.from({ length: 12 }, (_, index) => ({
         id: `entry-${index}`,
         at: `2026-07-${String(index + 1).padStart(2, '0')}T00:00:00.000Z`,

@@ -12,6 +12,14 @@ const { prepareContactMessage } = require('./contactMessages');
 const mutationOutbox = require('./mutationOutbox');
 
 const directDmInFlight = new Set();
+const CASE_NON_COMPLETION_ACTIONS = new Set([
+    'add_note',
+    'set_handler',
+    'assign_owner',
+    'unassign_owner',
+    'escalate',
+    'reopen'
+]);
 const CASE_MODAL_ACTIONS = new Set([
     'contactform',
     'waitform',
@@ -424,6 +432,48 @@ function moderatorIdentity(interaction) {
     };
 }
 
+function buildMyCasesForInteraction(interaction, workspace) {
+    const identity = moderatorIdentity(interaction);
+    const guildRecord = warFollowupStateStore.getGuild(interaction.guildId);
+    const pendingMutations = warFollowupStateStore.listMutations(interaction.guildId)
+        .filter(record => record.actorId === identity.discordId && ['pending', 'conflict', 'failed'].includes(record.state));
+    return views.buildMyCasesPayload(workspace, identity.discordId, {
+        pendingMutations,
+        moderatorPreference: guildRecord.moderators?.[identity.discordId] || { clanTags: [], accepting: false }
+    });
+}
+
+function caseNeedsImmediateAction(item) {
+    if (!item) return false;
+    return views.moderationCaseSummary({ work: { items: [item] } }, {}, new Date()).actionable.includes(item);
+}
+
+async function followUpMyCasesAfterCompletion(interaction, workspace, item, action) {
+    if (CASE_NON_COMPLETION_ACTIONS.has(action) || caseNeedsImmediateAction(item)) return false;
+    try {
+        await interaction.followUp(buildMyCasesForInteraction(interaction, workspace));
+        return true;
+    } catch (error) {
+        // The case mutation is already committed. A failed convenience view must
+        // never make Discord report that the moderation action itself failed.
+        console.error('War Follow Up continuation view could not be opened:', {
+            guildId: interaction.guildId,
+            tag: item?.tag || '',
+            action,
+            error: error?.message || String(error)
+        });
+        return false;
+    }
+}
+
+async function deferModalResponse(interaction) {
+    if (interaction.isFromMessage?.() === true || interaction.message) {
+        await interaction.deferUpdate();
+        return;
+    }
+    await interaction.deferReply({ flags: views.EPHEMERAL });
+}
+
 async function syncModeratorPreferenceQuietly(interaction, preference) {
     try {
         await service.syncModeratorPreference(interaction.guildId, preference, { maxAttempts: 1, timeoutMs: 10_000 });
@@ -596,7 +646,9 @@ async function mutateAndRender(interaction, action, tagRaw, viewTokenRaw, patch 
     record = outcome.record || record;
     if (record.state === 'committed' && outcome.result && workspace?.rosterData) {
         workspace = service.acceptConfirmedCase(workspace, outcome.result);
-        await interaction.editReply(views.asEditPayload(views.buildCasePayload(findItem(workspace, item.tag), workspace, getConfig(interaction))));
+        const confirmedItem = findItem(workspace, item.tag);
+        await interaction.editReply(views.asEditPayload(views.buildCasePayload(confirmedItem, workspace, getConfig(interaction))));
+        await followUpMyCasesAfterCompletion(interaction, workspace, confirmedItem, action);
         await refreshDashboardQuietly(interaction, workspace);
         return;
     }
@@ -706,16 +758,16 @@ async function handleDirectMessage(interaction, tagRaw, viewTokenRaw) {
             return;
         }
         workspace = service.acceptConfirmedCase(workspace, outcome.result);
-        await interaction.editReply(views.asEditPayload(views.buildCasePayload(findItem(workspace, item.tag), workspace, config)));
-        await interaction.followUp({
-            content: generalContact
+        const confirmedItem = findItem(workspace, item.tag);
+        const confirmation = generalContact
                 ? `Contact message sent to <@${item.player.discordId}>. The case is waiting for a response with a 24-hour follow-up.`
                 : removalContact
                     ? `Removal notice sent to <@${item.player.discordId}>. Remove the player in game; the case will stay open until roster data confirms they left.`
-                    : `Decision DM sent to <@${item.player.discordId}> and the recovery period is now active.`,
-            flags: views.EPHEMERAL,
-            allowedMentions: { parse: [] }
-        });
+                    : `Decision DM sent to <@${item.player.discordId}> and the recovery period is now active.`;
+        const casePayload = views.buildCasePayload(confirmedItem, workspace, config);
+        casePayload.content = `✅ ${confirmation}`;
+        await interaction.editReply(views.asEditPayload(casePayload));
+        await followUpMyCasesAfterCompletion(interaction, workspace, confirmedItem, 'mark_dm_sent');
         await refreshDashboardQuietly(interaction, workspace);
     } catch (error) {
         if (!dmDelivered && deliveryReserved) {
@@ -794,11 +846,13 @@ async function handleButtonOrSelect(interaction, parsed) {
             const cachedWorkspace = service.peekWorkspace();
             if (cachedWorkspace?.rosterData) {
                 const confirmedWorkspace = service.acceptConfirmedCase(cachedWorkspace, outcome.result);
+                const confirmedItem = findItem(confirmedWorkspace, record.tag);
                 await interaction.editReply(views.asEditPayload(views.buildCasePayload(
-                    findItem(confirmedWorkspace, record.tag),
+                    confirmedItem,
                     confirmedWorkspace,
                     getConfig(interaction)
                 )));
+                await followUpMyCasesAfterCompletion(interaction, confirmedWorkspace, confirmedItem, record.action);
                 await refreshDashboardQuietly(interaction, confirmedWorkspace);
                 return;
             }
@@ -850,14 +904,7 @@ async function handleButtonOrSelect(interaction, parsed) {
         return;
     }
     if (action === 'mycases') {
-        const identity = moderatorIdentity(interaction);
-        const guildRecord = warFollowupStateStore.getGuild(interaction.guildId);
-        const pendingMutations = warFollowupStateStore.listMutations(interaction.guildId)
-            .filter(record => record.actorId === identity.discordId && ['pending', 'conflict', 'failed'].includes(record.state));
-        await renderView(interaction, workspace => views.buildMyCasesPayload(workspace, identity.discordId, {
-            pendingMutations,
-            moderatorPreference: guildRecord.moderators?.[identity.discordId] || { clanTags: [], accepting: false }
-        }), {
+        await renderView(interaction, workspace => buildMyCasesForInteraction(interaction, workspace), {
             forcePrivate: true
         });
         return;
@@ -1226,10 +1273,12 @@ async function handleButtonOrSelect(interaction, parsed) {
     if (action === 'ignore') {
         await beginBusyUpdate(interaction);
         const beforeIgnore = await service.loadWorkspace({ forcePrivate: true });
-        assertCurrentCaseView(findItem(beforeIgnore, first), second);
+        const ignoredItem = findItem(beforeIgnore, first);
+        assertCurrentCaseView(ignoredItem, second);
         await service.setTrustedAccount(first, true, { seed: `${interaction.id}:ignore:${first}` });
         const workspace = await service.loadWorkspace({ forcePrivate: true });
-        await interaction.editReply(views.asEditPayload(views.buildHomePayload(workspace, getConfig(interaction))));
+        await interaction.editReply(views.asEditPayload(views.buildIgnoredCasePayload(ignoredItem)));
+        await followUpMyCasesAfterCompletion(interaction, workspace, null, 'ignore');
         await refreshDashboardQuietly(interaction, workspace);
         return;
     }
@@ -1271,7 +1320,7 @@ async function handleCaseModal(interaction, parsed) {
     } else {
         // Compatibility for a modal opened just before a bot deployment. New
         // modals always have a durable context and do not need this read.
-        await interaction.deferReply({ flags: views.EPHEMERAL });
+        await deferModalResponse(interaction);
         workspace = service.peekWorkspace() || await service.loadWorkspace({ forcePrivate: true });
         item = findItem(workspace, tagRaw);
     }
@@ -1407,7 +1456,7 @@ async function handleCaseModal(interaction, parsed) {
         updatedAt: new Date().toISOString()
     });
     if (!interaction.deferred && !interaction.replied) {
-        await interaction.deferReply({ flags: views.EPHEMERAL });
+        await deferModalResponse(interaction);
     }
     warFollowupStateStore.removeModalContext(interaction.guildId, userId, interaction.customId);
     await interaction.editReply(views.asEditPayload(views.buildMutationOutboxPayload(record)));
@@ -1421,11 +1470,13 @@ async function handleCaseModal(interaction, parsed) {
         const cachedWorkspace = service.peekWorkspace();
         if (cachedWorkspace?.rosterData) {
             const confirmedWorkspace = service.acceptConfirmedCase(cachedWorkspace, outcome.result);
+            const confirmedItem = findItem(confirmedWorkspace, item.tag);
             await interaction.editReply(views.asEditPayload(views.buildCasePayload(
-                findItem(confirmedWorkspace, item.tag),
+                confirmedItem,
                 confirmedWorkspace,
                 getConfig(interaction)
             )));
+            await followUpMyCasesAfterCompletion(interaction, confirmedWorkspace, confirmedItem, mutationAction);
             await refreshDashboardQuietly(interaction, confirmedWorkspace);
             return;
         }
@@ -1434,7 +1485,7 @@ async function handleCaseModal(interaction, parsed) {
 }
 
 async function handleRulesModal(interaction, parsed) {
-    await interaction.deferReply({ flags: views.EPHEMERAL });
+    await deferModalResponse(interaction);
     const expectedRulesUpdatedAt = parsed.values[0] || '';
     let patch = {};
 
