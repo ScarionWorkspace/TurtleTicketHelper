@@ -8,6 +8,80 @@ function regularEvent(id, at, clanTag, stats) {
     return { eventId: id, warKey: id, finalizedAt: at, clanTag, stats };
 }
 
+function contextualRegularEvent(id, options = {}) {
+    const stars = options.stars ?? 2;
+    const destruction = options.destruction ?? 80;
+    const playerTownHallLevel = options.playerTownHallLevel ?? 15;
+    const playerMapPosition = options.playerMapPosition ?? 5;
+    const mirrorStarsBefore = options.mirrorStarsBefore ?? (options.forcedHardTarget ? 3 : 0);
+    const targetTownHallLevel = options.targetTownHallLevel ?? (options.forcedHardTarget ? playerTownHallLevel + 2 : playerTownHallLevel);
+    const hitMirror = options.hitMirror ?? !options.forcedHardTarget;
+    const ownAttackOrdinal = options.ownAttackOrdinal ?? 2;
+    const maxOwnAttacks = options.maxOwnAttacks ?? 20;
+    return {
+        id,
+        legacyIds: [],
+        label: id,
+        at: options.at || `2026-08-${String(options.day ?? 1).padStart(2, '0')}T00:00:00.000Z`,
+        clanTag: '#MAIN',
+        stats: {
+            warCount: 1,
+            possibleAttacks: 2,
+            usedAttacks: 1,
+            missedAttacks: 0,
+            countedAttacks: 1,
+            starsTotal: stars,
+            totalDestruction: destruction,
+            threeStarCount: stars === 3 ? 1 : 0,
+            hitUpCount: targetTownHallLevel > playerTownHallLevel ? 1 : 0,
+            sameThHitCount: targetTownHallLevel === playerTownHallLevel ? 1 : 0,
+            hitDownCount: targetTownHallLevel < playerTownHallLevel ? 1 : 0
+        },
+        context: {
+            schemaVersion: 1,
+            teamSize: 10,
+            attacksPerMember: 2,
+            playerMapPosition,
+            playerTownHallLevel,
+            mirrorTownHallLevel: playerTownHallLevel,
+            lineupMedianTownHall: options.lineupMedianTownHall ?? playerTownHallLevel,
+            totalOwnAttacksMade: maxOwnAttacks,
+            maxOwnAttacks,
+            attacks: [{
+                attackNumber: 1,
+                order: ownAttackOrdinal,
+                ownAttackOrdinal,
+                targetMapPosition: hitMirror ? playerMapPosition : Math.max(1, playerMapPosition - 2),
+                targetTownHallLevel,
+                mapUp: hitMirror ? 0 : 2,
+                townHallDelta: targetTownHallLevel - playerTownHallLevel,
+                mirrorStarsBefore,
+                targetStarsBefore: 0,
+                reasonableTargetsAvailable: options.forcedHardTarget ? 0 : 2,
+                stars,
+                destruction,
+                newStars: stars,
+                formEligible: true,
+                mirrorResolved: true,
+                targetResolved: true,
+                hitMirror,
+                forcedHardTarget: options.forcedHardTarget === true
+            }]
+        }
+    };
+}
+
+function evidenceFromRegularEvents(events) {
+    const regular = events.reduce((total, event) => {
+        for (const key of Object.keys(event.stats)) {
+            if (key === 'warCount') continue;
+            total[key] = (total[key] || 0) + Number(event.stats[key] || 0);
+        }
+        return total;
+    }, { warCount: events.length });
+    return { regular, cwl: {}, regularEvents: events, cwlEvents: [] };
+}
+
 function buildRosterData() {
     return {
         lastUpdatedAt: '2026-08-01T00:00:00.000Z',
@@ -100,6 +174,78 @@ test('Discord workflow derives the same conservative automatic signals as the ad
     );
     assert.equal(work.items.some(entry => entry.tag === '#P0LYGR'), false);
     assert.equal(item.player.discordId, '111111111111111111');
+});
+
+test('Discord context modes explain by default and only discount validated forced hard targets in assist mode', () => {
+    const events = [
+        contextualRegularEvent('forced-1', { day: 1, stars: 0, destruction: 20, forcedHardTarget: true }),
+        contextualRegularEvent('forced-2', { day: 2, stars: 0, destruction: 20, forcedHardTarget: true }),
+        ...Array.from({ length: 4 }, (_, index) => contextualRegularEvent(`normal-${index}`, {
+            day: index + 3,
+            stars: 2,
+            destruction: 80
+        }))
+    ];
+    const evidence = evidenceFromRegularEvents(events);
+    const settings = {
+        regularMinimumAttacks: 4,
+        regularMissedThreshold: 16,
+        regularPerformanceEnabled: true,
+        regularAverageStarsThreshold: 1.8,
+        regularAverageDestructionThreshold: 75,
+        cwlPerformanceEnabled: false
+    };
+
+    assert.equal(workflow.sanitizeSettings({}).regularContextMode, 'explain');
+    assert.equal(workflow.buildSignals(evidence, settings).some(signal => signal.reasonCode === 'regular_performance'), true);
+    assert.equal(workflow.buildSignals(evidence, { ...settings, regularContextMode: 'assist' }).some(signal => signal.reasonCode === 'regular_performance'), false);
+
+    const analysis = workflow.analyzeRegularContext(events, evidence.regular);
+    assert.equal(analysis.forcedHardAttackCount, 2);
+    assert.equal(analysis.adjustedStats.countedAttacks, 4);
+    assert.equal(analysis.adjustedStats.averageStars, 2);
+    assert.equal(analysis.adjustedStats.averageDestruction, 80);
+
+    const legacyEvidence = structuredClone(evidence);
+    for (const event of legacyEvidence.regularEvents) delete event.context;
+    assert.equal(
+        workflow.buildSignals(legacyEvidence, { ...settings, regularContextMode: 'assist' }).some(signal => signal.reasonCode === 'regular_performance'),
+        true,
+        'old records without exact context must keep their existing performance behavior'
+    );
+});
+
+test('Discord automatic context mode requires repeated mirror and consequential late low-TH patterns', () => {
+    const baseSettings = {
+        regularContextMode: 'automatic',
+        regularMissedThreshold: 16,
+        regularPerformanceEnabled: false,
+        cwlPerformanceEnabled: false
+    };
+    const mirrorEvents = Array.from({ length: 5 }, (_, index) => contextualRegularEvent(`mirror-${index}`, {
+        day: index + 1,
+        hitMirror: index >= 3
+    }));
+    assert.deepEqual(
+        workflow.buildSignals(evidenceFromRegularEvents(mirrorEvents.slice(0, 4)), baseSettings).map(signal => signal.reasonCode),
+        []
+    );
+    assert.deepEqual(
+        workflow.buildSignals(evidenceFromRegularEvents(mirrorEvents), baseSettings).map(signal => signal.reasonCode),
+        ['regular_mirror_pattern']
+    );
+
+    const timingEvents = [
+        contextualRegularEvent('late-forced-1', { day: 1, forcedHardTarget: true, playerTownHallLevel: 14, lineupMedianTownHall: 15, ownAttackOrdinal: 16 }),
+        contextualRegularEvent('late-forced-2', { day: 2, forcedHardTarget: true, playerTownHallLevel: 14, lineupMedianTownHall: 15, ownAttackOrdinal: 18 }),
+        contextualRegularEvent('late-normal', { day: 3, playerTownHallLevel: 14, lineupMedianTownHall: 15, ownAttackOrdinal: 15 }),
+        contextualRegularEvent('early-1', { day: 4, playerTownHallLevel: 14, lineupMedianTownHall: 15, ownAttackOrdinal: 3 }),
+        contextualRegularEvent('early-2', { day: 5, playerTownHallLevel: 14, lineupMedianTownHall: 15, ownAttackOrdinal: 5 })
+    ];
+    assert.deepEqual(
+        workflow.buildSignals(evidenceFromRegularEvents(timingEvents), baseSettings).map(signal => signal.reasonCode),
+        ['regular_timing_pattern']
+    );
 });
 
 test('Discord follow-up keeps post-max loot attacks as used but excludes them from performance cases', () => {

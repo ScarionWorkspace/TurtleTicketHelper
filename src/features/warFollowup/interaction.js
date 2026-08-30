@@ -75,6 +75,7 @@ const BUSY_LABELS = Object.freeze({
     togreg: 'Saving rules\u2026',
     togcwl: 'Saving rules\u2026',
     toggaps: 'Saving rules\u2026',
+    contextmode: 'Saving context mode\u2026',
     defroster: 'Saving default roster\u2026',
     ignore: 'Ignoring player\u2026',
     restore: 'Restoring player\u2026',
@@ -829,6 +830,21 @@ async function handleDefaultRoster(interaction) {
     await interaction.editReply(views.asEditPayload(views.buildRulesPayload(workspace)));
 }
 
+async function handleContextMode(interaction) {
+    await beginBusyUpdate(interaction);
+    let workspace = await service.loadWorkspace({ forcePrivate: true });
+    const mode = String(interaction.values?.[0] || '').trim().toLowerCase();
+    if (!['off', 'explain', 'assist', 'automatic'].includes(mode)) throw new Error('Invalid regular-war context mode.');
+    await service.saveRules(
+        { regularContextMode: mode },
+        workspace.work.settings.rulesUpdatedAt,
+        { seed: `${interaction.id}:context-mode:${mode}` }
+    );
+    workspace = await service.loadWorkspace({ forcePrivate: true });
+    await interaction.editReply(views.asEditPayload(views.buildRulesPayload(workspace)));
+    await refreshDashboardQuietly(interaction, workspace);
+}
+
 async function handleButtonOrSelect(interaction, parsed) {
     const action = parsed.action;
     const [first, second, third] = parsed.values;
@@ -1080,7 +1096,7 @@ async function handleButtonOrSelect(interaction, parsed) {
             const target = findRosterByToken(workspace, interaction.values?.[0]);
             if (!target?.clanTag) return null;
             return action === 'extendtarget'
-                ? views.buildExtendModal(item, target)
+                ? views.buildExtendModal(item, target, workspace)
                 : views.buildHeroModal(item, target, workspace);
         });
         return;
@@ -1269,6 +1285,7 @@ async function handleButtonOrSelect(interaction, parsed) {
     if (action === 'togreg') return handleToggleRule(interaction, 'regularPerformanceEnabled');
     if (action === 'togcwl') return handleToggleRule(interaction, 'cwlPerformanceEnabled');
     if (action === 'toggaps') return handleToggleRule(interaction, 'missingDiscordEnabled');
+    if (action === 'contextmode') return handleContextMode(interaction);
     if (action === 'defroster') return handleDefaultRoster(interaction);
 
     if (action === 'ignore') {

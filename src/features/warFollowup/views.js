@@ -771,6 +771,9 @@ function evidenceHistoryEvent(eventRaw, kind, options = {}) {
         : ['Regular war', date || 'Unknown date', clanTag].filter(Boolean).join(' · ');
     const name = [baseName, options.caseEvidence ? 'Case evidence' : ''].filter(Boolean).join(' · ');
     const matchupCount = stats.hitUpCount + stats.sameThHitCount + stats.hitDownCount;
+    const contextLines = kind === 'regular'
+        ? workflow.formatRegularAttackContextLines(event.context).map(line => `Context: ${line}`)
+        : [];
     const details = [
         stats.possibleAttacks
             ? `Attacks: **${stats.usedAttacks}/${stats.possibleAttacks} used** · **${stats.missedAttacks} missed**`
@@ -781,6 +784,7 @@ function evidenceHistoryEvent(eventRaw, kind, options = {}) {
         matchupCount
             ? `Matchups: **${stats.hitUpCount} up** · **${stats.sameThHitCount} same TH** · **${stats.hitDownCount} down**`
             : '',
+        ...contextLines,
         options.snapshotOnly ? '_Saved with this case; no longer present in the current retained history._' : ''
     ].filter(Boolean).join('\n');
     return { name: truncate(name, 256), value: truncate(details, 1024) };
@@ -823,6 +827,7 @@ function buildEvidencePayload(item, options = {}) {
     const historyCaptured = history.capturedAt ? workflow.discordRelativeTimestamp(history.capturedAt) : '';
     const regularCount = Array.isArray(history.regularEvents) ? history.regularEvents.length : 0;
     const cwlCount = Array.isArray(history.cwlEvents) ? history.cwlEvents.length : 0;
+    const contextAnalysis = workflow.analyzeRegularContext(history.regularEvents, history.regular);
     const embed = new EmbedBuilder()
         .setColor(COLORS.neutral)
         .setTitle(truncate(`War details · ${item.player?.name || item.tag}`, 256))
@@ -843,6 +848,9 @@ function buildEvidencePayload(item, options = {}) {
                 value: [
                     `Regular: **${regularCount} war${regularCount === 1 ? '' : 's'}** · ${evidenceValue(history.regular)}`,
                     `CWL: **${cwlCount} season${cwlCount === 1 ? '' : 's'}** · ${evidenceValue(history.cwl)}`,
+                    contextAnalysis.contextualWarCount
+                        ? `Context: **${contextAnalysis.contextualWarCount}/${regularCount} wars** · **${contextAnalysis.mirrorViolationWars}/${contextAnalysis.mirrorEvaluableWars || 0}** away from an open mirror · **${contextAnalysis.lateLowTownHallWars}/${contextAnalysis.timingEvaluableWars || 0}** late lower-TH starts · **${contextAnalysis.forcedHardAttackCount}** forced hard targets`
+                        : '',
                     historyCaptured ? `Available through ${historyCaptured}` : ''
                 ].filter(Boolean).join('\n').slice(0, 1024)
             },
@@ -1369,6 +1377,15 @@ function yesNo(value) {
     return value ? 'On' : 'Off';
 }
 
+function regularContextModeLabel(valueRaw) {
+    return {
+        off: 'Off',
+        explain: 'Explain only',
+        assist: 'Assist',
+        automatic: 'Automatic'
+    }[toText(valueRaw).trim().toLowerCase()] || 'Explain only';
+}
+
 function buildRulesPayload(workspace) {
     const settings = workspace?.work?.settings || workflow.sanitizeSettings(null);
     const embed = new EmbedBuilder()
@@ -1380,8 +1397,12 @@ function buildRulesPayload(workspace) {
                 name: 'Regular wars',
                 value: [
                     `${settings.regularLookbackWars} recent wars · flag at ${settings.regularMissedThreshold} missed attacks`,
-                    `Performance: ${yesNo(settings.regularPerformanceEnabled)} · min ${settings.regularMinimumAttacks} attacks · below ${settings.regularAverageStarsThreshold} stars and ${settings.regularAverageDestructionThreshold}%`
-                ].join('\n')
+                    `Performance: ${yesNo(settings.regularPerformanceEnabled)} · min ${settings.regularMinimumAttacks} attacks · below ${settings.regularAverageStarsThreshold} stars and ${settings.regularAverageDestructionThreshold}%`,
+                    `Mirror/timing context: **${regularContextModeLabel(settings.regularContextMode)}**`,
+                    settings.regularContextMode === 'automatic'
+                        ? '_Automatic gates: at least 5 evaluable wars, 3 incidents and 60%; late patterns also need 2 forced targets._'
+                        : ''
+                ].filter(Boolean).join('\n')
             },
             {
                 name: 'CWL',
@@ -1410,6 +1431,33 @@ function buildRulesPayload(workspace) {
         new ActionRowBuilder().addComponents(
             actionButton('editflow', 'Edit workflow', ButtonStyle.Secondary),
             actionButton('toggaps', `Discord gaps ${yesNo(settings.missingDiscordEnabled)}`, settings.missingDiscordEnabled ? ButtonStyle.Success : ButtonStyle.Secondary)
+        ),
+        new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder()
+                .setCustomId(buildCustomId('contextmode'))
+                .setPlaceholder('Mirror and timing context')
+                .addOptions(
+                    new StringSelectMenuOptionBuilder()
+                        .setLabel('Off')
+                        .setDescription('Keep existing rules; context remains visible in evidence.')
+                        .setValue('off')
+                        .setDefault(settings.regularContextMode === 'off'),
+                    new StringSelectMenuOptionBuilder()
+                        .setLabel('Explain only (recommended)')
+                        .setDescription('Show context without changing automatic cases.')
+                        .setValue('explain')
+                        .setDefault(settings.regularContextMode === 'explain'),
+                    new StringSelectMenuOptionBuilder()
+                        .setLabel('Assist')
+                        .setDescription('Discount validated forced hard targets from performance.')
+                        .setValue('assist')
+                        .setDefault(settings.regularContextMode === 'assist'),
+                    new StringSelectMenuOptionBuilder()
+                        .setLabel('Automatic')
+                        .setDescription('Also open cases for conservative repeated patterns.')
+                        .setValue('automatic')
+                        .setDefault(settings.regularContextMode === 'automatic')
+                )
         )
     ];
     const rosters = (Array.isArray(workspace?.work?.directory?.rosters) ? workspace.work.directory.rosters : [])
@@ -1497,7 +1545,8 @@ function buildHeroModal(item, targetRoster, workspace) {
         nextWarStartAt: targetRoster.nextWarStartAt,
         recoveryWars,
         reasonCodes: item.signals?.map(signal => signal.reasonCode),
-        evidence: item.evidence
+        evidence: item.evidence,
+        settings: workspace?.work?.settings
     });
     return modal('Prepare hero-down decision', buildCustomId('heroform', item.tag, caseToken(item), rosterToken(targetRoster.id)), [
         textInput('wars', 'Consecutive clean wars (1-8)', recoveryWars, { maxLength: 1 }),
@@ -1506,7 +1555,7 @@ function buildHeroModal(item, targetRoster, workspace) {
     ]);
 }
 
-function buildExtendModal(item, targetRoster) {
+function buildExtendModal(item, targetRoster, workspace) {
     const recoveryWars = item.case?.recoveryWarTarget || 3;
     const shownEvidence = evidenceForDisplay(item);
     const message = workflow.buildDmText({
@@ -1519,7 +1568,8 @@ function buildExtendModal(item, targetRoster) {
         reasonCodes: item.case?.reasonCodes?.length
             ? item.case.reasonCodes
             : item.signals?.map(signal => signal.reasonCode),
-        evidence: shownEvidence.evidence
+        evidence: shownEvidence.evidence,
+        settings: workspace?.work?.settings
     });
     return modal('Extend hero-down period', buildCustomId('extendform', item.tag, caseToken(item), rosterToken(targetRoster?.id)), [
         textInput('wars', 'Consecutive clean wars (1-8)', recoveryWars, { maxLength: 1 }),

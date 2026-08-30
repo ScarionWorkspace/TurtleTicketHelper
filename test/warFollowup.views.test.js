@@ -281,6 +281,21 @@ test('dashboard and private queue remain within Discord component and custom-ID 
     }
 });
 
+test('rules expose the shared mirror and timing mode without exceeding Discord rows', () => {
+    const workspace = buildWorkspace();
+    workspace.privateState.settings = workflow.sanitizeSettings({ regularContextMode: 'assist' });
+    workspace.work = workflow.buildWorkItems(workspace.rosterData, workspace.privateState);
+    const payload = serialize(views.buildRulesPayload(workspace));
+    const rendered = JSON.stringify(payload);
+    assert.match(rendered, /Mirror\/timing context/);
+    assert.match(rendered, /Assist/);
+    const contextSelect = payload.components.flatMap(row => row.components)
+        .find(component => parseCustomId(component.custom_id)?.action === 'contextmode');
+    assert.ok(contextSelect);
+    assert.deepEqual(contextSelect.options.map(option => option.value), ['off', 'explain', 'assist', 'automatic']);
+    assert.ok(payload.components.length <= 5);
+});
+
 test('public Moderation Hub is a clean personalized entry point with stable automatic-update semantics', () => {
     const workspace = buildWorkspace();
     const guildRecord = {
@@ -969,6 +984,57 @@ test('decision views preserve the captured evidence and expose war-by-war detail
     assert.doesNotMatch(JSON.stringify(detail), /2 of 2 available attacks missed/);
     assert.match(JSON.stringify(evidence), /evidence snapshot used for the current decision/);
     assert.match(JSON.stringify(evidence), /captured-war|30 Jun 2026/);
+});
+
+test('War details explain mirror state, target strength, timing, and forced targets', () => {
+    const workspace = buildWorkspace();
+    const item = workspace.work.items[0];
+    const history = structuredClone(item.evidence);
+    history.regular = {
+        possibleAttacks: 2,
+        usedAttacks: 1,
+        countedAttacks: 1,
+        starsTotal: 1,
+        totalDestruction: 63,
+        hitUpCount: 1
+    };
+    history.regularEvents = [{
+        id: 'context-war',
+        at: '2026-08-01T00:00:00.000Z',
+        clanTag: '#MAIN',
+        stats: { possibleAttacks: 2, usedAttacks: 1, countedAttacks: 1, starsTotal: 1, totalDestruction: 63, hitUpCount: 1 },
+        context: {
+            playerMapPosition: 14,
+            playerTownHallLevel: 14,
+            mirrorTownHallLevel: 14,
+            lineupMedianTownHall: 15,
+            maxOwnAttacks: 30,
+            attacks: [{
+                attackNumber: 1,
+                ownAttackOrdinal: 27,
+                targetMapPosition: 10,
+                targetTownHallLevel: 16,
+                mapUp: 4,
+                townHallDelta: 2,
+                mirrorStarsBefore: 3,
+                targetStarsBefore: 0,
+                reasonableTargetsAvailable: 0,
+                stars: 1,
+                destruction: 63,
+                formEligible: true,
+                mirrorResolved: true,
+                targetResolved: true,
+                hitMirror: false,
+                forcedHardTarget: true
+            }]
+        }
+    }];
+    const payload = serialize(views.buildEvidencePayload(item, { history }));
+    const rendered = JSON.stringify(payload);
+    assert.match(rendered, /mirror #14 TH14: already tripled/);
+    assert.match(rendered, /target #10 TH16 \+2 TH 4 spots up/);
+    assert.match(rendered, /clan attack 27\/30 \(90%\)/);
+    assert.match(rendered, /forced hard target/);
 });
 
 test('War details paginates every available regular war and CWL season beyond the case snapshot', () => {

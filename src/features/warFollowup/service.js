@@ -87,7 +87,7 @@ async function readPrivateState(options = {}) {
         timeoutMs: options.timeoutMs ?? PRIVATE_READ_TIMEOUT_MS
     }).then(result => {
         const state = {
-            schemaVersion: 3,
+            schemaVersion: 4,
             settings: workflow.sanitizeSettings(result?.settings),
             moderators: Array.isArray(result?.moderators) ? clone(result.moderators) : [],
             cases: (Array.isArray(result?.cases) ? result.cases : [])

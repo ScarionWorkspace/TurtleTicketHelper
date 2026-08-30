@@ -5,9 +5,10 @@
 // roster snapshot and the same private Apps Script cases; it does not create a
 // second moderation model.
 const DEFAULT_SETTINGS = Object.freeze({
-    schemaVersion: 3,
+    schemaVersion: 4,
     regularLookbackWars: 8,
     regularMissedThreshold: 2,
+    regularContextMode: 'explain',
     regularPerformanceEnabled: true,
     regularMinimumAttacks: 6,
     regularAverageStarsThreshold: 1.8,
@@ -26,6 +27,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     rulesUpdatedAt: '',
     updatedAt: ''
 });
+const REGULAR_CONTEXT_MODES = Object.freeze(['off', 'explain', 'assist', 'automatic']);
 
 const STATUS_ORDER = Object.freeze([
     'needs_review',
@@ -152,9 +154,12 @@ function sanitizeSettings(raw) {
     )).sort().slice(0, 1000);
 
     return {
-        schemaVersion: 3,
+        schemaVersion: 4,
         regularLookbackWars: Math.floor(clamp(value.regularLookbackWars, 1, 8, DEFAULT_SETTINGS.regularLookbackWars)),
         regularMissedThreshold: Math.floor(clamp(value.regularMissedThreshold, 1, 16, DEFAULT_SETTINGS.regularMissedThreshold)),
+        regularContextMode: REGULAR_CONTEXT_MODES.includes(toText(value.regularContextMode).trim().toLowerCase())
+            ? toText(value.regularContextMode).trim().toLowerCase()
+            : DEFAULT_SETTINGS.regularContextMode,
         regularPerformanceEnabled: value.regularPerformanceEnabled == null ? true : value.regularPerformanceEnabled === true,
         regularMinimumAttacks: Math.floor(clamp(value.regularMinimumAttacks, 2, 32, DEFAULT_SETTINGS.regularMinimumAttacks)),
         regularAverageStarsThreshold: clamp(value.regularAverageStarsThreshold, 0.5, 3, DEFAULT_SETTINGS.regularAverageStarsThreshold),
@@ -226,6 +231,171 @@ function statsSummary(raw) {
         averageDestruction: stats.countedAttacks > 0 ? stats.totalDestruction / stats.countedAttacks : null,
         tripleRate: stats.countedAttacks > 0 ? stats.threeStarCount / stats.countedAttacks : null
     };
+}
+
+function sanitizeRegularAttackContext(raw) {
+    const value = raw && typeof raw === 'object' ? raw : {};
+    const signed = numberRaw => {
+        const number = Number(numberRaw);
+        return Number.isFinite(number) ? Math.max(-100, Math.min(100, Math.trunc(number))) : 0;
+    };
+    const attacks = (Array.isArray(value.attacks) ? value.attacks : []).slice(0, 4).map(attackRaw => {
+        const attack = attackRaw && typeof attackRaw === 'object' ? attackRaw : {};
+        return {
+            attackNumber: Math.min(4, toInt(attack.attackNumber)),
+            order: Math.min(10000, toInt(attack.order)),
+            ownAttackOrdinal: Math.min(1000, toInt(attack.ownAttackOrdinal)),
+            targetMapPosition: Math.min(100, toInt(attack.targetMapPosition)),
+            targetTownHallLevel: Math.min(100, toInt(attack.targetTownHallLevel)),
+            mapUp: signed(attack.mapUp),
+            townHallDelta: signed(attack.townHallDelta),
+            mirrorStarsBefore: Math.min(3, toInt(attack.mirrorStarsBefore)),
+            targetStarsBefore: Math.min(3, toInt(attack.targetStarsBefore)),
+            reasonableTargetsAvailable: Math.min(100, toInt(attack.reasonableTargetsAvailable)),
+            stars: Math.min(3, toInt(attack.stars)),
+            destruction: Math.min(100, toInt(attack.destruction)),
+            newStars: Math.min(3, toInt(attack.newStars)),
+            formEligible: attack.formEligible === true,
+            mirrorResolved: attack.mirrorResolved === true,
+            targetResolved: attack.targetResolved === true,
+            hitMirror: attack.hitMirror === true,
+            forcedHardTarget: attack.forcedHardTarget === true
+        };
+    }).sort((left, right) =>
+        (left.ownAttackOrdinal || left.order || left.attackNumber) - (right.ownAttackOrdinal || right.order || right.attackNumber)
+    );
+    const median = Number(value.lineupMedianTownHall);
+    const context = {
+        schemaVersion: 1,
+        teamSize: Math.min(100, toInt(value.teamSize)),
+        attacksPerMember: Math.min(4, toInt(value.attacksPerMember)),
+        playerMapPosition: Math.min(100, toInt(value.playerMapPosition)),
+        playerTownHallLevel: Math.min(100, toInt(value.playerTownHallLevel)),
+        mirrorTownHallLevel: Math.min(100, toInt(value.mirrorTownHallLevel)),
+        lineupMedianTownHall: Number.isFinite(median) && median > 0 ? Math.min(100, Math.round(median * 2) / 2) : 0,
+        totalOwnAttacksMade: Math.min(1000, toInt(value.totalOwnAttacksMade)),
+        maxOwnAttacks: Math.min(1000, toInt(value.maxOwnAttacks)),
+        attacks
+    };
+    return context.playerMapPosition || context.playerTownHallLevel || context.attacks.length ? context : null;
+}
+
+function isValidatedForcedHardTarget(attack) {
+    return Boolean(
+        attack &&
+        attack.formEligible &&
+        attack.forcedHardTarget &&
+        attack.mirrorResolved &&
+        attack.targetResolved &&
+        attack.mirrorStarsBefore >= 3 &&
+        attack.targetStarsBefore < 3 &&
+        attack.townHallDelta > 0 &&
+        attack.reasonableTargetsAvailable === 0
+    );
+}
+
+function analyzeRegularContext(eventsRaw, totalsRaw) {
+    const events = Array.isArray(eventsRaw) ? eventsRaw : [];
+    const adjusted = normalizeStats(totalsRaw);
+    let contextualWarCount = 0;
+    let exactContextWarCount = 0;
+    let forcedHardAttackCount = 0;
+    let mirrorEvaluableWars = 0;
+    let mirrorViolationWars = 0;
+    let timingEvaluableWars = 0;
+    let lateLowTownHallWars = 0;
+    let lateForcedHardWars = 0;
+
+    for (const eventRaw of events) {
+        const event = eventRaw && typeof eventRaw === 'object' ? eventRaw : {};
+        const context = sanitizeRegularAttackContext(event.context);
+        if (!context) continue;
+        contextualWarCount += 1;
+        const eligible = context.attacks.filter(attack => attack.formEligible);
+        const stats = normalizeStats(event.stats);
+        const eligibleStars = eligible.reduce((sum, attack) => sum + attack.stars, 0);
+        const eligibleDestruction = eligible.reduce((sum, attack) => sum + attack.destruction, 0);
+        const exact = eligible.length === stats.countedAttacks &&
+            eligibleStars === stats.starsTotal &&
+            eligibleDestruction === stats.totalDestruction;
+        if (!exact) continue;
+        exactContextWarCount += 1;
+
+        for (const attack of eligible) {
+            if (!isValidatedForcedHardTarget(attack)) continue;
+            forcedHardAttackCount += 1;
+            adjusted.countedAttacks = Math.max(0, adjusted.countedAttacks - 1);
+            adjusted.starsTotal = Math.max(0, adjusted.starsTotal - attack.stars);
+            adjusted.totalDestruction = Math.max(0, adjusted.totalDestruction - attack.destruction);
+            if (attack.stars === 3) adjusted.threeStarCount = Math.max(0, adjusted.threeStarCount - 1);
+            const matchupKey = attack.townHallDelta > 0 ? 'hitUpCount' : (attack.townHallDelta < 0 ? 'hitDownCount' : 'sameThHitCount');
+            adjusted[matchupKey] = Math.max(0, adjusted[matchupKey] - 1);
+        }
+
+        const first = eligible[0];
+        if (!first) continue;
+        if (first.mirrorResolved && first.targetResolved && first.mirrorStarsBefore < 3) {
+            mirrorEvaluableWars += 1;
+            if (!first.hitMirror) mirrorViolationWars += 1;
+        }
+        if (
+            context.playerTownHallLevel > 0 &&
+            context.lineupMedianTownHall > 0 &&
+            context.playerTownHallLevel < context.lineupMedianTownHall &&
+            context.maxOwnAttacks > 0 &&
+            first.ownAttackOrdinal > 0
+        ) {
+            timingEvaluableWars += 1;
+            if (first.ownAttackOrdinal / context.maxOwnAttacks >= 0.7) {
+                lateLowTownHallWars += 1;
+                if (isValidatedForcedHardTarget(first)) lateForcedHardWars += 1;
+            }
+        }
+    }
+
+    return {
+        contextualWarCount,
+        exactContextWarCount,
+        forcedHardAttackCount,
+        mirrorEvaluableWars,
+        mirrorViolationWars,
+        mirrorViolationRate: mirrorEvaluableWars ? mirrorViolationWars / mirrorEvaluableWars : 0,
+        timingEvaluableWars,
+        lateLowTownHallWars,
+        lateLowTownHallRate: timingEvaluableWars ? lateLowTownHallWars / timingEvaluableWars : 0,
+        lateForcedHardWars,
+        adjustedStats: statsSummary(adjusted)
+    };
+}
+
+function formatRegularAttackContextLines(contextRaw) {
+    const context = sanitizeRegularAttackContext(contextRaw);
+    if (!context) return [];
+    return context.attacks.map((attack, index) => {
+        const attackNumber = attack.attackNumber || index + 1;
+        const attacker = [context.playerMapPosition ? `#${context.playerMapPosition}` : '', context.playerTownHallLevel ? `TH${context.playerTownHallLevel}` : '']
+            .filter(Boolean).join(' ');
+        const mirrorState = attack.mirrorResolved
+            ? (attack.mirrorStarsBefore >= 3 ? 'already tripled' : `open (${attack.mirrorStarsBefore}★ before)`)
+            : 'state unavailable';
+        const mirror = `mirror${context.playerMapPosition ? ` #${context.playerMapPosition}` : ''}` +
+            `${context.mirrorTownHallLevel ? ` TH${context.mirrorTownHallLevel}` : ''}: ${mirrorState}`;
+        const targetParts = [
+            attack.targetMapPosition ? `#${attack.targetMapPosition}` : 'unknown base',
+            attack.targetTownHallLevel ? `TH${attack.targetTownHallLevel}` : ''
+        ];
+        if (attack.townHallDelta) targetParts.push(`${attack.townHallDelta > 0 ? '+' : ''}${attack.townHallDelta} TH`);
+        if (!attack.hitMirror && attack.mapUp) targetParts.push(`${Math.abs(attack.mapUp)} ${plural(Math.abs(attack.mapUp), 'spot')} ${attack.mapUp > 0 ? 'up' : 'down'}`);
+        if (attack.hitMirror) targetParts.push('mirror hit');
+        if (attack.targetResolved) targetParts.push(attack.targetStarsBefore >= 3 ? 'already tripled' : `${attack.targetStarsBefore}★ before`);
+        const timing = attack.ownAttackOrdinal && context.maxOwnAttacks
+            ? `clan attack ${attack.ownAttackOrdinal}/${context.maxOwnAttacks} (${Math.round(attack.ownAttackOrdinal / context.maxOwnAttacks * 100)}%)`
+            : 'timing unavailable';
+        const status = !attack.formEligible
+            ? 'post-max farming; not counted'
+            : (isValidatedForcedHardTarget(attack) ? 'forced hard target' : 'form counted');
+        return `Attack ${attackNumber}: ${attacker ? `${attacker} · ` : ''}${mirror} · target ${targetParts.filter(Boolean).join(' ')} · ${timing} · ${attack.stars}★ ${attack.destruction}% · ${status}`;
+    });
 }
 
 function getRosters(rosterData) {
@@ -390,7 +560,7 @@ function buildRegularEvidence(entryRaw, settingsRaw, limitRaw = null) {
             const legacyId = toText(event.eventId).trim();
             const stats = normalizeStats(event.stats);
             stats.warCount = 1;
-            return {
+            const normalized = {
                 id,
                 legacyIds: legacyId && legacyId !== id ? [legacyId] : [],
                 label: toText(event.warKey).trim() || 'Regular war',
@@ -398,6 +568,9 @@ function buildRegularEvidence(entryRaw, settingsRaw, limitRaw = null) {
                 clanTag: normalizeTag(event.clanTag),
                 stats
             };
+            const context = sanitizeRegularAttackContext(event.context);
+            if (context) normalized.context = context;
+            return normalized;
         })
         .filter(Boolean)
         .sort((left, right) => parseMs(right.at) - parseMs(left.at) || left.id.localeCompare(right.id))
@@ -647,6 +820,7 @@ function mergeEvidenceSources(primaryRaw, secondaryRaw, limitRaw, kindRaw) {
             seasonStartedAt: toText(preferred?.seasonStartedAt || fallback?.seasonStartedAt).trim(),
             clanTag: normalizeTag(preferred?.clanTag || fallback?.clanTag),
             stats: kind === 'cwl' ? moreCompleteCwlStats(preferred?.stats, fallback?.stats) : preferred.stats,
+            context: kind === 'regular' ? (preferred?.context || fallback?.context) : undefined,
             legacyIds: Array.from(new Set([...idsFor(preferred), ...idsFor(fallback)]))
                 .filter(id => id !== toText(preferred?.id).trim())
         };
@@ -749,6 +923,10 @@ function buildSignals(evidenceRaw, settingsRaw) {
     const regularRevisions = buildRevisions(regularEvents);
     const cwlRevisions = buildRevisions(cwlEvents);
     const signals = [];
+    const contextAnalysis = analyzeRegularContext(regularEvents, regular);
+    const performanceRegular = settings.regularContextMode === 'assist' || settings.regularContextMode === 'automatic'
+        ? contextAnalysis.adjustedStats
+        : regular;
 
     if (regular.possibleAttacks > 0 && regular.missedAttacks >= settings.regularMissedThreshold) {
         signals.push({
@@ -761,15 +939,47 @@ function buildSignals(evidenceRaw, settingsRaw) {
 
     if (
         settings.regularPerformanceEnabled &&
-        regular.countedAttacks >= settings.regularMinimumAttacks &&
-        regular.averageStars < settings.regularAverageStarsThreshold &&
-        regular.averageDestruction < settings.regularAverageDestructionThreshold
+        performanceRegular.countedAttacks >= settings.regularMinimumAttacks &&
+        performanceRegular.averageStars < settings.regularAverageStarsThreshold &&
+        performanceRegular.averageDestruction < settings.regularAverageDestructionThreshold
     ) {
         signals.push({
-            id: ['regular_performance', regularRevisions[0], regular.countedAttacks, regular.starsTotal, regular.totalDestruction].join(':'),
+            id: ['regular_performance', regularRevisions[0], performanceRegular.countedAttacks, performanceRegular.starsTotal, performanceRegular.totalDestruction].join(':'),
             reasonCode: 'regular_performance',
             title: 'Regular-war results',
-            text: `${formatNumber(regular.averageStars, 1)} stars · ${formatNumber(regular.averageDestruction, 0)}% · ${regular.countedAttacks} counted ${plural(regular.countedAttacks, 'attack')}`
+            text: `${formatNumber(performanceRegular.averageStars, 1)} stars · ${formatNumber(performanceRegular.averageDestruction, 0)}% · ${performanceRegular.countedAttacks} counted ${plural(performanceRegular.countedAttacks, 'attack')}` +
+                (contextAnalysis.forcedHardAttackCount && performanceRegular !== regular
+                    ? ` (${contextAnalysis.forcedHardAttackCount} forced hard ${plural(contextAnalysis.forcedHardAttackCount, 'target')} excluded)`
+                    : '')
+        });
+    }
+
+    if (
+        settings.regularContextMode === 'automatic' &&
+        contextAnalysis.mirrorEvaluableWars >= 5 &&
+        contextAnalysis.mirrorViolationWars >= 3 &&
+        contextAnalysis.mirrorViolationRate >= 0.6
+    ) {
+        signals.push({
+            id: ['regular_mirror_pattern', regularRevisions[0], contextAnalysis.mirrorEvaluableWars, contextAnalysis.mirrorViolationWars].join(':'),
+            reasonCode: 'regular_mirror_pattern',
+            title: 'Repeated open-mirror deviations',
+            text: `${contextAnalysis.mirrorViolationWars} of ${contextAnalysis.mirrorEvaluableWars} evaluable wars started away from an open mirror`
+        });
+    }
+
+    if (
+        settings.regularContextMode === 'automatic' &&
+        contextAnalysis.timingEvaluableWars >= 5 &&
+        contextAnalysis.lateLowTownHallWars >= 3 &&
+        contextAnalysis.lateLowTownHallRate >= 0.6 &&
+        contextAnalysis.lateForcedHardWars >= 2
+    ) {
+        signals.push({
+            id: ['regular_timing_pattern', regularRevisions[0], contextAnalysis.timingEvaluableWars, contextAnalysis.lateLowTownHallWars, contextAnalysis.lateForcedHardWars].join(':'),
+            reasonCode: 'regular_timing_pattern',
+            title: 'Repeated late low-TH attacks',
+            text: `${contextAnalysis.lateLowTownHallWars} of ${contextAnalysis.timingEvaluableWars} evaluable wars started after 70% of clan attacks; ${contextAnalysis.lateForcedHardWars} ended in forced hard targets`
         });
     }
 
@@ -1170,10 +1380,15 @@ function buildWorkItems(rosterData, privateStateRaw) {
     return { items, directory, settings, caseByTag };
 }
 
-function evidenceSentence(reasonCode, evidenceRaw) {
+function evidenceSentence(reasonCode, evidenceRaw, settingsRaw) {
     const evidence = evidenceRaw && typeof evidenceRaw === 'object' ? evidenceRaw : {};
     const regular = statsSummary(evidence.regular);
     const cwl = statsSummary(evidence.cwl);
+    const settings = sanitizeSettings(settingsRaw);
+    const contextAnalysis = analyzeRegularContext(evidence.regularEvents, regular);
+    const performanceRegular = settings.regularContextMode === 'assist' || settings.regularContextMode === 'automatic'
+        ? contextAnalysis.adjustedStats
+        : regular;
 
     if (reasonCode === 'regular_missed' && regular.possibleAttacks > 0) {
         return `In the reviewed regular wars, ${regular.missedAttacks} of ${regular.possibleAttacks} available attacks were not used.`;
@@ -1181,8 +1396,18 @@ function evidenceSentence(reasonCode, evidenceRaw) {
     if (reasonCode === 'cwl_missed' && cwl.possibleAttacks > 0) {
         return `In the reviewed CWL seasons, ${cwl.missedAttacks} of ${cwl.possibleAttacks} available attacks were not used.`;
     }
-    if (reasonCode === 'regular_performance' && regular.countedAttacks > 0) {
-        return `Across ${regular.countedAttacks} counted regular-war attacks, the average result was ${formatNumber(regular.averageStars, 1)} stars and ${formatNumber(regular.averageDestruction, 0)}% destruction.`;
+    if (reasonCode === 'regular_performance' && performanceRegular.countedAttacks > 0) {
+        return `Across ${performanceRegular.countedAttacks} counted regular-war attacks` +
+            (contextAnalysis.forcedHardAttackCount && performanceRegular !== regular
+                ? `, after excluding ${contextAnalysis.forcedHardAttackCount} forced hard ${plural(contextAnalysis.forcedHardAttackCount, 'target')}`
+                : '') +
+            `, the average result was ${formatNumber(performanceRegular.averageStars, 1)} stars and ${formatNumber(performanceRegular.averageDestruction, 0)}% destruction.`;
+    }
+    if (reasonCode === 'regular_mirror_pattern' && contextAnalysis.mirrorEvaluableWars > 0) {
+        return `Across ${contextAnalysis.mirrorEvaluableWars} recent wars where the mirror was still open, the first attack went elsewhere ${contextAnalysis.mirrorViolationWars} times.`;
+    }
+    if (reasonCode === 'regular_timing_pattern' && contextAnalysis.timingEvaluableWars > 0) {
+        return `As a lower-TH lineup member, the first attack came after 70% of clan attacks in ${contextAnalysis.lateLowTownHallWars} of ${contextAnalysis.timingEvaluableWars} recent evaluable wars; ${contextAnalysis.lateForcedHardWars} of those led to a forced hard target.`;
     }
     if (reasonCode === 'cwl_performance' && cwl.countedAttacks > 0) {
         return `Across ${cwl.countedAttacks} CWL attacks, the average result was ${formatNumber(cwl.averageStars, 1)} stars and ${formatNumber(cwl.averageDestruction, 0)}% destruction.`;
@@ -1199,7 +1424,7 @@ function buildDmText(optionsRaw) {
     const nextWarTimestamp = discordRelativeTimestamp(options.nextWarStartAt);
     const recoveryWars = Math.max(1, toInt(options.recoveryWars) || 3);
     const reasonCodes = Array.isArray(options.reasonCodes) ? options.reasonCodes : [];
-    const sentences = reasonCodes.map(code => evidenceSentence(code, options.evidence)).filter(Boolean);
+    const sentences = reasonCodes.map(code => evidenceSentence(code, options.evidence, options.settings)).filter(Boolean);
 
     if (!sentences.length) sentences.push('Staff reviewed your recent regular-war and CWL participation.');
 
@@ -1272,6 +1497,9 @@ module.exports = {
     emptyStats,
     normalizeStats,
     statsSummary,
+    sanitizeRegularAttackContext,
+    analyzeRegularContext,
+    formatRegularAttackContextLines,
     getTaggedValue,
     buildPlayerDirectory,
     buildIgnoredPlayerEntries,
