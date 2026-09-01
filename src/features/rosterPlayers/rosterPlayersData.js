@@ -212,6 +212,10 @@ module.exports = {
     normalizeActiveRosterPayload,
     getOrderedRosters,
     getRosterPlayers,
+    getPlayerTag,
+    getPlayerName,
+    buildPlayerMetricsByTag,
+    getDiscordIdForPlayer,
     formatRosterPlayerLines,
     formatRawRosterPlayerLines,
     chunkLines
