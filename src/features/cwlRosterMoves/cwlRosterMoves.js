@@ -422,15 +422,69 @@ function buildCompletionSummary(plan, messageCount) {
     return parts.join(' ');
 }
 
+function buildTestModeSummary(plan, messageCount) {
+    const parts = [
+        '**Private test preview - nothing was posted and nobody was pinged.**',
+        `A live send would post ${messageCount} move notice${messageCount === 1 ? '' : 's'} for ` +
+        `${plan.movingAccountCount} Clash account${plan.movingAccountCount === 1 ? '' : 's'} and ` +
+        `ping ${plan.pingableMemberCount} linked Discord member${plan.pingableMemberCount === 1 ? '' : 's'}.`
+    ];
+
+    if (plan.unlinkedAccountCount > 0) {
+        parts.push(
+            `${plan.unlinkedAccountCount} moving account${plan.unlinkedAccountCount === 1 ? '' : 's'} ` +
+            `${plan.unlinkedAccountCount === 1 ? 'has' : 'have'} no linked Discord ID.`
+        );
+    }
+
+    if (plan.alwaysIgnoredAccountCount > 0) {
+        parts.push(
+            `${plan.alwaysIgnoredAccountCount} out-of-clan account` +
+            `${plan.alwaysIgnoredAccountCount === 1 ? ' is' : 's are'} excluded by War Follow Up's Always ignore setting.`
+        );
+    }
+
+    return parts.join(' ');
+}
+
+function buildPrivatePreviewPayload(message) {
+    return {
+        ...message,
+        flags: EPHEMERAL,
+        allowedMentions: {
+            parse: [],
+            users: [],
+            roles: []
+        }
+    };
+}
+
+async function sendPrivateTestPreview(interaction, plan, messages) {
+    await interaction.editReply({
+        content: buildTestModeSummary(plan, messages.length),
+        allowedMentions: { parse: [], users: [], roles: [] }
+    });
+
+    for (const message of messages) {
+        await interaction.followUp(buildPrivatePreviewPayload(message));
+    }
+}
+
 async function pingCwlRosterMoves(interaction, options = {}) {
     const readActiveRosterPayload = options.readActiveRosterPayload ||
         rosterPublicData.readActiveRosterPayload;
     const readWarFollowupPrivateState = options.readWarFollowupPrivateState ||
         warFollowupService.readPrivateState;
 
+    const testMode = interaction.options?.getBoolean?.('test') === true ||
+        options.testMode === true;
+
     await interaction.deferReply({ flags: EPHEMERAL });
 
-    if (!interaction.channel || typeof interaction.channel.send !== 'function') {
+    if (
+        !testMode &&
+        (!interaction.channel || typeof interaction.channel.send !== 'function')
+    ) {
         await interaction.editReply('This command can only post move pings in a server channel.');
         return;
     }
@@ -501,6 +555,11 @@ async function pingCwlRosterMoves(interaction, options = {}) {
 
     const messages = buildCwlRosterMoveMessages(plan);
 
+    if (testMode) {
+        await sendPrivateTestPreview(interaction, plan, messages);
+        return;
+    }
+
     for (const message of messages) {
         await interaction.channel.send(message);
     }
@@ -526,5 +585,8 @@ module.exports = {
     buildClanLinkComponents,
     buildCwlRosterMoveMessages,
     buildCompletionSummary,
+    buildTestModeSummary,
+    buildPrivatePreviewPayload,
+    sendPrivateTestPreview,
     pingCwlRosterMoves
 };

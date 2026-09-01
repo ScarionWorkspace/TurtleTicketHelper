@@ -82,7 +82,7 @@ function buildPayload() {
     };
 }
 
-function buildInteraction({ selectedClan = null } = {}) {
+function buildInteraction({ selectedClan = null, testMode = false } = {}) {
     const calls = [];
     const sent = [];
 
@@ -91,6 +91,10 @@ function buildInteraction({ selectedClan = null } = {}) {
             getString: name => {
                 assert.equal(name, 'clan');
                 return selectedClan;
+            },
+            getBoolean: name => {
+                assert.equal(name, 'test');
+                return testMode;
             }
         },
         channel: {
@@ -100,6 +104,7 @@ function buildInteraction({ selectedClan = null } = {}) {
         },
         deferReply: async payload => calls.push({ method: 'deferReply', payload }),
         editReply: async payload => calls.push({ method: 'editReply', payload }),
+        followUp: async payload => calls.push({ method: 'followUp', payload }),
         calls,
         sent
     };
@@ -116,12 +121,20 @@ test('command is guild-only and limited to members who can manage the server', (
         type: option.type,
         required: option.required,
         autocomplete: option.autocomplete
-    })), [{
-        name: 'clan',
-        type: ApplicationCommandOptionType.String,
-        required: false,
-        autocomplete: true
-    }]);
+    })), [
+        {
+            name: 'clan',
+            type: ApplicationCommandOptionType.String,
+            required: false,
+            autocomplete: true
+        },
+        {
+            name: 'test',
+            type: ApplicationCommandOptionType.Boolean,
+            required: false,
+            autocomplete: undefined
+        }
+    ]);
 });
 
 test('selects only active CWL rosters with connected destination clans', () => {
@@ -354,4 +367,40 @@ test('command fails closed when the always-ignore list cannot be verified', asyn
     assert.equal(clanFetchCount, 0);
     assert.equal(interaction.sent.length, 0);
     assert.match(interaction.calls.at(-1).payload, /Always ignore list.*no move pings were sent/i);
+});
+
+test('test mode shows only an ephemeral preview and disables every member ping', async () => {
+    const interaction = buildInteraction({
+        selectedClan: 'alpha',
+        testMode: true
+    });
+
+    await pingCwlRosterMoves(interaction, {
+        readActiveRosterPayload: async () => buildPayload(),
+        readWarFollowupPrivateState: readEmptyWarFollowupState,
+        fetchClanMembers: async clanTag => ({
+            clanTag,
+            members: [{ tag: '#P0Y' }]
+        })
+    });
+
+    assert.equal(interaction.sent.length, 0);
+    assert.deepEqual(interaction.calls[0], {
+        method: 'deferReply',
+        payload: { flags: 64 }
+    });
+
+    const summary = interaction.calls.find(call => call.method === 'editReply');
+    const previews = interaction.calls.filter(call => call.method === 'followUp');
+
+    assert.match(summary.payload.content, /Private test preview.*nobody was pinged/i);
+    assert.equal(previews.length, 1);
+    assert.equal(previews[0].payload.flags, 64);
+    assert.deepEqual(previews[0].payload.allowedMentions, {
+        parse: [],
+        users: [],
+        roles: []
+    });
+    assert.match(previews[0].payload.content, /<@111111111111111111>/);
+    assert.equal(previews[0].payload.components.length, 1);
 });

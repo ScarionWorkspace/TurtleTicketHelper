@@ -27,6 +27,10 @@ module.exports = {
                 .setDescription('Only check this destination clan; leave blank to check all clans.')
                 .setRequired(false)
                 .setAutocomplete(true))
+            .addBooleanOption(option => option
+                .setName('test')
+                .setDescription('Show a private preview without posting or pinging anyone.')
+                .setRequired(false))
     ),
 
     async autocomplete(interaction) {
