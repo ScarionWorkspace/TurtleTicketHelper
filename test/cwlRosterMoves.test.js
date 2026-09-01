@@ -1,12 +1,14 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
+    ApplicationCommandOptionType,
     InteractionContextType,
     PermissionFlagsBits
 } = require('discord.js');
 const command = require('../src/commands/cwl/pingCwlRosterMoves');
 const {
     MESSAGE_MAX_CHARS,
+    autocompleteCwlRosterClan,
     buildCwlRosterMoveMessages,
     getCwlDestinationRosters,
     pingCwlRosterMoves,
@@ -76,11 +78,17 @@ function buildPayload() {
     };
 }
 
-function buildInteraction() {
+function buildInteraction({ selectedClan = null } = {}) {
     const calls = [];
     const sent = [];
 
     return {
+        options: {
+            getString: name => {
+                assert.equal(name, 'clan');
+                return selectedClan;
+            }
+        },
         channel: {
             send: async payload => {
                 sent.push(payload);
@@ -99,6 +107,17 @@ test('command is guild-only and limited to members who can manage the server', (
     assert.equal(json.name, 'ping-cwl-roster-moves');
     assert.deepEqual(json.contexts, [InteractionContextType.Guild]);
     assert.equal(json.default_member_permissions, PermissionFlagsBits.ManageGuild.toString());
+    assert.deepEqual(json.options.map(option => ({
+        name: option.name,
+        type: option.type,
+        required: option.required,
+        autocomplete: option.autocomplete
+    })), [{
+        name: 'clan',
+        type: ApplicationCommandOptionType.String,
+        required: false,
+        autocomplete: true
+    }]);
 });
 
 test('selects only active CWL rosters with connected destination clans', () => {
@@ -106,6 +125,25 @@ test('selects only active CWL rosters with connected destination clans', () => {
         getCwlDestinationRosters(buildPayload()).map(roster => roster.id),
         ['alpha', 'bravo', 'alpha-second']
     );
+});
+
+test('autocomplete returns matching CWL destination clans in roster order', async () => {
+    const responses = [];
+    const interaction = {
+        options: {
+            getFocused: () => 'brav'
+        },
+        respond: async choices => responses.push(choices)
+    };
+
+    await autocompleteCwlRosterClan(interaction, {
+        readActiveRosterPayload: async () => buildPayload()
+    });
+
+    assert.deepEqual(responses, [[{
+        name: 'Bravo (#2QQ)',
+        value: 'bravo'
+    }]]);
 });
 
 test('checks each unique destination clan once and finds only absent roster players', async () => {
@@ -130,6 +168,22 @@ test('checks each unique destination clan once and finds only absent roster play
         plan.groups.flatMap(group => group.movers.map(mover => mover.name)),
         ['Needs Move', 'Unlinked Move', 'Second Assignment']
     );
+});
+
+test('a selected clan scans only that destination roster', async () => {
+    const fetchedClanTags = [];
+    const { rosters, plan } = await scanCwlRosterMoves(buildPayload(), {
+        rosterId: 'bravo',
+        fetchClanMembers: async clanTag => {
+            fetchedClanTags.push(clanTag);
+            return { clanTag, members: [] };
+        }
+    });
+
+    assert.deepEqual(fetchedClanTags, ['#2QQ']);
+    assert.deepEqual(rosters.map(roster => roster.id), ['bravo']);
+    assert.deepEqual(plan.groups.map(group => group.rosterId), ['bravo']);
+    assert.equal(plan.movingAccountCount, 1);
 });
 
 test('builds bounded public messages and pings each linked Discord member only once', async () => {
@@ -194,4 +248,39 @@ test('posts mover notices and reports unique ping and unlinked counts privately'
     assert.match(interaction.calls.at(-1).payload, /3 Clash accounts/);
     assert.match(interaction.calls.at(-1).payload, /pinged 1 linked Discord member/);
     assert.match(interaction.calls.at(-1).payload, /1 moving account has no linked Discord ID/);
+});
+
+test('command selection fetches and posts only the chosen destination clan', async () => {
+    const interaction = buildInteraction({ selectedClan: 'bravo' });
+    const fetchedClanTags = [];
+
+    await pingCwlRosterMoves(interaction, {
+        readActiveRosterPayload: async () => buildPayload(),
+        fetchClanMembers: async clanTag => {
+            fetchedClanTags.push(clanTag);
+            return { clanTag, members: [] };
+        }
+    });
+
+    assert.deepEqual(fetchedClanTags, ['#2QQ']);
+    assert.equal(interaction.sent.length, 1);
+    assert.match(interaction.sent[0].content, /Bravo/);
+    assert.doesNotMatch(interaction.sent[0].content, /Alpha/);
+});
+
+test('stale selected clan fails safely without fetching or posting', async () => {
+    const interaction = buildInteraction({ selectedClan: 'deleted-roster' });
+    let fetchCount = 0;
+
+    await pingCwlRosterMoves(interaction, {
+        readActiveRosterPayload: async () => buildPayload(),
+        fetchClanMembers: async () => {
+            fetchCount += 1;
+            return { members: [] };
+        }
+    });
+
+    assert.equal(fetchCount, 0);
+    assert.equal(interaction.sent.length, 0);
+    assert.match(interaction.calls.at(-1).payload, /no longer available/i);
 });

@@ -26,6 +26,49 @@ function getCwlDestinationRosters(payload) {
     return getOrderedRosters(payload).filter(isCwlDestinationRoster);
 }
 
+function selectCwlDestinationRosters(payload, rosterId = '') {
+    const rosters = getCwlDestinationRosters(payload);
+    const selectedRosterId = String(rosterId || '').trim();
+
+    return selectedRosterId
+        ? rosters.filter(roster => String(roster?.id || '').trim() === selectedRosterId)
+        : rosters;
+}
+
+function formatRosterChoice(roster) {
+    const title = String(roster?.title || roster?.id || 'Roster').trim() || 'Roster';
+    const clanTag = normalizeClashTag(roster?.connectedClanTag);
+
+    return `${title}${clanTag ? ` (${clanTag})` : ''}`.slice(0, 100);
+}
+
+async function autocompleteCwlRosterClan(interaction, options = {}) {
+    const readActiveRosterPayload = options.readActiveRosterPayload ||
+        rosterPublicData.readActiveRosterPayload;
+    const focused = String(interaction.options?.getFocused?.() || '').trim().toLowerCase();
+    const payload = await readActiveRosterPayload({
+        cacheTtlMs: 15_000,
+        timeoutMs: 2_500
+    });
+    const choices = getCwlDestinationRosters(payload)
+        .filter(roster => {
+            if (!focused) {
+                return true;
+            }
+
+            return `${roster.id || ''} ${roster.title || ''} ${roster.connectedClanTag || ''}`
+                .toLowerCase()
+                .includes(focused);
+        })
+        .slice(0, 25)
+        .map(roster => ({
+            name: formatRosterChoice(roster),
+            value: String(roster.id).slice(0, 100)
+        }));
+
+    await interaction.respond(choices);
+}
+
 function getRequiredClanTags(rosters) {
     return [...new Set((Array.isArray(rosters) ? rosters : [])
         .map(roster => normalizeClashTag(roster?.connectedClanTag))
@@ -139,7 +182,7 @@ function buildCwlRosterMovePlan(rosters, playerMetrics, snapshotsByClanTag) {
 }
 
 async function scanCwlRosterMoves(payload, options = {}) {
-    const rosters = getCwlDestinationRosters(payload);
+    const rosters = selectCwlDestinationRosters(payload, options.rosterId);
     const snapshots = await fetchRequiredClanSnapshots(rosters, options);
 
     return {
@@ -306,10 +349,17 @@ async function pingCwlRosterMoves(interaction, options = {}) {
         return;
     }
 
-    const rosters = getCwlDestinationRosters(payload);
+    const selectedRosterId = String(
+        interaction.options?.getString?.('clan') || options.rosterId || ''
+    ).trim();
+    const rosters = selectCwlDestinationRosters(payload, selectedRosterId);
 
     if (rosters.length === 0) {
-        await interaction.editReply('No active CWL rosters with connected destination clans are available.');
+        await interaction.editReply(
+            selectedRosterId
+                ? 'That CWL destination clan is no longer available. No move pings were sent.'
+                : 'No active CWL rosters with connected destination clans are available.'
+        );
         return;
     }
 
@@ -344,6 +394,9 @@ module.exports = {
     MESSAGE_MAX_CHARS,
     isCwlDestinationRoster,
     getCwlDestinationRosters,
+    selectCwlDestinationRosters,
+    formatRosterChoice,
+    autocompleteCwlRosterClan,
     getRequiredClanTags,
     fetchRequiredClanSnapshots,
     buildCwlRosterMovePlan,

@@ -4,6 +4,7 @@ const {
     SlashCommandBuilder
 } = require('discord.js');
 const {
+    autocompleteCwlRosterClan,
     pingCwlRosterMoves
 } = require('../../features/cwlRosterMoves/cwlRosterMoves');
 
@@ -21,7 +22,16 @@ module.exports = {
             .setName('ping-cwl-roster-moves')
             .setDescription('Ping planned CWL players who are not yet in their assigned clan.')
             .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+            .addStringOption(option => option
+                .setName('clan')
+                .setDescription('Only check this destination clan; leave blank to check all clans.')
+                .setRequired(false)
+                .setAutocomplete(true))
     ),
+
+    async autocomplete(interaction) {
+        await autocompleteCwlRosterClan(interaction);
+    },
 
     async execute(interaction) {
         await pingCwlRosterMoves(interaction);
