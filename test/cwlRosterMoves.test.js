@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
     ApplicationCommandOptionType,
+    ButtonStyle,
     InteractionContextType,
     PermissionFlagsBits
 } = require('discord.js');
@@ -16,6 +17,9 @@ const {
 } = require('../src/features/cwlRosterMoves/cwlRosterMoves');
 
 const LINKED_DISCORD_ID = '111111111111111111';
+const readEmptyWarFollowupState = async () => ({
+    settings: { trustedPlayerTags: [] }
+});
 
 function buildPayload() {
     return {
@@ -204,8 +208,34 @@ test('builds bounded public messages and pings each linked Discord member only o
     );
     assert(messages.every(message => message.allowedMentions.parse.length === 0));
     assert(messages.every(message => message.allowedMentions.roles.length === 0));
-    assert.match(messages[0].content, /Needs Move.*<@111111111111111111>/s);
-    assert(messages.some(message => /Unlinked Move.*no linked Discord ID/s.test(message.content)));
+    assert.match(messages[0].content, /Move here.*Open Alpha in Clash of Clans/s);
+    assert.match(messages[0].content, /Hey <@111111111111111111>.*saved.*Needs Move.*CWL spot/s);
+    assert(messages.some(message => /Unlinked Move.*no linked Discord member/s.test(message.content)));
+    const button = messages[0].components[0].components[0].toJSON();
+    assert.equal(button.style, ButtonStyle.Link);
+    assert.equal(button.label, 'Open Alpha in-game');
+    assert.equal(
+        button.url,
+        'https://link.clashofclans.com/en/?action=OpenClanProfile&tag=%232PP'
+    );
+});
+
+test('always-ignored accounts and every account linked to that Discord user are excluded', async () => {
+    const { plan } = await scanCwlRosterMoves(buildPayload(), {
+        ignoredPlayerTags: ['#P2Y'],
+        fetchClanMembers: async clanTag => ({
+            clanTag,
+            members: clanTag === '#2PP' ? [{ tag: '#P0Y' }] : []
+        })
+    });
+
+    assert.equal(plan.alwaysIgnoredAccountCount, 2);
+    assert.equal(plan.movingAccountCount, 1);
+    assert.equal(plan.pingableMemberCount, 0);
+    assert.deepEqual(
+        plan.groups.flatMap(group => group.movers.map(mover => mover.name)),
+        ['Unlinked Move']
+    );
 });
 
 test('aborts without public messages when any destination clan cannot be verified', async () => {
@@ -213,6 +243,7 @@ test('aborts without public messages when any destination clan cannot be verifie
 
     await pingCwlRosterMoves(interaction, {
         readActiveRosterPayload: async () => buildPayload(),
+        readWarFollowupPrivateState: readEmptyWarFollowupState,
         fetchClanMembers: async clanTag => {
             if (clanTag === '#2QQ') {
                 throw new Error('CLASH_API_TIMEOUT');
@@ -238,6 +269,7 @@ test('posts mover notices and reports unique ping and unlinked counts privately'
 
     await pingCwlRosterMoves(interaction, {
         readActiveRosterPayload: async () => buildPayload(),
+        readWarFollowupPrivateState: readEmptyWarFollowupState,
         fetchClanMembers: async clanTag => ({
             clanTag,
             members: clanTag === '#2PP' ? [{ tag: '#P0Y' }] : []
@@ -256,6 +288,7 @@ test('command selection fetches and posts only the chosen destination clan', asy
 
     await pingCwlRosterMoves(interaction, {
         readActiveRosterPayload: async () => buildPayload(),
+        readWarFollowupPrivateState: readEmptyWarFollowupState,
         fetchClanMembers: async clanTag => {
             fetchedClanTags.push(clanTag);
             return { clanTag, members: [] };
@@ -283,4 +316,42 @@ test('stale selected clan fails safely without fetching or posting', async () =>
     assert.equal(fetchCount, 0);
     assert.equal(interaction.sent.length, 0);
     assert.match(interaction.calls.at(-1).payload, /no longer available/i);
+});
+
+test('command sends no notice when every out-of-clan account is always ignored', async () => {
+    const interaction = buildInteraction({ selectedClan: 'alpha' });
+
+    await pingCwlRosterMoves(interaction, {
+        readActiveRosterPayload: async () => buildPayload(),
+        readWarFollowupPrivateState: async () => ({
+            settings: { trustedPlayerTags: ['#P2Y'] }
+        }),
+        fetchClanMembers: async clanTag => ({
+            clanTag,
+            members: [{ tag: '#P0Y' }]
+        })
+    });
+
+    assert.equal(interaction.sent.length, 0);
+    assert.match(interaction.calls.at(-1).payload, /Always ignore setting/);
+});
+
+test('command fails closed when the always-ignore list cannot be verified', async () => {
+    const interaction = buildInteraction({ selectedClan: 'alpha' });
+    let clanFetchCount = 0;
+
+    await pingCwlRosterMoves(interaction, {
+        readActiveRosterPayload: async () => buildPayload(),
+        readWarFollowupPrivateState: async () => {
+            throw new Error('temporary backend failure');
+        },
+        fetchClanMembers: async () => {
+            clanFetchCount += 1;
+            return { members: [] };
+        }
+    });
+
+    assert.equal(clanFetchCount, 0);
+    assert.equal(interaction.sent.length, 0);
+    assert.match(interaction.calls.at(-1).payload, /Always ignore list.*no move pings were sent/i);
 });

@@ -1,4 +1,10 @@
+const {
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle
+} = require('discord.js');
 const rosterPublicData = require('../rosterPublicData/rosterPublicDataReadClient');
+const warFollowupService = require('../warFollowup/service');
 const {
     buildPlayerMetricsByTag,
     getDiscordIdForPlayer,
@@ -11,6 +17,9 @@ const {
     fetchClanMembers,
     normalizeClashTag
 } = require('../clashApi/fetchClanMembers');
+const {
+    buildClanProfileUrl
+} = require('../rosterPlayers/rosterPlayersMessage');
 
 const EPHEMERAL = 64;
 const MESSAGE_MAX_CHARS = 1900;
@@ -107,9 +116,40 @@ function getSnapshotForClan(snapshotsByClanTag, clanTag) {
     return snapshotsByClanTag?.[clanTag];
 }
 
-function buildCwlRosterMovePlan(rosters, playerMetrics, snapshotsByClanTag) {
+function buildIgnoredPlayerFilters(playerMetrics, ignoredPlayerTags = []) {
     const metricsByTag = buildPlayerMetricsByTag(playerMetrics);
+    const playerTags = new Set((Array.isArray(ignoredPlayerTags) ? ignoredPlayerTags : [])
+        .map(getPlayerTag)
+        .filter(Boolean));
+    const discordIds = new Set();
+
+    for (const playerTag of playerTags) {
+        const discordId = String(metricsByTag[playerTag]?.identity?.discordId || '').trim();
+
+        if (DISCORD_ID_PATTERN.test(discordId)) {
+            discordIds.add(discordId);
+        }
+    }
+
+    return { playerTags, discordIds };
+}
+
+function getAlwaysIgnoredPlayerTags(privateState) {
+    return Array.isArray(privateState?.settings?.trustedPlayerTags)
+        ? privateState.settings.trustedPlayerTags.map(getPlayerTag).filter(Boolean)
+        : [];
+}
+
+function buildCwlRosterMovePlan(
+    rosters,
+    playerMetrics,
+    snapshotsByClanTag,
+    ignoredPlayerTags = []
+) {
+    const metricsByTag = buildPlayerMetricsByTag(playerMetrics);
+    const ignored = buildIgnoredPlayerFilters(playerMetrics, ignoredPlayerTags);
     const groups = [];
+    let alwaysIgnoredAccountCount = 0;
 
     for (const roster of Array.isArray(rosters) ? rosters : []) {
         const clanTag = normalizeClashTag(roster?.connectedClanTag);
@@ -145,11 +185,20 @@ function buildCwlRosterMovePlan(rosters, playerMetrics, snapshotsByClanTag) {
             }
 
             const discordId = getDiscordIdForPlayer(player, metricsByTag);
+            const normalizedDiscordId = DISCORD_ID_PATTERN.test(discordId) ? discordId : '';
+
+            if (
+                ignored.playerTags.has(playerTag) ||
+                (normalizedDiscordId && ignored.discordIds.has(normalizedDiscordId))
+            ) {
+                alwaysIgnoredAccountCount += 1;
+                continue;
+            }
 
             movers.push({
                 name: getPlayerName(player),
                 playerTag,
-                discordId: DISCORD_ID_PATTERN.test(discordId) ? discordId : ''
+                discordId: normalizedDiscordId
             });
         }
 
@@ -174,6 +223,7 @@ function buildCwlRosterMovePlan(rosters, playerMetrics, snapshotsByClanTag) {
         movingAccountCount: allMovers.length,
         pingableMemberCount: pingableDiscordIds.length,
         unlinkedAccountCount: allMovers.filter(mover => !mover.discordId).length,
+        alwaysIgnoredAccountCount,
         playersWithoutTagsCount: groups.reduce(
             (total, group) => total + group.playersWithoutTags.length,
             0
@@ -187,7 +237,12 @@ async function scanCwlRosterMoves(payload, options = {}) {
 
     return {
         rosters,
-        plan: buildCwlRosterMovePlan(rosters, payload?.playerMetrics, snapshots)
+        plan: buildCwlRosterMovePlan(
+            rosters,
+            payload?.playerMetrics,
+            snapshots,
+            options.ignoredPlayerTags
+        )
     };
 }
 
@@ -197,21 +252,52 @@ function truncate(value, maxLength) {
 }
 
 function formatMoverLine(mover) {
-    const destination = mover.discordId
-        ? `<@${mover.discordId}>`
-        : 'no linked Discord ID';
+    if (mover.discordId) {
+        return `- Hey <@${mover.discordId}> - we've saved **${mover.name}** ` +
+            `(\`${mover.playerTag}\`) a CWL spot here. Please use the clan link above to move over.`;
+    }
 
-    return `- ${mover.name} (\`${mover.playerTag}\`) / ${destination}`;
+    return `- **${mover.name}** (\`${mover.playerTag}\`) also has a CWL spot here, ` +
+        'but there is no linked Discord member to ping.';
 }
 
 function formatMissingTagLine(player) {
     return `- ${player.name} / missing player tag (could not verify)`;
 }
 
-function splitGroupLines(group) {
+function buildClanDestinationHeader(group, continued = false) {
     const title = truncate(group.rosterTitle, 180);
-    const firstHeader = `**CWL move needed - ${title} (${group.clanTag})**`;
-    const continuedHeader = `**CWL move needed - ${title} (continued)**`;
+    const clanUrl = buildClanProfileUrl(group.clanTag);
+    const heading = continued
+        ? `## ${title} - CWL moves continued`
+        : `## ${title} - your CWL clan`;
+    const link = clanUrl
+        ? `**Move here:** [Open ${title} in Clash of Clans](${clanUrl})`
+        : `**Destination clan:** ${group.clanTag}`;
+
+    return `${heading}\n${link}`;
+}
+
+function buildClanLinkComponents(group) {
+    const clanUrl = buildClanProfileUrl(group?.clanTag);
+
+    if (!clanUrl) {
+        return [];
+    }
+
+    return [
+        new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setLabel(truncate(`Open ${group.rosterTitle} in-game`, 80))
+                .setStyle(ButtonStyle.Link)
+                .setURL(clanUrl)
+        )
+    ];
+}
+
+function splitGroupLines(group) {
+    const firstHeader = buildClanDestinationHeader(group);
+    const continuedHeader = buildClanDestinationHeader(group, true);
     const lines = [
         ...group.movers.map(mover => ({
             text: formatMoverLine(mover),
@@ -281,6 +367,7 @@ function buildCwlRosterMoveMessages(plan) {
 
             messages.push({
                 content: `${chunk.header}\n${chunk.lines.map(line => line.text).join('\n')}`,
+                components: buildClanLinkComponents(group),
                 allowedMentions: {
                     parse: [],
                     users,
@@ -318,6 +405,13 @@ function buildCompletionSummary(plan, messageCount) {
         );
     }
 
+    if (plan.alwaysIgnoredAccountCount > 0) {
+        parts.push(
+            `Skipped ${plan.alwaysIgnoredAccountCount} out-of-clan account` +
+            `${plan.alwaysIgnoredAccountCount === 1 ? '' : 's'} covered by War Follow Up's Always ignore setting.`
+        );
+    }
+
     if (plan.playersWithoutTagsCount > 0) {
         parts.push(
             `${plan.playersWithoutTagsCount} roster entr${plan.playersWithoutTagsCount === 1 ? 'y is' : 'ies are'} ` +
@@ -331,6 +425,8 @@ function buildCompletionSummary(plan, messageCount) {
 async function pingCwlRosterMoves(interaction, options = {}) {
     const readActiveRosterPayload = options.readActiveRosterPayload ||
         rosterPublicData.readActiveRosterPayload;
+    const readWarFollowupPrivateState = options.readWarFollowupPrivateState ||
+        warFollowupService.readPrivateState;
 
     await interaction.deferReply({ flags: EPHEMERAL });
 
@@ -363,11 +459,31 @@ async function pingCwlRosterMoves(interaction, options = {}) {
         return;
     }
 
+    let ignoredPlayerTags;
+
+    try {
+        const privateState = await readWarFollowupPrivateState({
+            force: true,
+            timeoutMs: 12_000
+        });
+        ignoredPlayerTags = getAlwaysIgnoredPlayerTags(privateState);
+    } catch {
+        await interaction.editReply(
+            'I could not verify War Follow Up\'s Always ignore list, so no move pings were sent.'
+        );
+        return;
+    }
+
     let plan;
 
     try {
         const snapshots = await fetchRequiredClanSnapshots(rosters, options);
-        plan = buildCwlRosterMovePlan(rosters, payload.playerMetrics, snapshots);
+        plan = buildCwlRosterMovePlan(
+            rosters,
+            payload.playerMetrics,
+            snapshots,
+            ignoredPlayerTags
+        );
     } catch (error) {
         await interaction.editReply(formatClanLookupFailure(error));
         return;
@@ -375,7 +491,10 @@ async function pingCwlRosterMoves(interaction, options = {}) {
 
     if (plan.movingAccountCount === 0 && plan.playersWithoutTagsCount === 0) {
         await interaction.editReply(
-            'Every planned CWL player is already in the correct destination clan. No pings were sent.'
+            plan.alwaysIgnoredAccountCount > 0
+                ? `No move pings were sent. ${plan.alwaysIgnoredAccountCount} out-of-clan account` +
+                    `${plan.alwaysIgnoredAccountCount === 1 ? ' is' : 's are'} covered by War Follow Up's Always ignore setting.`
+                : 'Every planned CWL player is already in the correct destination clan. No pings were sent.'
         );
         return;
     }
@@ -399,8 +518,12 @@ module.exports = {
     autocompleteCwlRosterClan,
     getRequiredClanTags,
     fetchRequiredClanSnapshots,
+    buildIgnoredPlayerFilters,
+    getAlwaysIgnoredPlayerTags,
     buildCwlRosterMovePlan,
     scanCwlRosterMoves,
+    buildClanDestinationHeader,
+    buildClanLinkComponents,
     buildCwlRosterMoveMessages,
     buildCompletionSummary,
     pingCwlRosterMoves
