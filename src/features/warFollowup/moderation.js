@@ -3,6 +3,7 @@
 const { isStaffMember, canTakeAnyWarFollowupCase } = require('../permissions/staffPermissions');
 const workflow = require('./workflow');
 const service = require('./service');
+const automatedCases = require('./automatedCases');
 
 const OPEN_CASE_STATUSES = new Set(['needs_review', 'waiting', 'needs_dm', 'removal_pending', 'hero_down', 'ready']);
 const MEMBER_FETCH_CONCURRENCY = 4;
@@ -135,6 +136,18 @@ function assignmentPatch(moderator, options = {}) {
     } : {};
 }
 
+function isUntouchedAutomaticCase(item) {
+    const value = item?.case;
+    return Boolean(value?.status === 'needs_review' && !value.automationVersion &&
+        !value.dmSentAt && !value.playerResponseAt &&
+        (value.activity || []).some(entry => entry.type === 'automatic_case') &&
+        (value.activity || []).every(entry => ['automatic_case', 'assigned', 'unassigned'].includes(entry.type)));
+}
+
+function automationProblemContinues(category, progress) {
+    return category === 'regular_performance' ? progress.problemContinues === true : progress.missed > 0;
+}
+
 async function mutateAndReplace(workspace, item, action, patch, seed) {
     const result = await service.mutateCase(item, action, patch, {
         actor: 'War Follow Up',
@@ -149,6 +162,7 @@ async function synchronizeModerationCases(guild, guildId, workspaceRaw, store, o
     const nowMs = Number.isFinite(now.getTime()) ? now.getTime() : Date.now();
     const nowIso = new Date(nowMs).toISOString();
     const resolveMember = createMemberResolver(guild);
+    const config = options.config || store.getGuild(guildId).config;
     const mutations = [];
 
     const tags = Array.from(new Set((workspace?.work?.items || []).map(item => item.tag)));
@@ -167,9 +181,78 @@ async function synchronizeModerationCases(guild, guildId, workspaceRaw, store, o
             ? workflow.normalizeTag(currentPlayer.clanTag)
             : caseClanTag(item);
         const guildRecord = store.getGuild(guildId);
+
+        if (isUntouchedAutomaticCase(item)) {
+            const category = automatedCases.categoryForItem(item) ||
+                (item.case.reasonCodes?.length === 1 ? item.case.reasonCodes[0] : '');
+            if (['regular_missed', 'regular_performance', 'cwl_missed'].includes(category)) {
+                item = await mutateAndReplace(workspace, item, 'automation_adopt', {
+                    automationCategory: category
+                }, `scheduler:automation-adopt:${tag}:${item.case.updatedAt}`);
+                mutations.push({ tag, action: 'automation_adopt', moderatorId: '' });
+            }
+        }
+
+        if (item?.case?.status === 'watching' && ['checkin', 'warning'].includes(item.case.automationStage)) {
+            const progress = automatedCases.progressForItem(item, workspace);
+            if (progress.ready) {
+                const category = item.case.automationCategory;
+                const continues = automationProblemContinues(category, progress);
+                const stage = item.case.automationStage;
+                let action;
+                let patch = {};
+                if (category === 'regular_performance' && progress.attendanceFailure) {
+                    action = 'automation_review';
+                    patch = {
+                        automationRecommendation: 'removal',
+                        automationReason: 'Insufficient attacks across the observation wars require an attendance review by a leader.'
+                    };
+                } else if (stage === 'checkin' && category === 'regular_missed' && progress.fullMisses >= 2) {
+                    action = 'automation_review';
+                    patch = {
+                        automationRecommendation: 'removal',
+                        automationReason: 'Two fully missed regular wars after the check-in require a leader decision.'
+                    };
+                } else if (!continues) {
+                    action = 'automation_clear';
+                    patch = {
+                        automationReason: 'The observation period completed without another qualifying problem.',
+                        evidence: item.currentEvidence
+                    };
+                } else if (stage === 'checkin') {
+                    action = 'automation_warn';
+                    const sendAutomaticDm = automatedCases.canSendAutomaticDm(item, workspace, config, now, 'warning');
+                    patch = {
+                        automationCategory: category,
+                        sendAutomaticDm,
+                        dmText: sendAutomaticDm ? automatedCases.automaticMessage(item, category, 'warning') : '',
+                        evidence: item.currentEvidence
+                    };
+                } else {
+                    action = 'automation_review';
+                    const recommendation = category === 'cwl_missed'
+                        ? 'review'
+                        : (category === 'regular_missed' && !progress.engaged ? 'removal' : 'recovery');
+                    patch = {
+                        automationRecommendation: recommendation,
+                        automationReason: category === 'regular_performance'
+                            ? 'Results remained below both review targets across two observation windows of at least six counted attacks.'
+                            : category === 'cwl_missed'
+                                ? 'A further CWL opportunity was missed after the warning; a leader should review the season context.'
+                                : 'Another regular-war attack was missed after the warning.'
+                    };
+                }
+                item = await mutateAndReplace(workspace, item, action, patch,
+                    `scheduler:${action}:${tag}:${stage}:${item.case.automationWindowStartAt}`);
+                mutations.push({ tag, action, moderatorId: '' });
+            }
+            if (item?.case?.status === 'watching' || item?.case?.status === 'needs_dm') continue;
+        }
+        if (item.case?.status === 'needs_dm' && ['checkin', 'warning'].includes(item.case.automationStage)) continue;
+
         const eligible = await getEligibleModerators(guild, guildRecord, clanTag, { resolveMember });
 
-        if (item.case?.status === 'watching') {
+        if (item.case?.status === 'watching' && !['checkin', 'warning'].includes(item.case.automationStage)) {
             if (item.status === 'needs_review' && item.signals?.length) {
                 const chosen = chooseModerator(eligible, workspace.work.items, { nowMs });
                 item = await mutateAndReplace(workspace, item, 'watch_triggered', {
@@ -213,7 +296,11 @@ async function synchronizeModerationCases(guild, guildId, workspaceRaw, store, o
         const virtualAutomaticCase = !item.case && item.signals?.length > 0;
         const reopenedAutomaticCase = item.case && ['closed', 'dismissed'].includes(item.case.status) && item.status === 'needs_review';
         if (virtualAutomaticCase || reopenedAutomaticCase) {
-            const chosen = chooseModerator(eligible, workspace.work.items, { nowMs });
+            const category = automatedCases.categoryForItem(item);
+            const canAutomate = Boolean(category && (!item.case ||
+                (item.case.automationVersion === 1 && item.case.automationStage === 'closed')));
+            const chosen = canAutomate ? null : chooseModerator(eligible, workspace.work.items, { nowMs });
+            const sendAutomaticDm = canAutomate && automatedCases.canSendAutomaticDm(item, workspace, config, now);
             item = await mutateAndReplace(workspace, item, 'create_automatic', {
                 sourceRosterId: item.player?.rosterId || '',
                 sourceRosterTitle: item.player?.rosterTitle || '',
@@ -221,6 +308,14 @@ async function synchronizeModerationCases(guild, guildId, workspaceRaw, store, o
                 reasonCodes: item.signals.map(signal => signal.reasonCode),
                 triggerSignalIds: item.signalIds,
                 evidence: item.evidence,
+                ...(canAutomate ? {
+                    automationStage: 'checkin',
+                    automationCategory: category,
+                    automationPriorWars: item.reliability?.priorWars || 0,
+                    automationMissedThreshold: item.reliability?.regularMissedThreshold || 0,
+                    sendAutomaticDm,
+                    dmText: sendAutomaticDm ? automatedCases.automaticMessage(item, category, 'checkin') : ''
+                } : {}),
                 ...assignmentPatch(chosen)
             }, `scheduler:create:${tag}:${workflow.buildCaseFingerprint(item)}:${chosen?.discordId || 'unassigned'}`);
             if (chosen) store.recordModeratorAssignment(guildId, chosen.discordId, item.case?.assignedAt || nowIso);
@@ -228,6 +323,7 @@ async function synchronizeModerationCases(guild, guildId, workspaceRaw, store, o
         }
 
         if (!item?.case || !isOpenItem(item)) continue;
+        if (['checkin', 'warning'].includes(item.case.automationStage)) continue;
 
         if (
             item.case.status === 'waiting' &&

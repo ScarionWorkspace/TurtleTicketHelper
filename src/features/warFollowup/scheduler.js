@@ -268,7 +268,7 @@ async function processGuild(client, guildState, workspace, options = {}) {
         guildId,
         workspace,
         store,
-        { now: options.now || new Date() }
+        { now: options.now || new Date(), config }
     );
     const activeWorkspace = moderationSync.workspace;
     await ensureDashboard(client, guildId, activeWorkspace, config, { channel, store });

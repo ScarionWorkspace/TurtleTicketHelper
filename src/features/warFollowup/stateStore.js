@@ -19,6 +19,7 @@ const FEATURE_KEYS = Object.freeze([
     'cwlEndSummaries',
     'missingDiscordDigest',
     'directMessages',
+    'autoCaseDms',
     'playerReplies'
 ]);
 const SUMMARY_FEATURE_KEYS = Object.freeze([
@@ -144,6 +145,7 @@ function sanitizeFeatures(raw) {
     // separate notification category. Preserve the legacy key so existing
     // capture windows remain active if direct DMs are disabled later.
     features.playerReplies = features.playerReplies || features.directMessages;
+    features.autoCaseDms = features.autoCaseDms && features.directMessages;
     return features;
 }
 

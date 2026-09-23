@@ -999,8 +999,29 @@ function buildCasePayload(item, workspace, config) {
     if (item.recovery) {
         embed.addFields({
             name: 'Hero-down progress',
-            value: `${item.recovery.completedWars}/${item.recovery.targetWars} consecutive clean wars · ${item.recovery.usedAttacks}/${item.recovery.possibleAttacks} attacks used`
+            value: [
+                `${item.recovery.completedWars}/${item.recovery.targetWars} consecutive clean wars · ${item.recovery.usedAttacks}/${item.recovery.possibleAttacks} attacks used`,
+                item.case?.recoveryCategory === 'regular_performance' && item.case?.recoveryPolicyVersion === 1
+                    ? `${item.recovery.countedAttacks}/6 qualifying attacks · result targets ${item.recovery.performanceMet ? 'met' : 'not yet met'}` : '',
+                item.recovery.needsReview ? 'Leader review needed after repeated misses or five eligible recovery wars.' : ''
+            ].filter(Boolean).join('\n')
         });
+    }
+    if (['checkin', 'warning'].includes(item.case?.automationStage)) {
+        embed.addFields({ name: 'Automatic observation', value: item.case.automationStage === 'warning'
+            ? 'Final observation is running. A repeated issue will return to staff.'
+            : 'Check-in is running. Eligible wars are being observed before any warning.' });
+    }
+    if (item.case?.automationStage === 'review') {
+        const recommendation = {
+            recovery: 'Review for recovery-clan placement',
+            removal: 'Review community removal',
+            review: 'Review the season context'
+        }[item.case.automationRecommendation] || 'Leader review';
+        embed.addFields({ name: recommendation, value: truncate(safeInline(item.case.automationReason || 'Automatic observation found a repeated issue.'), 1024) });
+    }
+    if (item.reliability?.credit && item.status === 'needs_review') {
+        embed.addFields({ name: 'Membership history', value: `${item.reliability.priorWars} prior eligible regular wars · missed-attack threshold raised to ${item.reliability.regularMissedThreshold}` });
     }
     if (item.watching) {
         embed.addFields({
@@ -1536,7 +1557,7 @@ function buildResolveModal(item) {
 }
 
 function buildHeroModal(item, targetRoster, workspace) {
-    const recoveryWars = workspace?.work?.settings?.defaultRecoveryWars || 3;
+    const recoveryWars = Math.max(item.case?.automationVersion === 1 ? 3 : 1, workspace?.work?.settings?.defaultRecoveryWars || 3);
     const message = workflow.buildDmText({
         playerName: item.player?.name,
         sourceClan: item.player?.rosterTitle,
@@ -1544,12 +1565,13 @@ function buildHeroModal(item, targetRoster, workspace) {
         targetClanTag: targetRoster.clanTag,
         nextWarStartAt: targetRoster.nextWarStartAt,
         recoveryWars,
+        recoveryPerformance: item.case?.automationCategory === 'regular_performance',
         reasonCodes: item.signals?.map(signal => signal.reasonCode),
         evidence: item.evidence,
         settings: workspace?.work?.settings
     });
     return modal('Prepare hero-down decision', buildCustomId('heroform', item.tag, caseToken(item), rosterToken(targetRoster.id)), [
-        textInput('wars', 'Consecutive clean wars (1-8)', recoveryWars, { maxLength: 1 }),
+        textInput('wars', item.case?.automationVersion === 1 ? 'Consecutive clean wars (3-8)' : 'Consecutive clean wars (1-8)', recoveryWars, { maxLength: 1 }),
         textInput('no_misses', 'Require no missed attacks? (yes/no)', 'yes', { maxLength: 3 }),
         textInput('message', 'Decision message', message, { style: TextInputStyle.Paragraph, maxLength: 2000 })
     ]);
@@ -1565,6 +1587,7 @@ function buildExtendModal(item, targetRoster, workspace) {
         targetClanTag: targetRoster?.clanTag,
         nextWarStartAt: targetRoster?.nextWarStartAt,
         recoveryWars,
+        recoveryPerformance: item.case?.recoveryCategory === 'regular_performance',
         reasonCodes: item.case?.reasonCodes?.length
             ? item.case.reasonCodes
             : item.signals?.map(signal => signal.reasonCode),
@@ -1850,7 +1873,8 @@ function buildModeratorSettingsPayload(workspace, guildRecord, userIdRaw, displa
 }
 
 function moderationCaseSummary(workspace, guildRecord, nowRaw = new Date()) {
-    const items = (workspace?.work?.items || []).filter(item => ACTIVE_CASE_STATUSES.has(item.status));
+    const items = (workspace?.work?.items || []).filter(item => ACTIVE_CASE_STATUSES.has(item.status) &&
+        !['checkin', 'warning'].includes(item.case?.automationStage));
     const nowMs = nowRaw instanceof Date ? nowRaw.getTime() : new Date(nowRaw).getTime();
     const assigned = items.filter(item => item.case?.assignedModeratorId || item.case?.handledBy);
     const unassigned = items.filter(item => !item.case?.assignedModeratorId && !item.case?.handledBy);
@@ -2067,7 +2091,8 @@ function buildSetupSummary(config, channelMention) {
         cwlDailyUpdates: 'CWL all-clear updates',
         cwlEndSummaries: 'CWL end summaries',
         missingDiscordDigest: 'Daily Discord-link report',
-        directMessages: 'Contact-player DMs with private reply capture'
+        directMessages: 'Contact-player DMs with private reply capture',
+        autoCaseDms: 'Automatic case check-ins and one warning DM'
     };
     const featureLines = Object.entries(labels).map(([key, label]) =>
         `${config.features?.[key] ? '✅' : '⬜'} ${label}`

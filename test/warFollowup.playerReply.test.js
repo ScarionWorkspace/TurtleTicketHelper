@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const service = require('../src/features/warFollowup/service');
 const { warFollowupStateStore } = require('../src/features/warFollowup/stateStore');
-const { handleWarFollowupPlayerReply } = require('../src/features/warFollowup/playerReply');
+const { handleWarFollowupPlayerReply, matchingCases } = require('../src/features/warFollowup/playerReply');
 const {
     CONTACT_REPLY_PROMPT,
     LEGACY_CONTACT_REPLY_PROMPT,
@@ -30,6 +30,17 @@ function baseWorkspace(status = 'waiting') {
     };
     return { work: { items: [item] } };
 }
+
+test('a reply to the check-in is captured while an automatic warning is queued', () => {
+    const workspace = baseWorkspace('needs_dm');
+    Object.assign(workspace.work.items[0].case, {
+        contactPurpose: 'automated_warning', automationStage: 'warning',
+        dmSentAt: '', dmDeliveryMode: '', dmMessageId: '', dmQueueId: 'warning-queue',
+        automationLastDmAt: '2026-08-12T10:00:00.000Z',
+        automationDmMessageIds: ['888888888888888888']
+    });
+    assert.equal(matchingCases(workspace, '222222222222222222', '888888888888888888').length, 1);
+});
 
 function setup(t, workspace, options = {}) {
     const deliveries = new Set();

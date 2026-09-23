@@ -176,6 +176,7 @@ function planCaseAlerts(work, config, record, nowIso) {
 
     const changed = (Array.isArray(work?.items) ? work.items : []).filter(item => {
         if (!ACTIONABLE_CASE_STATUSES.has(item.status)) return false;
+        if (['checkin', 'warning'].includes(item.case?.automationStage)) return false;
         return previous[item.tag]?.fingerprint !== current[item.tag]?.fingerprint;
     });
     if (!changed.length) return { notification: null, observations: current };

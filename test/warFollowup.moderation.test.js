@@ -100,7 +100,7 @@ test('eligible moderators must be accepting, subscribed to the source clan, pres
     assert.deepEqual(eligible.map(entry => entry.discordId), [MOD_A]);
 });
 
-test('a new automated case is atomically created with its evidence snapshot and chosen owner', async t => {
+test('a single-signal case starts quiet automatic monitoring without assigning staff', async t => {
     const workspace = buildWorkspace();
     workspace.work.items = [{
         tag: '#P0LYGQ',
@@ -120,7 +120,11 @@ test('a new automated case is atomically created with its evidence snapshot and 
             sourceRosterId: item.player.rosterId,
             sourceRosterTitle: item.player.rosterTitle,
             sourceClanTag: item.player.clanTag,
-            status: 'needs_review',
+            status: patch.automationStage === 'checkin' ? 'watching' : 'needs_review',
+            automationVersion: patch.automationStage === 'checkin' ? 1 : 0,
+            automationStage: patch.automationStage || '',
+            automationCategory: patch.automationCategory || '',
+            automationWindowStartAt: NOW.toISOString(),
             reasonCodes: patch.reasonCodes,
             evidence: patch.evidence,
             triggerSignalIds: patch.triggerSignalIds,
@@ -151,11 +155,14 @@ test('a new automated case is atomically created with its evidence snapshot and 
 
     assert.equal(calls.length, 1);
     assert.equal(calls[0].action, 'create_automatic');
-    assert.equal(calls[0].patch.assignedModeratorId, MOD_B);
+    assert.equal(calls[0].patch.automationStage, 'checkin');
+    assert.equal(calls[0].patch.automationCategory, 'regular_missed');
+    assert.equal(calls[0].patch.assignedModeratorId, undefined);
+    assert.equal(calls[0].patch.sendAutomaticDm, false);
     assert.equal(calls[0].patch.sourceClanTag, '#CLAN0');
     assert.equal(calls[0].patch.evidence.regular.missedAttacks, 2);
-    assert.equal(result.workspace.work.items[0].case.assignedModeratorId, MOD_B);
-    assert.equal(store.assignments.length, 1);
+    assert.equal(result.workspace.work.items[0].case.status, 'watching');
+    assert.equal(store.assignments.length, 0);
 });
 
 test('a reopened case after a clan transfer uses the current clan moderator pool', async t => {

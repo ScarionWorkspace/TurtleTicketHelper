@@ -66,22 +66,31 @@ function matchingCases(workspace, discordId, referencedMessageId = '') {
     const candidates = (workspace?.work?.items || [])
         .filter(item => {
             const itemId = text(item?.player?.discordId || item?.case?.discordId).trim();
-            const exactReply = Boolean(referencedId && [item.case?.dmMessageId, item.case?.contactReminderMessageId]
+            const automaticIds = Array.isArray(item.case?.automationDmMessageIds) ? item.case.automationDmMessageIds : [];
+            const messageIds = [item.case?.dmMessageId, item.case?.contactReminderMessageId, ...automaticIds];
+            const exactReply = Boolean(referencedId && messageIds
                 .map(value => text(value).trim())
                 .includes(referencedId));
             const captureWindowOpen = workflow.parseMs(item.case?.replyCaptureUntil) >= nowMs;
             const captureState = item.status === 'waiting' ||
+                (['automated_checkin', 'automated_warning'].includes(item.case?.contactPurpose) &&
+                    ['watching', 'needs_dm'].includes(item.status)) ||
                 (['needs_review', 'closed', 'dismissed'].includes(item.status) && (captureWindowOpen || exactReply));
-            return itemId === discordId &&
-                captureState &&
-                item.case?.contactPurpose === 'general' &&
-                item.case?.dmDeliveryMode === 'bot' &&
+            const currentBotDm = item.case?.dmDeliveryMode === 'bot' &&
                 DISCORD_USER_ID_PATTERN.test(text(item.case?.dmMessageId).trim()) &&
                 workflow.parseMs(item.case?.dmSentAt) > 0;
+            const priorAutomaticDm = ['automated_checkin', 'automated_warning'].includes(item.case?.contactPurpose) &&
+                automaticIds.length > 0 && workflow.parseMs(item.case?.automationLastDmAt) > 0;
+            return itemId === discordId &&
+                captureState &&
+                ['general', 'automated_checkin', 'automated_warning'].includes(item.case?.contactPurpose) &&
+                (currentBotDm || priorAutomaticDm);
         })
-        .sort((left, right) => workflow.parseMs(right.case?.dmSentAt) - workflow.parseMs(left.case?.dmSentAt));
+        .sort((left, right) => workflow.parseMs(right.case?.automationLastDmAt || right.case?.dmSentAt) -
+            workflow.parseMs(left.case?.automationLastDmAt || left.case?.dmSentAt));
     return referencedId
-        ? candidates.filter(item => [item.case?.dmMessageId, item.case?.contactReminderMessageId]
+        ? candidates.filter(item => [item.case?.dmMessageId, item.case?.contactReminderMessageId,
+            ...(Array.isArray(item.case?.automationDmMessageIds) ? item.case.automationDmMessageIds : [])]
             .map(value => text(value).trim())
             .includes(referencedId))
         : candidates;

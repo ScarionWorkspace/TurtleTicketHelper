@@ -70,10 +70,13 @@ async function processQueuedDiscordDms(client, guildId, workspace, store, config
         const key = `queued-player-dm:${guildId}:${item.tag}:${queueId}`;
         let delivery = deliveryState(store, guildId, key);
         try {
-            if (config?.features?.directMessages !== true) {
+            const automatedContact = ['automated_checkin', 'automated_warning'].includes(item.case?.contactPurpose);
+            if (config?.features?.directMessages !== true || (automatedContact && config?.features?.autoCaseDms !== true)) {
                 item = await mutateAndReplace(workspace, item, 'dm_delivery_failed', {
                     dmQueueId: queueId,
-                    dmDeliveryFailureReason: 'Discord direct messages are currently disabled for this server.'
+                    dmDeliveryFailureReason: automatedContact
+                        ? 'Automatic case messages are currently disabled for this server.'
+                        : 'Discord direct messages are currently disabled for this server.'
                 }, `scheduler:queued-dm-disabled:${item.tag}:${queueId}`);
                 results.push({ tag: item.tag, action: 'dm_delivery_failed' });
                 continue;

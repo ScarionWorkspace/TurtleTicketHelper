@@ -187,6 +187,28 @@ test('case transitions produce one staff alert after the baseline exists', () =>
     assert.deepEqual(alert.allowedRoleIds, ['555555555555555555']);
 });
 
+test('queued automatic check-ins stay out of staff alerts', () => {
+    const baseline = planner.buildCurrentCaseObservations(buildWorkspace().work, '2026-08-10T08:00:00.000Z');
+    const changed = buildWorkspace([{
+        tag: '#AAA', status: 'needs_dm', automationVersion: 1,
+        automationStage: 'checkin', automationCategory: 'regular_missed',
+        contactPurpose: 'automated_checkin', dmQueueId: 'automatic-queue',
+        dmText: 'Please keep war availability current.',
+        updatedAt: '2026-08-10T08:20:00.000Z'
+    }]);
+    const plan = planner.planNotifications({
+        ...changed,
+        config: buildConfig(),
+        record: {
+            deliveries: {},
+            observations: { caseFingerprints: baseline, casesInitializedAt: '2026-08-10T08:00:00.000Z' }
+        },
+        nowRaw: NOW
+    });
+    assert.equal(plan.notifications.some(notification => notification.kind === 'case-alert'), false);
+    assert.ok(plan.caseObservations['#AAA']);
+});
+
 test('a removed player rejoining produces one prominent leadership alert', () => {
     const removalCase = {
         tag: '#AAA',

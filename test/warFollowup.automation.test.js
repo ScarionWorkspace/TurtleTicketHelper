@@ -133,6 +133,26 @@ test('contact automation sends one reminder, then returns an unanswered case to 
     assert.deepEqual(calls.map(call => call.action), ['contact_reminder_sent', 'contact_no_response']);
 });
 
+test('disabling automatic case DMs cancels a queued check-in before delivery', async () => {
+    const workspace = createWorkspace({
+        status: 'needs_dm', contactPurpose: 'automated_checkin', automationVersion: 1,
+        automationStage: 'checkin', dmSentAt: '', dmDeliveryMode: '', dmMessageId: '',
+        dmQueueId: 'automatic-queue-1', waitingUntil: ''
+    });
+    const store = createStore();
+    const client = createClient();
+    service.mutateCase = async (item, action) => {
+        assert.equal(action, 'dm_delivery_failed');
+        return { ...item.case, status: 'watching', dmQueueId: '',
+            automationWindowStartAt: '2026-08-13T09:00:00.000Z', updatedAt: '2026-08-13T09:00:00.000Z' };
+    };
+    const results = await automation.processQueuedDiscordDms(client, GUILD_ID, workspace, store,
+        { features: { directMessages: true, autoCaseDms: false } });
+    assert.deepEqual(results.map(result => result.action), ['dm_delivery_failed']);
+    assert.equal(client.sent.length, 0);
+    assert.equal(workspace.work.items[0].case.status, 'watching');
+});
+
 test('queued website contact is delivered once and committed with the website moderator as sender', async () => {
     const workspace = createWorkspace({
         status: 'needs_dm',
