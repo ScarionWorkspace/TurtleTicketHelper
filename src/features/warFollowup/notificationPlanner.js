@@ -3,7 +3,6 @@
 const workflow = require('./workflow');
 
 const REMINDER_THRESHOLDS = Object.freeze([
-    { minutes: 360, label: '6 hours' },
     { minutes: 120, label: '2 hours' },
     { minutes: 30, label: '30 minutes' }
 ]);

@@ -275,7 +275,7 @@ test('late startup selects only the most urgent reminder window and consumes ear
     assert.equal(reminders.length, 2);
     for (const reminder of reminders) {
         assert.match(reminder.key, /:120m$/);
-        assert.equal(reminder.consumeKeys.some(key => key.endsWith(':360m')), true);
+        assert.equal(reminder.consumeKeys.some(key => key.endsWith(':360m')), false);
         assert.equal(reminder.consumeKeys.some(key => key.endsWith(':120m')), true);
         assert.equal(reminder.consumeKeys.some(key => key.endsWith(':30m')), false);
     }
