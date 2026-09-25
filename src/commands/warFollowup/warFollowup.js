@@ -41,7 +41,7 @@ function addSetupOptions(subcommand) {
             .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement))
         .addChannelOption(option => option
             .setName('attack-reminder-channel')
-            .setDescription('Public channel for players the bot cannot remind by DM.')
+            .setDescription('Fallback channel for players the bot cannot remind by DM.')
             .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement))
         .addRoleOption(option => option
             .setName('staff-role')
@@ -55,7 +55,7 @@ function addSetupOptions(subcommand) {
 
     const descriptions = {
         'case-alerts': 'Tag staff when a case newly needs review, a DM, or a return decision.',
-        'attack-reminders': 'DM players with attacks left at 2h and 30m; use the public fallback channel.',
+        'attack-reminders': 'DM players with attacks left at 2h and 30m; use the fallback channel.',
         'regular-summaries': 'Post one deduplicated summary after each regular war.',
         'cwl-daily-updates': 'Post when every tracked CWL attack for the active day is complete.',
         'cwl-end-summaries': 'Post the final CWL report, including everyone who missed attacks.',
@@ -260,7 +260,7 @@ async function executeSetup(interaction) {
     }
     const remindersEnabled = features.attackReminders ?? existing.config.features.attackReminders;
     if (enabled && remindersEnabled && !attackReminderChannelId) {
-        await interaction.editReply({ content: 'Choose `attack-reminder-channel` so players who cannot receive DMs have a public reminder channel.' });
+        await interaction.editReply({ content: 'Choose `attack-reminder-channel` so players who cannot receive DMs have a fallback channel.' });
         return;
     }
     if (enabled && attackReminderChannelId) {
@@ -271,12 +271,8 @@ async function executeSetup(interaction) {
             await interaction.editReply({ content: 'The attack reminder channel must allow me to view it, send messages and embeds, and read message history.' });
             return;
         }
-        if (!everyoneCanViewChannel(reminderChannel, interaction)) {
-            await interaction.editReply({ content: 'The attack reminder channel must be visible to @everyone so players who cannot receive DMs can see it.' });
-            return;
-        }
         if (attackReminderChannelId === channelId || attackReminderChannelId === existing.moderationHub.channelId) {
-            await interaction.editReply({ content: 'Choose a separate public channel for attack reminders, away from the staff dashboard and Moderation Hub.' });
+            await interaction.editReply({ content: 'Choose a separate channel for attack reminders, away from the staff dashboard and Moderation Hub.' });
             return;
         }
     }

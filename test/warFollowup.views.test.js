@@ -165,9 +165,9 @@ test('setup rejects a staff role the bot cannot actually notify', () => {
     }), false);
 });
 
-test('setup requires a separate public fallback channel when attack reminders are enabled', async t => {
+test('setup accepts a verification-gated fallback channel but keeps it separate from staff channels', async t => {
     const staffChannelId = '222222222222222222';
-    const publicChannelId = '777777777777777777';
+    const fallbackChannelId = '777777777777777777';
     const everyone = { id: '111111111111111111' };
     const channel = (id, publicView) => ({
         id,
@@ -214,12 +214,11 @@ test('setup requires a separate public fallback channel when attack reminders ar
 
     await command.execute(interaction);
     assert.match(response, /Choose `attack-reminder-channel`/);
-    selectedReminderChannel = channel(publicChannelId, false);
-    await command.execute(interaction);
-    assert.match(response, /visible to @everyone/);
+    selectedReminderChannel = channel(fallbackChannelId, false);
+    await assert.rejects(command.execute(interaction), /Invalid setup must not save configuration/);
     selectedReminderChannel = channel(staffChannelId, true);
     await command.execute(interaction);
-    assert.match(response, /separate public channel/);
+    assert.match(response, /separate channel/);
 });
 
 test('versioned custom IDs round-trip safely and enforce Discord limits', () => {
