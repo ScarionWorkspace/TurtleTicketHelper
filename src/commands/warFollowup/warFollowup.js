@@ -39,6 +39,10 @@ function addSetupOptions(subcommand) {
             .setName('channel')
             .setDescription('Dedicated staff channel for the dashboard and opted-in notifications.')
             .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement))
+        .addChannelOption(option => option
+            .setName('attack-reminder-channel')
+            .setDescription('Public channel for players the bot cannot remind by DM.')
+            .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement))
         .addRoleOption(option => option
             .setName('staff-role')
             .setDescription('Optional role to tag when staff action is needed.'))
@@ -51,7 +55,7 @@ function addSetupOptions(subcommand) {
 
     const descriptions = {
         'case-alerts': 'Tag staff when a case newly needs review, a DM, or a return decision.',
-        'attack-reminders': 'Tag linked players with attacks left at 6h, 2h, and 30m.',
+        'attack-reminders': 'DM players with attacks left at 2h and 30m; use the public fallback channel.',
         'regular-summaries': 'Post one deduplicated summary after each regular war.',
         'cwl-daily-updates': 'Post when every tracked CWL attack for the active day is complete.',
         'cwl-end-summaries': 'Post the final CWL report, including everyone who missed attacks.',
@@ -216,10 +220,12 @@ async function executeSetup(interaction) {
     await interaction.deferReply({ flags: views.EPHEMERAL });
     const existing = warFollowupStateStore.getGuild(interaction.guildId);
     const selectedChannel = interaction.options.getChannel('channel');
+    const selectedReminderChannel = interaction.options.getChannel('attack-reminder-channel');
     const selectedRole = interaction.options.getRole('staff-role');
     const clearStaffRole = interaction.options.getBoolean('clear-staff-role') === true;
     const enabledOption = interaction.options.getBoolean('enabled');
     const channelId = selectedChannel?.id || existing.config.channelId;
+    const attackReminderChannelId = selectedReminderChannel?.id || existing.config.attackReminderChannelId;
     const enabled = enabledOption == null
         ? (existing.config.configuredAt ? existing.config.enabled : true)
         : enabledOption;
@@ -252,6 +258,28 @@ async function executeSetup(interaction) {
         });
         return;
     }
+    const remindersEnabled = features.attackReminders ?? existing.config.features.attackReminders;
+    if (enabled && remindersEnabled && !attackReminderChannelId) {
+        await interaction.editReply({ content: 'Choose `attack-reminder-channel` so players who cannot receive DMs have a public reminder channel.' });
+        return;
+    }
+    if (enabled && attackReminderChannelId) {
+        const reminderChannel = selectedReminderChannel ||
+            interaction.guild?.channels?.cache?.get?.(attackReminderChannelId) ||
+            await interaction.guild?.channels?.fetch?.(attackReminderChannelId).catch(() => null);
+        if (!reminderChannel || !canWriteChannel(reminderChannel, interaction)) {
+            await interaction.editReply({ content: 'The attack reminder channel must allow me to view it, send messages and embeds, and read message history.' });
+            return;
+        }
+        if (!everyoneCanViewChannel(reminderChannel, interaction)) {
+            await interaction.editReply({ content: 'The attack reminder channel must be visible to @everyone so players who cannot receive DMs can see it.' });
+            return;
+        }
+        if (attackReminderChannelId === channelId || attackReminderChannelId === existing.moderationHub.channelId) {
+            await interaction.editReply({ content: 'Choose a separate public channel for attack reminders, away from the staff dashboard and Moderation Hub.' });
+            return;
+        }
+    }
     const effectiveRoleId = selectedRole?.id || (clearStaffRole ? '' : existing.config.staffRoleId);
     const effectiveRole = selectedRole || (
         enabled && effectiveRoleId
@@ -275,7 +303,7 @@ async function executeSetup(interaction) {
         });
         return;
     }
-    const patch = { enabled, channelId, features };
+    const patch = { enabled, channelId, attackReminderChannelId, features };
     if (selectedRole) patch.staffRoleId = selectedRole.id;
     else if (clearStaffRole) patch.staffRoleId = '';
     const config = warFollowupStateStore.patchConfig(interaction.guildId, patch);

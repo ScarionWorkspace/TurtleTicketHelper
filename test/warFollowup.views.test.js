@@ -3,6 +3,8 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const command = require('../src/commands/warFollowup/warFollowup');
+const { getStaffRoleIds } = require('../src/features/permissions/staffPermissions');
+const { warFollowupStateStore } = require('../src/features/warFollowup/stateStore');
 const workflow = require('../src/features/warFollowup/workflow');
 const views = require('../src/features/warFollowup/views');
 const { assertCaseActionAllowed, directDmDeliveryKey } = require('../src/features/warFollowup/interaction');
@@ -100,6 +102,7 @@ test('/war-follow-up exposes the private tools and public moderation-panel publi
     const setup = json.options.find(option => option.name === 'setup');
     for (const name of [
         'channel',
+        'attack-reminder-channel',
         'staff-role',
         'enabled',
         'case-alerts',
@@ -160,6 +163,63 @@ test('setup rejects a staff role the bot cannot actually notify', () => {
         guildId: '111111111111111111',
         guild: { roles: { everyone } }
     }), false);
+});
+
+test('setup requires a separate public fallback channel when attack reminders are enabled', async t => {
+    const staffChannelId = '222222222222222222';
+    const publicChannelId = '777777777777777777';
+    const everyone = { id: '111111111111111111' };
+    const channel = (id, publicView) => ({
+        id,
+        send: async () => {},
+        isTextBased: () => true,
+        permissionsFor: member => ({ has: () => member === everyone ? publicView : true })
+    });
+    const staffChannel = channel(staffChannelId, false);
+    let selectedReminderChannel = null;
+    let response = null;
+    t.mock.method(warFollowupStateStore, 'getGuild', () => ({
+        config: {
+            enabled: true,
+            configuredAt: '2026-08-01T00:00:00.000Z',
+            channelId: staffChannelId,
+            attackReminderChannelId: '',
+            staffRoleId: '',
+            features: { attackReminders: false }
+        },
+        dashboard: {},
+        moderationHub: { channelId: '' }
+    }));
+    t.mock.method(warFollowupStateStore, 'patchConfig', () => {
+        throw new Error('Invalid setup must not save configuration.');
+    });
+    const interaction = {
+        guildId: everyone.id,
+        guild: {
+            members: { me: {} },
+            roles: { everyone },
+            channels: { cache: new Map([[staffChannelId, staffChannel]]) }
+        },
+        member: { roles: { cache: { has: id => getStaffRoleIds().includes(id) } } },
+        inGuild: () => true,
+        options: {
+            getSubcommand: () => 'setup',
+            getChannel: name => name === 'attack-reminder-channel' ? selectedReminderChannel : null,
+            getRole: () => null,
+            getBoolean: name => name === 'attack-reminders' ? true : null
+        },
+        deferReply: async () => {},
+        editReply: async payload => { response = payload.content; }
+    };
+
+    await command.execute(interaction);
+    assert.match(response, /Choose `attack-reminder-channel`/);
+    selectedReminderChannel = channel(publicChannelId, false);
+    await command.execute(interaction);
+    assert.match(response, /visible to @everyone/);
+    selectedReminderChannel = channel(staffChannelId, true);
+    await command.execute(interaction);
+    assert.match(response, /separate public channel/);
 });
 
 test('versioned custom IDs round-trip safely and enforce Discord limits', () => {

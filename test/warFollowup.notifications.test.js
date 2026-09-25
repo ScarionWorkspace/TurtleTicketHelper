@@ -272,26 +272,17 @@ test('late startup selects only the most urgent reminder window and consumes ear
         nowRaw: NOW
     });
     const reminders = plan.notifications.filter(notification => notification.kind.endsWith('attack-reminder'));
-    assert.equal(reminders.length, 2);
+    assert.equal(reminders.length, 3);
     for (const reminder of reminders) {
-        assert.match(reminder.key, /:120m$/);
-        assert.equal(reminder.consumeKeys.some(key => key.endsWith(':360m')), false);
-        assert.equal(reminder.consumeKeys.some(key => key.endsWith(':120m')), true);
-        assert.equal(reminder.consumeKeys.some(key => key.endsWith(':30m')), false);
+        assert.match(reminder.key, /:120m:(?:user:\d+|unlinked)$/);
+        assert.equal(reminder.consumeKeys.some(key => key.includes(':360m:')), false);
+        assert.equal(reminder.consumeKeys.some(key => key.includes(':120m:')), true);
+        assert.equal(reminder.consumeKeys.some(key => key.includes(':30m:')), false);
     }
-    assert.deepEqual(
-        reminders.find(notification => notification.kind === 'regular-attack-reminder').allowedUserIds,
-        ['111111111111111111']
-    );
-    assert.deepEqual(
-        reminders.find(notification => notification.kind === 'regular-attack-reminder').allowedRoleIds,
-        [],
-        'routine attack reminders report unlinked players without pinging the leadership role'
-    );
-    assert.deepEqual(
-        reminders.find(notification => notification.kind === 'cwl-attack-reminder').allowedUserIds,
-        ['222222222222222222']
-    );
+    assert.equal(reminders.find(notification => notification.recipientUserId === '111111111111111111').destination, 'attack-dm');
+    assert.equal(reminders.find(notification => notification.recipientUserId === '222222222222222222').destination, 'attack-dm');
+    assert.equal(reminders.find(notification => notification.destination === 'attack-channel').kind, 'regular-attack-reminder');
+    assert.equal(reminders.every(notification => notification.allowedRoleIds.length === 0), true);
 });
 
 test('multiple pending accounts linked to one Discord user are not reported as unlinked', () => {
@@ -308,10 +299,11 @@ test('multiple pending accounts linked to one Discord user are not reported as u
         record: emptyRecord(),
         nowRaw: NOW
     });
-    const reminder = plan.notifications.find(notification => notification.kind === 'regular-attack-reminder');
-    assert.deepEqual(reminder.allowedUserIds, ['111111111111111111']);
-    assert.deepEqual(reminder.allowedRoleIds, []);
-    assert.doesNotMatch(reminder.embeds[0].description, /could not be tagged/);
+    const reminders = plan.notifications.filter(notification => notification.kind === 'regular-attack-reminder');
+    assert.equal(reminders.length, 1);
+    assert.equal(reminders[0].recipientUserId, '111111111111111111');
+    assert.match(reminders[0].embeds[0].description, /#AAA/);
+    assert.match(reminders[0].embeds[0].description, /#CCC/);
 });
 
 test('regular and CWL end summaries include missed attackers but never replay pre-opt-in wars', () => {

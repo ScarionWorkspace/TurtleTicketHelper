@@ -406,53 +406,64 @@ function getCwlPendingPlayers(roster, rosterData) {
 function planAttackReminder({ roster, rosterData, config, record, nowMs, mode }) {
     const currentWar = mode === 'cwl' ? roster?.cwlStats?.currentWar : roster?.regularWar?.currentWar;
     const state = toText(currentWar?.state).trim().toLowerCase();
-    if (state !== 'inwar') return null;
+    if (state !== 'inwar') return [];
 
     const threshold = eligibleReminder(currentWar.endTime, nowMs);
-    if (!threshold) return null;
+    if (!threshold) return [];
     const warId = mode === 'cwl' ? currentWar.warTag : currentWar.warKey;
-    if (!warId) return null;
+    if (!warId) return [];
 
     const prefix = `attack:${mode}:${semanticKey([roster.id, warId])}`;
-    const key = `${prefix}:${threshold.minutes}m`;
-    if (record?.deliveries?.[key]) return null;
+    const windowKey = `${prefix}:${threshold.minutes}m`;
+    // Respect deliveries made by older versions that sent one message per war.
+    if (record?.deliveries?.[windowKey]) return [];
 
     const pending = mode === 'cwl'
         ? getCwlPendingPlayers(roster, rosterData)
         : getRegularPendingPlayers(roster, rosterData);
-    if (!pending.length) return null;
+    if (!pending.length) return [];
 
-    const lines = pending.slice(0, MAX_NOTIFICATION_LINES).map(entry => playerLine(
-        entry.identity,
-        mode === 'cwl'
-            ? '1 CWL attack remaining'
-            : `${entry.current.attacksRemaining} ${plural(entry.current.attacksRemaining, 'attack')} remaining`
-    ));
-    if (pending.length > lines.length) lines.push(`• +${pending.length - lines.length} more linked in the roster.`);
-    const userIds = unique(pending.map(entry => entry.identity.discordId));
-    const unlinkedCount = pending.filter(entry => !entry.identity.discordId).length;
     const modeLabel = mode === 'cwl' ? 'CWL war' : 'regular war';
-    return {
-        key,
-        consumeKeys: reminderKeys(prefix, threshold.minutes),
-        kind: `${mode}-attack-reminder`,
-        featureKey: 'attackReminders',
-        content: userIds.map(id => `<@${id}>`).join(' '),
-        embeds: [{
-            color: 0xed4245,
-            title: `${rosterTitle(roster)} · attacks still open`,
-            description: [
-                `The ${modeLabel} ends ${workflow.discordRelativeTimestamp(currentWar.endTime)}.`,
-                '',
-                ...lines,
-                unlinkedCount > 0 ? `\n${unlinkedCount} player${unlinkedCount === 1 ? '' : 's'} could not be tagged because Discord is not linked.` : ''
-            ].filter(Boolean).join('\n').slice(0, 4000),
-            footer: { text: `Reminder window: ${threshold.label}` }
-        }],
-        allowedUserIds: userIds,
-        allowedRoleIds: [],
-        displayNameFallbacks: displayNameFallbacks(pending.slice(0, MAX_NOTIFICATION_LINES).map(entry => entry.identity))
-    };
+    const byUser = new Map();
+    for (const entry of pending) {
+        const userId = entry.identity.discordId || '';
+        if (!byUser.has(userId)) byUser.set(userId, []);
+        byUser.get(userId).push(entry);
+    }
+    return Array.from(byUser, ([userId, entries]) => {
+        const suffix = userId ? `user:${userId}` : 'unlinked';
+        const key = `${windowKey}:${suffix}`;
+        if (record?.deliveries?.[key]) return null;
+        const lines = entries.slice(0, MAX_NOTIFICATION_LINES).map(entry => playerLine(
+            entry.identity,
+            mode === 'cwl'
+                ? '1 CWL attack remaining'
+                : `${entry.current.attacksRemaining} ${plural(entry.current.attacksRemaining, 'attack')} remaining`
+        ));
+        if (entries.length > lines.length) lines.push(`• +${entries.length - lines.length} more accounts with attacks remaining.`);
+        return {
+            key,
+            consumeKeys: reminderKeys(prefix, threshold.minutes).map(window => `${window}:${suffix}`),
+            kind: `${mode}-attack-reminder`,
+            featureKey: 'attackReminders',
+            destination: userId ? 'attack-dm' : 'attack-channel',
+            recipientUserId: userId,
+            content: '',
+            embeds: [{
+                color: 0xed4245,
+                title: `${rosterTitle(roster)} · attacks still open`,
+                description: [
+                    `The ${modeLabel} ends ${workflow.discordRelativeTimestamp(currentWar.endTime)}.`,
+                    '',
+                    ...lines
+                ].join('\n').slice(0, 4000),
+                footer: { text: `Reminder window: ${threshold.label}` }
+            }],
+            allowedUserIds: [],
+            allowedRoleIds: [],
+            displayNameFallbacks: displayNameFallbacks(entries.slice(0, MAX_NOTIFICATION_LINES).map(entry => entry.identity))
+        };
+    }).filter(Boolean);
 }
 
 function planAllClear({ roster, config, record, mode, nowIso }) {
@@ -711,8 +722,7 @@ function planNotifications({ rosterData, work, config, record, moderators = {}, 
     for (const roster of Array.isArray(rosterData?.rosters) ? rosterData.rosters : []) {
         if (config?.features?.attackReminders === true) {
             for (const mode of ['regular', 'cwl']) {
-                const reminder = planAttackReminder({ roster, rosterData, config, record, nowMs, mode });
-                if (reminder) notifications.push(reminder);
+                notifications.push(...planAttackReminder({ roster, rosterData, config, record, nowMs, mode }));
             }
         }
         const regularAllClear = planAllClear({ roster, config, record, mode: 'regular', nowIso });

@@ -36,7 +36,7 @@ test('all Discord notification categories are opt-in by default', () => {
 });
 
 test('configuration transitions timestamp only the categories explicitly enabled', () => {
-    const { store } = createStore();
+    const { filePath, store } = createStore();
     const firstAt = new Date('2026-08-01T10:00:00.000Z');
     const secondAt = new Date('2026-08-02T10:00:00.000Z');
     const first = store.patchConfig('111111111111111111', {
@@ -48,8 +48,11 @@ test('configuration transitions timestamp only the categories explicitly enabled
     assert.equal(first.featureEnabledAt.attackReminders, undefined);
 
     const second = store.patchConfig('111111111111111111', {
+        attackReminderChannelId: '777777777777777777',
         features: { attackReminders: true }
     }, secondAt);
+    assert.equal(second.attackReminderChannelId, '777777777777777777');
+    assert.equal(createWarFollowupStateStore({ filePath }).getGuild('111111111111111111').config.attackReminderChannelId, '777777777777777777');
     assert.equal(second.featureEnabledAt.caseAlerts, firstAt.toISOString());
     assert.equal(second.featureEnabledAt.attackReminders, secondAt.toISOString());
 

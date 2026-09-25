@@ -22,6 +22,7 @@ const { ensureModerationHub, retireDashboard } = require('../src/features/warFol
 const temporaryDirectories = [];
 const GUILD_ID = '111111111111111111';
 const CHANNEL_ID = '222222222222222222';
+const REMINDER_CHANNEL_ID = '777777777777777777';
 const NOW = new Date('2026-08-10T08:30:00.000Z');
 
 function createStore() {
@@ -39,46 +40,51 @@ function createDiscordHarness(options = {}) {
     const messages = new Map();
     const sends = [];
     let sequence = 0;
-    const channel = {
-        id: CHANNEL_ID,
-        guildId: GUILD_ID,
-        isTextBased: () => true,
-        isThread: () => false,
-        guild: options.guild,
-        messages: {
-            fetch: async messageId => {
-                if (messages.has(messageId)) return messages.get(messageId);
-                const error = new Error('Unknown message');
-                error.code = 10008;
-                throw error;
-            }
-        },
-        send: async payload => {
-            const title = messageTitle(payload);
-            sends.push({ payload, title });
-            options.onSend?.(title, sends);
-            if (options.failNotification?.(title, sends)) throw new Error('simulated Discord send failure');
-            sequence += 1;
-            const message = {
-                id: `33333333333333333${sequence}`,
-                payload,
-                edit: async nextPayload => {
-                    message.payload = nextPayload;
-                    return message;
+    function makeChannel(channelId) {
+        return {
+            id: channelId,
+            guildId: GUILD_ID,
+            isTextBased: () => true,
+            isThread: () => false,
+            guild: options.guild,
+            messages: {
+                fetch: async messageId => {
+                    if (messages.has(messageId)) return messages.get(messageId);
+                    const error = new Error('Unknown message');
+                    error.code = 10008;
+                    throw error;
                 }
-            };
-            messages.set(message.id, message);
-            return message;
-        }
-    };
+            },
+            send: async payload => {
+                const title = messageTitle(payload);
+                sends.push({ payload, title, channelId });
+                options.onSend?.(title, sends);
+                if (options.failNotification?.(title, sends)) throw new Error('simulated Discord send failure');
+                sequence += 1;
+                const message = {
+                    id: `33333333333333333${sequence}`,
+                    payload,
+                    edit: async nextPayload => {
+                        message.payload = nextPayload;
+                        return message;
+                    }
+                };
+                messages.set(message.id, message);
+                return message;
+            }
+        };
+    }
+    const channel = makeChannel(CHANNEL_ID);
+    const reminderChannel = makeChannel(REMINDER_CHANNEL_ID);
     const client = {
         channels: {
-            cache: new Map([[CHANNEL_ID, channel]]),
-            fetch: async channelId => channelId === CHANNEL_ID ? channel : null
+            cache: new Map([[CHANNEL_ID, channel], [REMINDER_CHANNEL_ID, reminderChannel]]),
+            fetch: async channelId => channelId === CHANNEL_ID ? channel :
+                (channelId === REMINDER_CHANNEL_ID ? reminderChannel : null)
         },
         users: options.users
     };
-    return { client, channel, messages, sends };
+    return { client, channel, reminderChannel, messages, sends };
 }
 
 function buildWorkspace() {
@@ -162,7 +168,7 @@ test('moderation notifications are grouped per recipient and respect digest cool
     assert.equal(readyAgain.notifications.length, 1);
 });
 
-test('leadership and war alerts produce at most one ping per digest wave', () => {
+test('leadership alerts are grouped while attack reminders stay per recipient', () => {
     const roleId = '555555555555555555';
     const userId = '444444444444444444';
     const planned = [
@@ -205,11 +211,11 @@ test('leadership and war alerts produce at most one ping per digest wave', () =>
     ];
 
     const prepared = prepareNotificationQueue(planned, { deliveries: {} }, NOW);
-    assert.equal(prepared.notifications.length, 2);
+    assert.equal(prepared.notifications.length, 3);
     const leadership = prepared.notifications.find(notification => notification.kind === 'moderation-digest');
-    const reminders = prepared.notifications.find(notification => notification.kind === 'war-reminder-digest');
+    const reminders = prepared.notifications.filter(notification => notification.kind.endsWith('attack-reminder'));
     assert.equal((leadership.content.match(new RegExp(`<@&${roleId}>`, 'g')) || []).length, 1);
-    assert.equal((reminders.content.match(new RegExp(`<@${userId}>`, 'g')) || []).length, 1);
+    assert.equal(reminders.length, 2);
     assert.equal(leadership.cadenceMs, LEADERSHIP_DIGEST_INTERVAL_MS);
     const deferred = prepareNotificationQueue(planned, {
         deliveries: { [leadership.cadenceKey]: { at: NOW.toISOString() } }
@@ -279,13 +285,51 @@ test('scheduler persists moderator cooldown and later sends all accumulated case
     assert.equal(harness.sends.filter(send => send.title.includes('Your moderation work')).length, 2);
 });
 
-test('scheduler records a delivery only after Discord accepts it and retries a failed send', async t => {
+test('attack reminders DM linked players without posting in the staff channel', async () => {
+    const store = createStore();
+    const dmSends = [];
+    const harness = createDiscordHarness({
+        users: { fetch: async userId => ({
+            send: async payload => {
+                dmSends.push({ userId, payload });
+                return { id: '888888888888888888' };
+            }
+        }) }
+    });
+    store.patchConfig(GUILD_ID, {
+        enabled: true,
+        channelId: CHANNEL_ID,
+        attackReminderChannelId: REMINDER_CHANNEL_ID,
+        features: { attackReminders: true }
+    }, new Date('2026-08-10T07:00:00.000Z'));
+
+    const first = await processGuild(harness.client, { guildId: GUILD_ID }, buildWorkspace(), { store, now: NOW });
+    assert.equal(first.sent.length, 1);
+    assert.equal(dmSends.length, 1);
+    assert.equal(dmSends[0].userId, '444444444444444444');
+    assert.match(dmSends[0].payload.embeds[0].description, /#P0LYGQ/);
+    assert.equal(harness.sends.some(send => send.title.includes('attacks still open')), false);
+    assert.equal(Object.keys(store.getGuild(GUILD_ID).deliveries).length, 1);
+
+    const second = await processGuild(harness.client, { guildId: GUILD_ID }, buildWorkspace(), { store, now: NOW });
+    assert.equal(second.planned, 0);
+    assert.equal(dmSends.length, 1);
+});
+
+test('a blocked DM falls back to the public channel and retries if that send fails', async t => {
     t.mock.method(console, 'error', () => {});
     const store = createStore();
     let notificationFailuresRemaining = 1;
+    let dmAttempts = 0;
     const harness = createDiscordHarness({
-        failNotification: title => {
-            if (!title.includes('attacks still open') || notificationFailuresRemaining <= 0) return false;
+        users: { fetch: async () => ({ send: async () => {
+            dmAttempts += 1;
+            throw Object.assign(new Error('Cannot send messages to this user'), { code: 50007 });
+        } }) },
+        failNotification: (title, sends) => {
+            if (!title.includes('attacks still open') ||
+                sends.at(-1).channelId !== REMINDER_CHANNEL_ID ||
+                notificationFailuresRemaining <= 0) return false;
             notificationFailuresRemaining -= 1;
             return true;
         }
@@ -293,6 +337,7 @@ test('scheduler records a delivery only after Discord accepts it and retries a f
     store.patchConfig(GUILD_ID, {
         enabled: true,
         channelId: CHANNEL_ID,
+        attackReminderChannelId: REMINDER_CHANNEL_ID,
         features: { attackReminders: true }
     }, new Date('2026-08-10T07:00:00.000Z'));
     const workspace = buildWorkspace();
@@ -314,7 +359,11 @@ test('scheduler records a delivery only after Discord accepts it and retries a f
         { store, now: NOW }
     );
     assert.equal(second.sent.length, 1);
-    assert.equal(Object.keys(store.getGuild(GUILD_ID).deliveries).length, 2, 'the 6h and 2h reminder windows are consumed together');
+    assert.equal(Object.keys(store.getGuild(GUILD_ID).deliveries).length, 1);
+    assert.equal(dmAttempts, 2);
+    const fallbackSends = harness.sends.filter(send => send.title.includes('attacks still open'));
+    assert.equal(fallbackSends.every(send => send.channelId === REMINDER_CHANNEL_ID), true);
+    assert.equal(fallbackSends[1].payload.content, '<@444444444444444444>');
 
     const third = await processGuild(
         harness.client,
@@ -324,6 +373,45 @@ test('scheduler records a delivery only after Discord accepts it and retries a f
     );
     assert.equal(third.planned, 0);
     assert.equal(harness.sends.filter(send => send.title.includes('attacks still open')).length, 2);
+    assert.equal(dmAttempts, 2);
+});
+
+test('unlinked players use only the configured public reminder channel', async () => {
+    const store = createStore();
+    const harness = createDiscordHarness();
+    const workspace = buildWorkspace();
+    workspace.rosterData.playerMetrics.byTag['#P0LYGQ'].identity.discordId = '';
+    store.patchConfig(GUILD_ID, {
+        enabled: true,
+        channelId: CHANNEL_ID,
+        attackReminderChannelId: REMINDER_CHANNEL_ID,
+        features: { attackReminders: true }
+    }, new Date('2026-08-10T07:00:00.000Z'));
+
+    const result = await processGuild(harness.client, { guildId: GUILD_ID }, workspace, { store, now: NOW });
+    assert.equal(result.sent.length, 1);
+    const reminder = harness.sends.find(send => send.title.includes('attacks still open'));
+    assert.equal(reminder.channelId, REMINDER_CHANNEL_ID);
+    assert.equal(reminder.payload.content, '');
+    assert.match(reminder.payload.embeds[0].description, /Alpha/);
+});
+
+test('without a fallback channel, a failed DM never leaks into the staff channel', async t => {
+    t.mock.method(console, 'error', () => {});
+    const store = createStore();
+    const harness = createDiscordHarness({
+        users: { fetch: async () => ({ send: async () => { throw new Error('DM closed'); } }) }
+    });
+    store.patchConfig(GUILD_ID, {
+        enabled: true,
+        channelId: CHANNEL_ID,
+        features: { attackReminders: true }
+    }, new Date('2026-08-10T07:00:00.000Z'));
+
+    const result = await processGuild(harness.client, { guildId: GUILD_ID }, buildWorkspace(), { store, now: NOW });
+    assert.deepEqual(result.sent, []);
+    assert.equal(harness.sends.some(send => send.title.includes('attacks still open')), false);
+    assert.equal(Object.keys(store.getGuild(GUILD_ID).deliveries).length, 0);
 });
 
 test('disabled installations perform no workspace or Discord work', async () => {

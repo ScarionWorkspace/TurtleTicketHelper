@@ -2105,6 +2105,9 @@ function buildSetupSummary(config, channelMention) {
             : 'Disabled. Existing cases and the web admin panel are unchanged.')
         .addFields(
             { name: 'Notification opt-ins', value: featureLines.join('\n') },
+            { name: 'Attack reminder fallback', value: config.attackReminderChannelId
+                ? `<#${config.attackReminderChannelId}> (players who cannot receive a DM)`
+                : 'Not set. Use `/war-follow-up setup attack-reminder-channel` before enabling reminders.' },
             { name: 'Staff ping', value: config.staffRoleId ? `<@&${config.staffRoleId}>` : 'None (alerts are posted without a role ping).' }
         )
         .setFooter({ text: 'No category is enabled implicitly. Run /war-follow-up setup again to change any option.' });

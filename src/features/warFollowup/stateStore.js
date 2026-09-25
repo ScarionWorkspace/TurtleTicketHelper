@@ -35,6 +35,7 @@ function createDefaultConfig() {
     return {
         enabled: false,
         channelId: '',
+        attackReminderChannelId: '',
         staffRoleId: '',
         timeZone: 'Europe/Berlin',
         features: defaultFeatures(),
@@ -171,6 +172,7 @@ function sanitizeConfig(raw) {
     return {
         enabled: value.enabled === true,
         channelId: cleanSnowflake(value.channelId),
+        attackReminderChannelId: cleanSnowflake(value.attackReminderChannelId),
         staffRoleId: cleanSnowflake(value.staffRoleId),
         timeZone: cleanText(value.timeZone, 80) || 'Europe/Berlin',
         features: sanitizeFeatures(value.features),

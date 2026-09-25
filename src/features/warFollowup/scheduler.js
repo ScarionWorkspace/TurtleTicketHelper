@@ -205,7 +205,7 @@ function prepareNotificationQueue(notificationsRaw, record, nowRaw = new Date())
             nowIso
         ));
     }
-    candidates.push(...buildEmbedBundles(reminders, 'war-reminder-digest'));
+    candidates.push(...reminders);
     candidates.push(...buildEmbedBundles(warUpdates, 'war-update-digest'));
 
     const notifications = [];
@@ -237,6 +237,31 @@ function initializeSummaryBaselines(store, guildId, workspace, config) {
         record = store.getGuild(guildId);
     }
     return record;
+}
+
+async function sendAttackReminder(client, guildId, guild, config, notification) {
+    async function sendToFallbackChannel() {
+        const fallbackChannelId = config.attackReminderChannelId;
+        if (!fallbackChannelId || fallbackChannelId === config.channelId) {
+            throw new Error('A separate public attack reminder channel must be configured.');
+        }
+        const fallbackChannel = await resolveConfiguredChannel(client, guildId, fallbackChannelId);
+        const userId = notification.recipientUserId;
+        return sendPlannedNotification(fallbackChannel, {
+            ...notification,
+            content: userId ? `<@${userId}>` : '',
+            allowedUserIds: userId ? [userId] : []
+        });
+    }
+
+    if (notification.destination !== 'attack-dm') return sendToFallbackChannel();
+    try {
+        return await sendPlannedDirectNotification(client, guild, notification);
+    } catch (error) {
+        // Discord does not expose a reliable DM-permission flag. A failed send
+        // is the only practical signal that this player needs the public route.
+        return sendToFallbackChannel();
+    }
 }
 
 async function processGuild(client, guildState, workspace, options = {}) {
@@ -332,9 +357,11 @@ async function processGuild(client, guildState, workspace, options = {}) {
                 });
                 deliveryReserved = true;
             }
-            const message = notification.destination === 'dm'
-                ? await sendPlannedDirectNotification(client, channel.guild, notification)
-                : await sendPlannedNotification(channel, notification);
+            const message = WAR_REMINDER_KINDS.has(notification.kind)
+                ? await sendAttackReminder(client, guildId, channel.guild, liveConfig, notification)
+                : notification.destination === 'dm'
+                    ? await sendPlannedDirectNotification(client, channel.guild, notification)
+                    : await sendPlannedNotification(channel, notification);
             if (deliveryReserved) store.removeDeliveries(guildId, notification.key);
             store.recordDeliveries(
                 guildId,
