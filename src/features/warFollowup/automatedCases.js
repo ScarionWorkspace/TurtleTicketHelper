@@ -131,9 +131,13 @@ function cwlProgress(item) {
 }
 
 function progressForItem(item, workspace) {
+    if (!item?.player?.automaticEligible) return { ready: false, completedWars: 0, targetWars: 0 };
     const category = text(item?.case?.automationCategory);
     const history = category.startsWith('regular_')
-        ? workflow.buildWarHistoryForTag(workspace.rosterData, item.tag, item.player) : null;
+        ? workflow.excludeClanFromEvidence(
+            workflow.buildWarHistoryForTag(workspace.rosterData, item.tag, item.player),
+            workspace.work.directory?.exemptWarClanTag
+        ) : null;
     if (category === 'regular_missed') {
         return regularMissedProgress(item, history);
     }

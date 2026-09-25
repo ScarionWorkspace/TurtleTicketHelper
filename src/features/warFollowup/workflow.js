@@ -501,7 +501,7 @@ function buildPlayerDirectory(rosterData, settingsRaw) {
                     hasDiscord: Boolean(discordId || displayDiscord),
                     th: toInt(player.th),
                     role,
-                    automaticEligible: true,
+                    automaticEligible: !settings.defaultHeroDownRosterId || rosterInfo.id !== settings.defaultHeroDownRosterId,
                     trusted: trustedTags.has(tag),
                     rosterId: rosterInfo.id,
                     rosterTitle: rosterInfo.title,
@@ -512,7 +512,8 @@ function buildPlayerDirectory(rosterData, settingsRaw) {
         }
     }
 
-    return { byTag, players: Object.values(byTag), rosters, missingTags };
+    const exemptWarClanTag = rosters.find(roster => roster.id === settings.defaultHeroDownRosterId)?.clanTag || '';
+    return { byTag, players: Object.values(byTag), rosters, missingTags, exemptWarClanTag };
 }
 
 function buildIgnoredPlayerEntries(directoryRaw, settingsRaw, casesRaw) {
@@ -887,6 +888,23 @@ function buildEvidenceForTag(rosterData, tagRaw, settingsRaw, identityRaw) {
         settings.regularLookbackWars,
         settings.cwlLookbackSeasons
     );
+}
+
+function excludeClanFromEvidence(evidenceRaw, clanTagRaw) {
+    const evidence = evidenceRaw && typeof evidenceRaw === 'object' ? evidenceRaw : {};
+    const clanTag = normalizeTag(clanTagRaw);
+    if (!clanTag) return evidence;
+    const regularEvents = (Array.isArray(evidence.regularEvents) ? evidence.regularEvents : [])
+        .filter(event => normalizeTag(event.clanTag) !== clanTag);
+    const cwlEvents = (Array.isArray(evidence.cwlEvents) ? evidence.cwlEvents : [])
+        .filter(event => normalizeTag(event.clanTag) !== clanTag);
+    const regular = emptyStats();
+    const cwl = emptyStats();
+    for (const event of regularEvents) addStats(regular, event.stats);
+    for (const event of cwlEvents) addStats(cwl, event.stats);
+    regular.warCount = regularEvents.length;
+    cwl.warCount = cwlEvents.reduce((sum, event) => sum + toInt(event.stats?.warCount), 0);
+    return { ...evidence, regular: statsSummary(regular), cwl: statsSummary(cwl), regularEvents, cwlEvents };
 }
 
 function buildWarHistoryForTag(rosterData, tagRaw, identityRaw) {
@@ -1380,7 +1398,8 @@ function buildWorkItems(rosterData, privateStateRaw) {
             sourceRosterId: toText(caseValue?.sourceRosterId).trim(),
             sourceClanTag: normalizeTag(caseValue?.sourceClanTag)
         };
-        const evidence = buildEvidenceForTag(rosterData, tag, settings, evidenceOwner);
+        const fullEvidence = buildEvidenceForTag(rosterData, tag, settings, evidenceOwner);
+        const evidence = excludeClanFromEvidence(fullEvidence, directory.exemptWarClanTag);
         const reliability = buildReliabilityProfile(rosterData, tag, evidence, settings);
         const caseSettings = { ...settings, regularMissedThreshold: reliability.regularMissedThreshold };
         const signals = player?.automaticEligible ? buildSignals(evidence, caseSettings) : [];
@@ -1402,7 +1421,7 @@ function buildWorkItems(rosterData, privateStateRaw) {
         if ((status === 'closed' || status === 'dismissed') && hasNewSignal) status = 'needs_review';
         if (status === 'dismissed') status = 'closed';
 
-        const recovery = caseValue?.status === 'hero_down' ? buildRecoveryProgress(caseValue, evidence, settings) : null;
+        const recovery = caseValue?.status === 'hero_down' ? buildRecoveryProgress(caseValue, fullEvidence, settings) : null;
         const automatedWatching = caseValue?.status === 'watching' && ['checkin', 'warning'].includes(caseValue.automationStage);
         const watching = caseValue?.status === 'watching' && !automatedWatching ? buildWatchProgress(caseValue, evidence, settings) : null;
         if (recovery?.ready) status = 'ready';
@@ -1588,6 +1607,7 @@ module.exports = {
     buildPlayerDirectory,
     buildIgnoredPlayerEntries,
     buildEvidenceForTag,
+    excludeClanFromEvidence,
     buildWarHistoryForTag,
     buildReliabilityProfile,
     buildSignals,

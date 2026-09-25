@@ -182,7 +182,7 @@ async function synchronizeModerationCases(guild, guildId, workspaceRaw, store, o
             : caseClanTag(item);
         const guildRecord = store.getGuild(guildId);
 
-        if (isUntouchedAutomaticCase(item)) {
+        if (item.player?.automaticEligible && isUntouchedAutomaticCase(item)) {
             const category = automatedCases.categoryForItem(item) ||
                 (item.case.reasonCodes?.length === 1 ? item.case.reasonCodes[0] : '');
             if (['regular_missed', 'regular_performance', 'cwl_missed'].includes(category)) {

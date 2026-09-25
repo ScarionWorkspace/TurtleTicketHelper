@@ -59,6 +59,29 @@ test('attendance failure in a performance case ends observation for leader revie
     assert.equal(progress.fullMisses, 2);
 });
 
+test('automatic observation pauses for voluntary hero-down members and ignores their wars later', () => {
+    const item = {
+        tag: TAG,
+        player: { automaticEligible: false },
+        case: { automationCategory: 'regular_missed', automationStage: 'checkin', automationWindowStartAt: at(0) },
+        currentEvidence: { regularEvents: [event(1, { usedAttacks: 0, missedAttacks: 2 })] }
+    };
+    const rosterData = { playerWarPerformance: { byTag: { [TAG]: {
+        recentRegularWarForm: [event(1, { usedAttacks: 0, missedAttacks: 2 }),
+            event(2, { usedAttacks: 0, missedAttacks: 2 }),
+            event(3, { usedAttacks: 0, missedAttacks: 2 })]
+    } } } };
+    const workspace = { rosterData, work: { settings: workflow.sanitizeSettings(null),
+        directory: { exemptWarClanTag: '#TRAIN' } } };
+    assert.equal(automated.progressForItem(item, workspace).ready, false);
+    item.player.automaticEligible = true;
+    assert.equal(automated.progressForItem(item, workspace).ready, false);
+    rosterData.playerWarPerformance.byTag[TAG].recentRegularWarForm.push(
+        event(4, { usedAttacks: 2, missedAttacks: 0 }, '#MAIN')
+    );
+    assert.equal(automated.progressForItem(item, workspace).completedWars, 1);
+});
+
 test('new recovery requires eligible clean wars and six attacks meeting result targets', () => {
     const caseValue = { tag: TAG, recoveryPolicyVersion: 1, recoveryCategory: 'regular_performance',
         recoveryStartedAt: at(0), recoveryWarTarget: 3, targetClanTag: '#TRAIN',
