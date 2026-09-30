@@ -272,16 +272,16 @@ test('late startup selects only the most urgent reminder window and consumes ear
         nowRaw: NOW
     });
     const reminders = plan.notifications.filter(notification => notification.kind.endsWith('attack-reminder'));
-    assert.equal(reminders.length, 3);
+    assert.equal(reminders.length, 2);
     for (const reminder of reminders) {
-        assert.match(reminder.key, /:120m:(?:user:\d+|unlinked)$/);
+        assert.match(reminder.key, /:120m:user:\d+$/);
         assert.equal(reminder.consumeKeys.some(key => key.includes(':360m:')), false);
         assert.equal(reminder.consumeKeys.some(key => key.includes(':120m:')), true);
         assert.equal(reminder.consumeKeys.some(key => key.includes(':30m:')), false);
     }
     assert.equal(reminders.find(notification => notification.recipientUserId === '111111111111111111').destination, 'attack-dm');
     assert.equal(reminders.find(notification => notification.recipientUserId === '222222222222222222').destination, 'attack-dm');
-    assert.equal(reminders.find(notification => notification.destination === 'attack-channel').kind, 'regular-attack-reminder');
+    assert.equal(reminders.every(notification => notification.destination === 'attack-dm'), true);
     assert.equal(reminders.every(notification => notification.allowedRoleIds.length === 0), true);
 });
 

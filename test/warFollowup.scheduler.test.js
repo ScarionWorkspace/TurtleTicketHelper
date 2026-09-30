@@ -376,7 +376,7 @@ test('a blocked DM falls back to the public channel and retries if that send fai
     assert.equal(dmAttempts, 2);
 });
 
-test('unlinked players use only the configured public reminder channel', async () => {
+test('unlinked players are ignored by attack reminders', async () => {
     const store = createStore();
     const harness = createDiscordHarness();
     const workspace = buildWorkspace();
@@ -389,11 +389,9 @@ test('unlinked players use only the configured public reminder channel', async (
     }, new Date('2026-08-10T07:00:00.000Z'));
 
     const result = await processGuild(harness.client, { guildId: GUILD_ID }, workspace, { store, now: NOW });
-    assert.equal(result.sent.length, 1);
-    const reminder = harness.sends.find(send => send.title.includes('attacks still open'));
-    assert.equal(reminder.channelId, REMINDER_CHANNEL_ID);
-    assert.equal(reminder.payload.content, '');
-    assert.match(reminder.payload.embeds[0].description, /Alpha/);
+    assert.equal(result.sent.length, 0);
+    assert.equal(result.planned, 0);
+    assert.equal(harness.sends.some(send => send.title.includes('attacks still open')), false);
 });
 
 test('without a fallback channel, a failed DM never leaks into the staff channel', async t => {

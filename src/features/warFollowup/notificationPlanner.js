@@ -426,12 +426,13 @@ function planAttackReminder({ roster, rosterData, config, record, nowMs, mode })
     const modeLabel = mode === 'cwl' ? 'CWL war' : 'regular war';
     const byUser = new Map();
     for (const entry of pending) {
-        const userId = entry.identity.discordId || '';
+        const userId = entry.identity.discordId;
+        if (!userId) continue;
         if (!byUser.has(userId)) byUser.set(userId, []);
         byUser.get(userId).push(entry);
     }
     return Array.from(byUser, ([userId, entries]) => {
-        const suffix = userId ? `user:${userId}` : 'unlinked';
+        const suffix = `user:${userId}`;
         const key = `${windowKey}:${suffix}`;
         if (record?.deliveries?.[key]) return null;
         const lines = entries.slice(0, MAX_NOTIFICATION_LINES).map(entry => playerLine(
@@ -446,7 +447,7 @@ function planAttackReminder({ roster, rosterData, config, record, nowMs, mode })
             consumeKeys: reminderKeys(prefix, threshold.minutes).map(window => `${window}:${suffix}`),
             kind: `${mode}-attack-reminder`,
             featureKey: 'attackReminders',
-            destination: userId ? 'attack-dm' : 'attack-channel',
+            destination: 'attack-dm',
             recipientUserId: userId,
             content: '',
             embeds: [{
